@@ -1,6 +1,6 @@
 # RESUME — agent-workbench 项目长期状态记忆
 
-> 最后更新：2026-11-13（阶段一 项目接管首次初始化）
+> 最后更新：2026-11-13（阶段一 项目接管；含接管后续修正）
 > 本文件用于跨会话恢复项目上下文。只记录已验证的事实；无法观测的数据（如额度消耗）明确标注，不编造数字或测试结果。
 > 事实来源：仓库代码与文档、git 记录、2026-11-13 的运行验证记录。
 
@@ -21,7 +21,7 @@
 | MCP 传输 | Streamable HTTP，端点为 `POST /mcp` |
 | 健康检查 | `GET /health`，无需鉴权 |
 | GitHub 仓库 | https://github.com/mkmk56/agent-workbench |
-| 仓库可见性 / 分支 | 公开仓库 / `main` |
+| 仓库可见性 / 分支 | 公开仓库（已在 GitHub 页面核实）/ `main` |
 | 关键文档 | `README.md`（使用与部署）、`TESTS.md`（2026-11-12 验收记录）、`workbench.env.example`（配置样例） |
 
 ---
@@ -34,7 +34,7 @@
 
 ### 当前产品形态
 
-- 云端编排端（Muse）通过 HTTPS 或 tailnet 调用 MCP 工具派单。
+- Muse 经公网 HTTPS 调用；tailnet HTTP 入口仅作本机与手工调试备用。
 - 本地服务调度 `claude` / `dsh` 两个执行器，管理并发、超时、取消、日志与续聊。
 - 任务结果通过 `task_status` / `task_logs` / `wait_for_task` 回传。
 - 当前没有图形界面；`dsh --profile web` 的 UI 与本项目无关，未使用。
@@ -129,11 +129,12 @@ start-hidden.vbs     隐藏启动入口
 |---|---|---|
 | [DONE] | MCP 核心服务 | initialize、鉴权、8 个工具、任务调度与持久化均已实现 |
 | [DONE] | 2026-11-12 验收 | `TESTS.md` 记录 21 项验收通过（含鉴权、工具列表、dsh/claude 任务与续聊、并发、取消、崩溃恢复、tailnet 入口、看门狗、Cloudflare HTTPS、token 轮换） |
-| [DONE] | GitHub 首次发布 | 公开仓库，`main` 分支，基线提交 `be2a86a`（Initial commit，2026-11-13 01:25 CST 推送），27 个追踪文件，工作区干净 |
-| [DONE] | 2026-11-13 MCP 在线验证 | `initialize` 返回 200；`tools/list` 返回 8 个工具；`agent_info` 返回的两个执行器符合预期 |
-| [DONE] | custom connector 接入 | `custom.agent-workbench` 已连接 |
-| [DONE] | 首次真实派单 | 通过工作台把本项目发布到 GitHub 公开仓库，任务耗时约 70 秒；claude tokens 输入 35215、输出 6215 |
-| [DONE] | 阶段一接管初始化 | 创建 `RESUME.md` 与 `DAILY_LOG.md`，提交并推送 |
+| [DONE] | GitHub 首次发布 | 公开仓库（已在 GitHub 页面核实），`main` 分支，基线提交 `be2a86a`（Initial commit，2026-11-13 01:25 CST 提交），27 个追踪文件，工作区干净 |
+| [DONE] | 2026-11-13 MCP 在线验证 | `initialize` 返回 200；`tools/list` 返回 8 个工具；`agent_info` 返回的两个执行器符合预期。证据：验证任务 `40d7e908-e68d-4161-8d36-39d414b7d742` |
+| [DONE] | custom connector 接入 | `custom.agent-workbench` 已连接；2026-11-13 01:20 connector 调用 `agent_info` 返回 `logged_in=true` |
+| [DONE] | 首次真实派单 | 通过工作台把本项目发布到 GitHub 公开仓库，任务 `c68b9d69-b138-42a7-88e1-401156e50e38`，2026-11-13 01:24–01:25 CST，耗时约 70 秒；claude tokens 输入 35215、输出 6215（单次任务用量，非每日额度余额） |
+| [DONE] | 首次派单审核 | 审核任务 `e4753c1f-d077-401c-93de-782c0a853d9c` |
+| [DONE] | 阶段一接管初始化 | 创建 `RESUME.md` 与 `DAILY_LOG.md`，提交 `db9999a` 并推送 |
 | [IN_PROGRESS] | 阶段一 项目接管 | 接管持续进行，下一步为 GUI 技术选型与需求确认 |
 | [TODO] | GUI 技术选型 | Electron / Tauri 待调研并由用户确认；先产出决策文档，不写大代码 |
 | [TODO] | 稳定公网入口 | 将 Cloudflare quick Tunnel 换为命名 Tunnel，获得固定 URL |
@@ -153,19 +154,19 @@ start-hidden.vbs     隐藏启动入口
 3. **[BLOCKED] dsh 无原生续跑（上游限制）**
    `dsh 0.1.0-rc.6` 的 headless 模式不支持 `--resume`；当前由服务端拼接历史实现多轮。`agent_info` 已如实返回 `resume_supported: false`。这不是本项目代码缺陷，但会影响长会话的上下文一致性，需在 GUI 设计时考虑。
 
-4. **[KNOWN_BUG] 历史数据中可能残留真实 token**
-   本地 `data/` 日志与 `workbench.db` 历史上记录过真实 token，未上传到 GitHub。分享、备份或迁移前必须轮换 token 并清理/脱敏历史数据。注意：`TESTS.md` 的 2026-11-12 泄露扫描记录为“未发现明文”，与“历史上记录过真实 token”的已知情况存在时间差，不能据此认为当前数据安全。
+4. **[KNOWN_BUG] 历史日志记录过真实 token（执行器检查结论）**
+   本地执行器检查 `data/` 时报告历史日志中记录过真实 token（未上传）；该结论来自执行器检查，仓库内无可核验痕迹，分享前仍按已泄露风险处理并轮换 token。
 
 5. **[NEEDS_REVIEW] 公开 README 含基础设施信息**
-   README 含内网主机名、tailnet 域名、IP 与本地路径。这些属于基础设施信息而非密钥，但公开分享前应评估是否需要脱敏。
+   README 含内网主机名、tailnet 域名、回环地址 `127.0.0.1` 与本地路径。这些属于基础设施信息而非密钥，但公开分享前应评估是否需要脱敏。
 
 6. **[NEEDS_REVIEW] 文档口径不一致**
-   - Claude 登录状态：README 说明通过内部网关运行、无需 Anthropic 登录；`TESTS.md` 环境记录“独立 CLI 未登录”、`agent_info` 记录 `logged_in=false`；2026-11-13 的接管材料称“已登录”。实际可用性依赖内部 DeepSeek 网关，下次启动应以 `agent_info` 实测结果统一表述。
+   - Claude 登录状态：README 自身存在矛盾——一处说明通过内部网关运行、无需 Anthropic 登录，另一处又写 claude 须单独登录。2026-11-13 两次实测 `agent_info`（00:57 原始调用、01:20 connector 调用）均返回 `logged_in=true`；`TESTS.md` 中的 `logged_in=false` 已过时，以实测为准。
    - 任务日志格式：接管材料写作“每任务 JSONL”，实际代码为按行追加的文本 `.log` + `.prompt` + 元数据 JSON。
    - Cloudflare 状态：`TESTS.md` 的“未通过 / 未验证”表写着“未安装 cloudflared、未创建公网入口”，但同文件第 18–20 项已记录 Cloudflare HTTPS 验收通过，且 2026-11-13 正在使用 quick Tunnel。该表已过时，需要整理。
    - `--max-turns`：工具 schema 接受该参数，但 Claude Code 2.1.270 的 `--help` 中没有此参数，实际被忽略。
 
-7. **[TODO] 额度数据无法直接观测**
+7. **[长期约束] 额度数据无法直接观测**
    每日额度策略为总额的 10% 上限，但额度消耗无法直接观测；只能按保守估算控制，禁止在文档或汇报中伪造精确数字。
 
 ---
@@ -176,7 +177,7 @@ start-hidden.vbs     隐藏启动入口
 
 1. **P1 GUI 技术选型与产品需求确认**
    - 调研 Electron 与 Tauri 在 Windows 11、Node.js 22、现有 MCP 引擎复用、安装包体积、权限模型、自动更新等方面的差异。
-   - 产出决策文档与推荐方案，交由用户确认；确认前不锁定技术栈、不写大段 GUI 代码。
+   - 产出决策文档与推荐方案，交由用户确认；确认前不锁定技术栈，也不编写大段 GUI 代码。
    - 计划作为下一天的首个小任务执行。
 
 2. **P1 稳定公网入口**
@@ -198,15 +199,15 @@ start-hidden.vbs     隐藏启动入口
 ## G GitHub 同步状态
 
 - 仓库：https://github.com/mkmk56/agent-workbench
-- 可见性：公开
+- 可见性：公开（已在 GitHub 页面核实）
 - 默认分支：`main`
 - 接管前基线：`be2a86a` — `Initial commit: local MCP agent workbench server`
-- 基线推送时间：2026-11-13 01:25 CST
+- 基线提交时间：2026-11-13 01:25 CST
 - 基线追踪文件：27 个
 - 接管前工作区：干净
 - 本地被忽略目录：`data/`、`logs/`、`node_modules/`、`bin/`、`.certs-test/`、`workbench.env`
 
-本次接管新增 `RESUME.md` 与 `DAILY_LOG.md`，以一次提交推送到 `origin/main`。该提交的 hash 以 `git log -1` 与任务汇报为准（本文件无法记录自身所在提交的 hash）。
+本次接管新增 `RESUME.md` 与 `DAILY_LOG.md`，以一次提交推送到 `origin/main`。接管提交为 `db9999a`（`docs: add project takeover status and daily log`）；本次后续修正提交的 hash 以 `git log -1` 与任务汇报为准（本文件无法记录自身所在提交的 hash）。
 
 ---
 

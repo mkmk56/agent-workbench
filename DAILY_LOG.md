@@ -5,14 +5,14 @@
 
 ---
 
-## 2026-11-13（周四）
+## 2026-11-13（周五）
 
 ### 今日目标
 
 - 执行阶段一首次项目接管：建立项目长期状态记忆 `RESUME.md` 与每日研发日志 `DAILY_LOG.md`。
 - 核对仓库基线（分支、提交、工作区、GitHub 同步状态）。
 - 以一次提交把两个文档推送到 `origin/main`。
-- 今日不启动新的开发任务，不修改任何代码或配置。
+- 接管工作不启动新的开发任务（首次派单属于发布类任务，已另行完成），不修改任何代码或配置。
 
 ### 资源额度
 
@@ -44,38 +44,40 @@
 ### 测试与验证
 
 - **MCP 在线验证（今日已完成）**：
+  - 证据任务：`40d7e908-e68d-4161-8d36-39d414b7d742`。
   - `initialize` 返回 200。
   - `tools/list` 返回 8 个工具：`agent_info`、`task_start`、`task_send`、`task_status`、`task_logs`、`task_cancel`、`task_list`、`wait_for_task`。
-  - `agent_info` 返回的两个执行器符合预期。
-- **connector**：`custom.agent-workbench` 已连接。
-- **首次真实派单（今日已完成）**：通过工作台把本项目发布到 GitHub 公开仓库；任务耗时约 70 秒；claude tokens 输入 35215、输出 6215。
+  - `agent_info` 返回的两个执行器符合预期；00:57 原始调用与 01:20 connector 调用均返回 claude `logged_in=true`。
+- **connector**：`custom.agent-workbench` 已连接（01:20 connector 调用）。
+- **首次真实派单（今日已完成）**：任务 `c68b9d69-b138-42a7-88e1-401156e50e38`，2026-11-13 01:24–01:25 CST；通过工作台把本项目发布到 GitHub 公开仓库；耗时约 70 秒；claude tokens 输入 35215、输出 6215（单次任务用量，非每日额度余额）。
+- **首次派单审核**：审核任务 `e4753c1f-d077-401c-93de-782c0a853d9c`。
 - **历史验收**：`TESTS.md` 记录 2026-11-12 共 21 项验收通过（鉴权、工具列表、双执行器任务与续聊、并发、取消、崩溃恢复、tailnet 入口、看门狗、Cloudflare HTTPS、token 轮换）。
 - **本次文档提交验证**：
   - 提交前 `git status` 仅显示两个新增文件，无其他改动。
-  - 推送后核对本地 `HEAD` 与 `origin/main` 指向同一提交；提交 hash 见任务汇报与 `git log -1`。
+  - 推送后核对本地 `HEAD` 与 `origin/main` 指向同一提交；本次接管提交 hash 为 `db9999a`。
 
 ### GitHub 同步
 
-- 仓库：https://github.com/mkmk56/agent-workbench（公开）。
+- 仓库：https://github.com/mkmk56/agent-workbench（已在 GitHub 页面核实为公开）。
 - 分支：`main`。
-- 接管前基线：`be2a86a`，2026-11-13 01:25 CST 推送，27 个文件，工作区干净。
+- 接管前基线：`be2a86a`，2026-11-13 01:25 CST 提交，27 个文件，工作区干净。
 - 本次同步内容：新增 `RESUME.md`、`DAILY_LOG.md`，一次提交推送至 `origin/main`。
-- 本次提交 hash 无法写入自身文件，以 `git log -1` 或任务汇报为准。
+- 本次接管提交 hash：`db9999a`（`docs: add project takeover status and daily log`）。本次后续修正提交的 hash 以 `git log -1` 或任务汇报为准。
 - `workbench.env`、`data/`、`logs/` 等未进入仓库；`.gitignore` 已覆盖。
 
 ### 遗留问题
 
-1. **Cloudflare quick Tunnel URL 临时**：当前公网入口 `https://compete-cab-superintendent-reasonable.trycloudflare.com/mcp` 会随隧道重启变化，需换命名 Tunnel 获得固定 URL。
+1. **Cloudflare quick Tunnel URL 临时**：当前公网入口 `https://compete-cab-superintendent-reasonable.trycloudflare.com/mcp` 会在隧道重启后发生变化，需换用命名 Tunnel 获得固定 URL。
 2. **Tailscale HTTPS 证书无法签发**：Let's Encrypt ACME 超时；tailnet 仅保留 HTTP/80 备用入口，Muse 官方客户端不可用。
 3. **dsh 无原生续跑**：上游 0.1.0-rc.6 限制，当前依赖服务端拼接历史；`agent_info` 已标注 `resume_supported: false`。
-4. **历史 token 风险**：本地 `data/` 日志与 `workbench.db` 历史上记录过真实 token（未上传）；分享、备份或迁移前需轮换 token 并清理/脱敏。`TESTS.md` 2026-11-12 的扫描记录不能替代当前复核。
-5. **公开 README 含基础设施信息**：内网主机名、tailnet 域名、IP 与本地路径，非密钥，但公开分享前应评估脱敏。
+4. **历史 token 风险（执行器检查结论）**：本地执行器检查 `data/` 时报告历史日志中记录过真实 token（未上传）；该结论来自执行器检查，仓库内无可核验痕迹，分享前仍按已泄露风险处理并轮换 token。
+5. **公开 README 含基础设施信息**：内网主机名、tailnet 域名、回环地址 `127.0.0.1` 与本地路径，非密钥，但公开分享前应评估脱敏。
 6. **文档口径差异**：
-   - Claude 登录状态在 README、`TESTS.md`、接管材料中的表述不一致；实际可用性依赖内部 DeepSeek 网关，需以 `agent_info` 实测为准。
+   - Claude 登录状态在 README 中自相矛盾（一处说无需 Anthropic 登录，另一处说 claude 须单独登录）；2026-11-13 两次 `agent_info` 实测（00:57 原始调用、01:20 connector 调用）均返回 `logged_in=true`，`TESTS.md` 的 `false` 已过时，以实测为准。
    - 接管材料称“每任务 JSONL”，实际为按行追加的文本 `.log` + `.prompt` + 元数据 JSON。
    - `TESTS.md` 的“未通过 / 未验证”表称未安装 cloudflared，但同文件第 18–20 项已验收 Cloudflare HTTPS，该表已过时。
    - 工具 schema 接受 `--max-turns`，但 Claude Code 2.1.270 无此参数，实际被忽略。
-7. **额度不可观测**：每日 10% 上限无法直接计量，只能保守估算。今日只做接管初始化，未启动新开发任务。
+7. **长期约束：额度不可观测**：每日 10% 上限无法直接计量，只能保守估算。今日只做接管初始化，未启动新开发任务。
 
 ### 今日成果
 
@@ -83,7 +85,7 @@
 - 每日研发日志 `DAILY_LOG.md` 建立，形成可追加的记录模板。
 - 仓库基线、工具数量、执行器能力、持久化方式与部署入口完成复核。
 - 首次真实派单成果归档：GitHub 公开仓库发布成功，约 70 秒，claude tokens 输入 35215、输出 6215。
-- 两个文档已提交并推送到 `origin/main`，项目恢复入口就绪。
+- 两个文档已通过提交 `db9999a` 推送到 `origin/main`，项目恢复入口就绪。
 
 ### 下一次启动建议
 
@@ -94,3 +96,5 @@
 5. 推进 Cloudflare 命名 Tunnel，替换临时 URL；同步更新 connector 与 README。
 6. 在任何分享、备份或迁移动作前，先轮换 token 并清理历史数据中的敏感信息。
 7. 继续遵守每日 10% 额度上限，按保守估算控制用量。
+
+> 修正说明（接管后续修正）：原标题“2026-11-13（周四）”星期写错，已更正为“2026-11-13（周五）”。
