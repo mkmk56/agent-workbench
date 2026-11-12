@@ -1,0 +1,19 @@
+{
+  "name": "agent-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local MCP server that lets a cloud orchestrator dispatch tasks to Claude Code and DeepSeek Harness on this Windows machine.",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node --env-file-if-exists=workbench.env src/server.js",
+    "dev": "node --env-file-if-exists=workbench.env --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "cross-spawn": "^7.0.6"
+  }
+}
