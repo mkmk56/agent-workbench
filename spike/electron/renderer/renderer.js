@@ -147,6 +147,12 @@ async function loadInfo() {
     info.packaged ? 'packaged' : 'dev'
   ].join(' · ');
   byId('packagedBadge').textContent = info.packaged ? '打包版本' : '开发模式';
+  byId('aboutMeta').textContent = [
+    `版本 v${info.appVersion}`,
+    info.packaged ? '打包版本' : '开发模式',
+    `Electron ${info.electron}`,
+    `Node ${info.node}`
+  ].join(' · ');
   renderRunAsNode(info.runAsNode);
   byId('sourceSelect').value = info.existingTokenAvailable ? 'existing' : 'managed';
   renderUpdateState(await api.updateState());

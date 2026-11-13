@@ -11,10 +11,25 @@ spike/electron/
   main.js               Electron 主进程：窗口、引擎生命周期、/health、MCP 只读调用、更新
   preload.cjs           contextBridge（渲染进程不接触 Node / token）
   renderer/             原生 HTML/CSS/JS 界面
+  assets/branding/      品牌图标（从 design/brand-icon 原样复制，未重绘）
   scripts/measure-start.mjs  冷启动耗时测量（spawn 打包后的 exe 并计时）
   release/              electron-builder 产物（gitignored）
   artifacts/            截图与实测 JSON（gitignored）
 ```
+
+## 品牌图标集成
+
+图标方向 A「汇聚」的资产取自 `design/brand-icon` 提交 `62957d8`，原样复制、未改动图形结构与颜色：
+
+| 位置 | 使用的资产 |
+|---|---|
+| BrowserWindow 窗口图标 | `assets/branding/app-icon/agent-workbench.ico` |
+| 应用 exe / 任务栏 / 开始菜单快捷方式 | `win.icon` 同一 ICO；AppUserModelID `com.mkmk56.agent-workbench.spike` |
+| NSIS 安装包 / 卸载器 | `nsis.installerIcon`、`installerHeaderIcon`、`uninstallerIcon` 同一 ICO |
+| 主界面字标 | `assets/branding/logo/logo-inverse.svg` |
+| 关于区 | `assets/branding/app-icon/icon-256.png` |
+
+验证截图与 JSON 在 `artifacts/packaged-icon-integration/`（gitignored）。
 
 ## 运行
 

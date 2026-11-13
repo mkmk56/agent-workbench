@@ -27,7 +27,9 @@ body {
   border-bottom: 1px solid var(--line);
 }
 
-h1 { margin: 0; font-size: 19px; }
+.brand { display: flex; flex-direction: column; gap: 6px; }
+.brand-lockup { display: block; width: 220px; height: auto; }
+
 h2 { margin: 0; font-size: 15px; }
 h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted); font-weight: 600; }
 .muted { color: var(--muted); margin: 2px 0 0; }
@@ -122,3 +124,7 @@ tbody tr.selected { background: var(--card-2); }
   overflow: auto;
 }
 .logbox.tall { max-height: 260px; }
+
+.about-brand { display: flex; align-items: center; gap: 16px; }
+.about-icon { width: 64px; height: 64px; flex: none; }
+.about-brand h2 { font-size: 16px; }

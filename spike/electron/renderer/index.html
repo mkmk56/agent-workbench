@@ -8,8 +8,8 @@
 </head>
 <body>
   <header class="topbar">
-    <div>
-      <h1>Agent Workbench · Electron Spike</h1>
+    <div class="brand">
+      <img class="brand-lockup" src="../assets/branding/logo/logo-inverse.svg" alt="Agent Workbench">
       <p class="muted" id="versionLine">读取中…</p>
     </div>
     <span class="badge" id="packagedBadge">—</span>
@@ -74,6 +74,17 @@
       </div>
       <p class="muted" id="updateStatus">仅在打包版本中可用。</p>
       <pre class="logbox" id="updateEvents"></pre>
+    </section>
+
+    <section class="card" id="about">
+      <div class="about-brand">
+        <img class="about-icon" src="../assets/branding/app-icon/icon-256.png" alt="">
+        <div>
+          <h2>Agent Workbench</h2>
+          <p class="muted">AI 编程智能体的任务控制台 · Electron GUI Spike</p>
+          <p class="muted" id="aboutMeta">版本读取中…</p>
+        </div>
+      </div>
     </section>
   </main>
 

@@ -11,6 +11,8 @@ const isPackaged = app.isPackaged;
 const devRoot = isPackaged ? null : resolve(__dirname, '..', '..');
 const engineRoot = isPackaged ? join(process.resourcesPath, 'engine') : devRoot;
 const engineEntry = join(engineRoot, 'src', 'server.js');
+const APP_USER_MODEL_ID = 'com.mkmk56.agent-workbench.spike';
+const appIconPath = join(__dirname, 'assets', 'branding', 'app-icon', 'agent-workbench.ico');
 const spikePort = Number(process.env.SPIKE_ENGINE_PORT || 18080);
 const existingPort = Number(process.env.SPIKE_EXISTING_PORT || 8080);
 const isSmoke = process.argv.includes('--smoke-test');
@@ -19,6 +21,8 @@ const isUpdateCheck = process.argv.includes('--update-check');
 const isPrintVersion = process.argv.includes('--print-version');
 const proxyRules = process.env.SPIKE_PROXY || '';
 const engineToken = randomBytes(24).toString('hex');
+
+app.setAppUserModelId(APP_USER_MODEL_ID);
 
 let win = null;
 let healthTimer = null;
@@ -447,6 +451,7 @@ function createWindow() {
     width: 1180,
     height: 800,
     title: `Agent Workbench Spike ${app.getVersion()}`,
+    icon: appIconPath,
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -473,6 +478,9 @@ async function runSmoke() {
     chrome: process.versions.chrome,
     engineRoot,
     spikePort,
+    iconPath: appIconPath,
+    iconExists: existsSync(appIconPath),
+    appUserModelId: APP_USER_MODEL_ID,
     attachOnly: isAttachOnly,
     appReadyMs: Math.round(process.uptime() * 1000),
     runAsNode: null,
@@ -527,6 +535,13 @@ async function runSmoke() {
     const screenshot = join(outDir, 'smoke.png');
     writeFileSync(screenshot, image.toPNG());
     result.screenshot = screenshot;
+
+    await win.webContents.executeJavaScript("document.getElementById('about').scrollIntoView({ block: 'end' }); true");
+    await delay(300);
+    const aboutImage = await win.webContents.capturePage();
+    const aboutScreenshot = join(outDir, 'about.png');
+    writeFileSync(aboutScreenshot, aboutImage.toPNG());
+    result.aboutScreenshot = aboutScreenshot;
   } catch (error) {
     result.screenshotError = error.message;
   }
@@ -606,6 +621,9 @@ ipcMain.handle('app:info', async () => ({
   engineRoot,
   engineEntry,
   engineEntryExists: existsSync(engineEntry),
+  appUserModelId: APP_USER_MODEL_ID,
+  iconPath: appIconPath,
+  iconExists: existsSync(appIconPath),
   spikePort,
   existingPort,
   existingTokenAvailable: Boolean(readExistingToken()),

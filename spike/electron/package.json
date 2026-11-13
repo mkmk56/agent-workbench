@@ -30,6 +30,7 @@
       "main.js",
       "preload.cjs",
       "renderer/**/*",
+      "assets/**/*",
       "package.json"
     ],
     "extraResources": [
@@ -50,13 +51,17 @@
       "target": [
         "nsis"
       ],
+      "icon": "assets/branding/app-icon/agent-workbench.ico",
       "artifactName": "AgentWorkbenchSpike-Setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": true,
       "perMachine": false,
       "deleteAppDataOnUninstall": false,
-      "runAfterFinish": false
+      "runAfterFinish": false,
+      "installerIcon": "assets/branding/app-icon/agent-workbench.ico",
+      "installerHeaderIcon": "assets/branding/app-icon/agent-workbench.ico",
+      "uninstallerIcon": "assets/branding/app-icon/agent-workbench.ico"
     },
     "publish": [
       {
