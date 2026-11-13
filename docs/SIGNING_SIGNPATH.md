@@ -31,7 +31,7 @@
 | # | 官方条件（SignPath Foundation terms） | 本项目现状 | 状态 |
 |---|---|---|---|
 | 1 | 无恶意软件或潜在不受欢迎程序 | 项目是本地 AI 任务工作台，不含恶意代码；但具备“远程派单 → 本机执行 AI CLI（含完全权限模式）”的能力，需在申请材料中如实说明安全模型。 | 满足（需说明） |
-| 2 | 使用 OSI 认可的开源许可证，且所有组件无商业双许可 | 2026-11-13 新增根目录 MIT `LICENSE`（Copyright (c) 2026 mkmk56）；项目无付费版/商业双许可。第三方 AI 服务是用户自行配置的外部依赖，不改变项目许可证。 | 满足（推送后需确认 GitHub 识别为 MIT） |
+| 2 | 使用 OSI 认可的开源许可证，且所有组件无商业双许可 | 2026-11-13 新增根目录 MIT `LICENSE`（Copyright (c) 2026 mkmk56）；项目无付费版/商业双许可。第三方 AI 服务是用户自行配置的外部依赖，不改变项目许可证。GitHub 许可证 API 已返回 `MIT`。 | 满足 |
 | 3 | 不含专有、非开源组件（系统库除外） | 项目源码为 MIT；`package-lock.json` 中 95 个依赖的许可证字段均为 MIT / ISC / BSD-2 / BSD-3，无未知项。`claude`、`dsh` 是用户本机另行安装的外部执行器，**不得打包进安装包**；Electron/Node 属开源运行时。正式打包仍需复核 `extraResources`，确保未混入专有二进制。 | 基本满足（打包前复核） |
 | 4 | 项目处于活跃维护状态 | 单人维护，2026-11-13 仍在开发；但仓库创建仅 1 天，维护历史很短。 | 形式满足（证据弱） |
 | 5 | 已以“待签名形态”发布 | 公开 Release `v0.0.2` 含 NSIS 安装包、blockmap、`latest.yml`，形态就是待签名的 Windows 安装包。但该 Release 由未提交工作区构建，tag `v0.0.2` 指向 `581725b`，产物与源码不可追溯。 | 待补（有发布，但不可追溯） |
@@ -148,7 +148,7 @@
 
 按顺序完成：
 
-1. [ ] 推送 MIT `LICENSE`，确认 GitHub 仓库页识别为 MIT。
+1. [x] 推送 MIT `LICENSE`，确认 GitHub 仓库页识别为 MIT（2026-11-13 已通过 GitHub 许可证 API 核实为 `MIT`）。
 2. [ ] 在 README 首页增加 **Code signing policy** 小节（使用第 6 节草稿），并补充隐私政策/数据流说明。
 3. [ ] 正式 GUI 工程将产品名从 `AgentWorkbenchSpike` 改为正式名称，版本号统一。
 4. [ ] 建立 GitHub Actions 构建流水线，从 tag 构建 NSIS 安装包，上传 artifact，资产齐全（安装包、blockmap、`latest.yml`）。

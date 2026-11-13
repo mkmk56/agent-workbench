@@ -609,7 +609,7 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 | 项目 | 结论 |
 |---|---|
 | 公开仓库 | 满足。GitHub API 返回 `private=false`、`visibility=public`。 |
-| OSI 许可证 | 满足（本次补 MIT）。推送前 GitHub API `license=null`；推送后需复核是否识别为 MIT。 |
+| OSI 许可证 | 满足（本次补 MIT）。推送前 GitHub API `license=null`；推送后复核：GitHub 许可证 API 返回 `MIT`（MIT License，`LICENSE`，1062 B）。 |
 | 非商业 / 无双许可 | 满足。项目无付费版或商业双许可；外部 AI 服务属用户自行配置的依赖。 |
 | 无专有组件 | 基本满足。`package-lock.json` 95 个依赖许可证均为 MIT/ISC/BSD-2/BSD-3；`claude`/`dsh` 为外部执行器，不得打包进安装包；正式打包前仍需复核。 |
 | 活跃维护 | 形式满足但证据弱：单人维护、仓库 2026-11-12 创建。 |
@@ -637,8 +637,8 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 - 仓库：https://github.com/mkmk56/agent-workbench
 - 分支：`main`。
 - 本次同步内容：`docs/SIGNING_SIGNPATH.md`（新增）、`docs/MVP_SCOPE.md`、`RESUME.md`、`DAILY_LOG.md`；`LICENSE` 已由 `7dc4474` 入库，本次仅核对。
-- 本次提交 hash：以 `git log -1` 与任务汇报为准（本文件无法记录自身所在提交的 hash）。
-- 推送经系统代理 `127.0.0.1:7897`；推送后用 `git ls-remote origin refs/heads/main` 核对远程 HEAD。
+- 本次主提交：`9e4ba3c`（`docs: adopt SignPath signing plan and prepare application`）；许可证识别补充提交的 hash 以 `git log -1` 与任务汇报为准（本文件无法记录自身所在提交的 hash）。
+- 推送经系统代理 `127.0.0.1:7897`；推送后用 `git ls-remote origin refs/heads/main` 核对远程 HEAD，远程与本地一致。
 
 ### 遗留问题
 
