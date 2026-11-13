@@ -26,9 +26,10 @@ npm start
 
 开发模式默认：
 
-- 主进程可用 Electron 自带 Node（`ELECTRON_RUN_AS_NODE=1`）或系统 Node 启动 `../../src/server.js`，端口 `18080`，独立 DB `data/spike/workbench.db` 与日志 `logs/spike`，不会干扰 `:8080` 上的正式引擎。
-- “现有引擎 :8080（只读）”从 `../../workbench.env`（或 `SPIKE_EXISTING_ENV`）读取 token，token 只留在主进程，渲染进程不可见。
-- 任务与日志通过 MCP `tools/call`（`task_list` / `task_logs`）读取，不直接读 SQLite。
+- 主进程可用 Electron 自带 Node（`ELECTRON_RUN_AS_NODE=1`）或系统 Node 启动 `../../src/server.js`，端口 `18080`，独立 DB `data/spike/workbench.db` 与日志 `logs/spike`；不写入、不改动 `:8080` 正式引擎的状态，仅在 attach 模式下对它做只读 MCP 调用（`task_list` / `task_logs`）。
+- 自管引擎的 token 由主进程 `randomBytes(24)` 现场生成并注入子进程环境；“现有引擎 :8080（只读）”的 token 才从 `../../workbench.env`（或 `SPIKE_EXISTING_ENV`）读取。token 只留在主进程，渲染进程不可见。
+- **打包版 attach 必须设置 `SPIKE_EXISTING_ENV`**：打包后 `devRoot` 为 `null`，默认路径为空，未设置该变量时读取 token 失败并报 `existing engine token not found`（`artifacts/startup-smoke.json`、`postupdate-smoke.json` 即该失败态证据）。
+- 任务与日志通过 MCP `tools/call`（`task_list` / `task_logs`）读取，不直接读 SQLite。`tools/list` 已在 `:18080` 隔离引擎上实测并落盘到 `artifacts/tools-list.json`（8 个工具）。
 
 ## 验证命令
 
@@ -61,6 +62,7 @@ node scripts\measure-start.mjs --exe "%LOCALAPPDATA%\Programs\Agent Workbench Sp
 ## 已知限制（spike 范围）
 
 - 无代码签名，SmartScreen 会警告。
+- 打包版 attach 现有 `:8080` 引擎依赖 `SPIKE_EXISTING_ENV`，否则读不到 token；这是 spike 的已知限制，不是正式产品行为。
 - 主进程无自动更新失败回滚。
 - 引擎数据目录跟随 `src/config.js` 的 root，安装在 per-user 目录下；正式产品应改为 `app.getPath('userData')`。
 - UI 无框架、无托盘、无单实例之外的进程归属设计。
