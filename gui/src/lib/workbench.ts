@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { AppInfo, EngineAgent, EngineResult, OperationResult } from '../types';
+import type {
+  AppInfo,
+  EngineAgent,
+  EngineResult,
+  OperationResult,
+  UpdateChannel,
+  UpdateState,
+} from '../types';
 
 export const FALLBACK_APP_INFO: AppInfo = {
   name: 'Agent Workbench',
@@ -89,6 +96,91 @@ export function platformLabel(platform: string, arch: string): string {
   };
   const name = names[platform] ?? platform;
   return arch ? `${name} · ${arch}` : name;
+}
+
+export const FALLBACK_UPDATE_STATE: UpdateState = {
+  supported: false,
+  channel: 'stable',
+  phase: 'unsupported',
+  currentVersion: '0.1.0',
+  availableVersion: null,
+  releaseDate: null,
+  progressPercent: null,
+  bytesPerSecond: null,
+  transferred: null,
+  total: null,
+  message: '浏览器预览：主进程未连接。',
+  checkedAt: null,
+  canCheck: false,
+  canDownload: false,
+  canInstall: false,
+};
+
+export function useUpdateState(): {
+  update: UpdateState;
+  check: () => Promise<UpdateState>;
+  download: () => Promise<UpdateState>;
+  install: () => Promise<OperationResult>;
+  setChannel: (channel: UpdateChannel) => Promise<UpdateState>;
+} {
+  const [update, setUpdate] = useState<UpdateState>(FALLBACK_UPDATE_STATE);
+
+  useEffect(() => {
+    if (!window.workbench) {
+      return;
+    }
+    let alive = true;
+    void window.workbench.getUpdateState().then((next) => {
+      if (alive) {
+        setUpdate(next);
+      }
+    });
+    const unsubscribe = window.workbench.onUpdateState((next) => {
+      if (alive) {
+        setUpdate(next);
+      }
+    });
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, []);
+
+  const check = useCallback(async () => {
+    if (!window.workbench) {
+      return update;
+    }
+    const next = await window.workbench.checkForUpdates();
+    setUpdate(next);
+    return next;
+  }, [update]);
+
+  const download = useCallback(async () => {
+    if (!window.workbench) {
+      return update;
+    }
+    const next = await window.workbench.downloadUpdate();
+    setUpdate(next);
+    return next;
+  }, [update]);
+
+  const install = useCallback(async (): Promise<OperationResult> => {
+    if (!window.workbench) {
+      return { ok: false, error: NO_MAIN_PROCESS };
+    }
+    return window.workbench.installUpdate();
+  }, []);
+
+  const setChannel = useCallback(async (channel: UpdateChannel) => {
+    if (!window.workbench) {
+      return update;
+    }
+    const next = await window.workbench.setUpdateChannel(channel);
+    setUpdate(next);
+    return next;
+  }, [update]);
+
+  return { update, check, download, install, setChannel };
 }
 
 const NO_MAIN_PROCESS = '主进程未连接（浏览器预览）。';

@@ -3,7 +3,8 @@ import logoInverse from '@brand/logo/logo-inverse.svg';
 import logoPrimary from '@brand/logo/logo-primary.svg';
 import { useState } from 'react';
 import { Notice } from '../components/Layout';
-import { openExternal, platformLabel, useAppInfo } from '../lib/workbench';
+import { UPDATE_PHASE_LABELS, formatBytes } from '../lib/labels';
+import { openExternal, platformLabel, useAppInfo, useUpdateState } from '../lib/workbench';
 import { AppBadge, AppButton, AppStatus } from '../ui/astryx';
 
 const REPO_URL = 'https://github.com/mkmk56/agent-workbench';
@@ -12,7 +13,31 @@ const ASTRYX_URL = 'https://github.com/meta/astryx';
 
 export function AboutPage() {
   const { info } = useAppInfo();
+  const updates = useUpdateState();
   const [notice, setNotice] = useState<string | null>(null);
+
+  const handleUpdateCheck = async () => {
+    const next = await updates.check();
+    if (next.phase === 'error') {
+      setNotice(next.message ?? '检查更新失败');
+    } else {
+      setNotice(null);
+    }
+  };
+
+  const handleUpdateDownload = async () => {
+    const next = await updates.download();
+    if (next.phase === 'error') {
+      setNotice(next.message ?? '下载更新失败');
+    }
+  };
+
+  const handleUpdateInstall = async () => {
+    const result = await updates.install();
+    if (!result.ok) {
+      setNotice(result.error ?? '安装更新失败');
+    }
+  };
 
   const open = async (url: string) => {
     const result = await openExternal(url);
@@ -44,7 +69,7 @@ export function AboutPage() {
 
         {notice != null && (
           <div style={{ marginBottom: '18px' }}>
-            <Notice tone="warning" title="无法打开链接">
+            <Notice tone="warning" title="操作未完成">
               {notice}
             </Notice>
           </div>
@@ -80,7 +105,7 @@ export function AboutPage() {
               </div>
               <div className="meta-row">
                 <dt>更新源</dt>
-                <dd>GitHub Releases（未接入）</dd>
+                <dd>GitHub Releases{info.update.supported ? '' : '（仅打包版可用）'}</dd>
               </div>
             </dl>
           </section>
@@ -88,21 +113,61 @@ export function AboutPage() {
           <section className="about__section" aria-labelledby="update-title">
             <h2 id="update-title">更新</h2>
             <p>
-              计划在启动时自动检查更新，并通过 GitHub Releases 下载安装。更新管道尚未实现，本轮无法检查或安装更新。
+              打包版启动后自动检查 GitHub Releases，也可手动检查。更新由 electron-updater
+              下载，并通过 NSIS 静默安装；开发构建不检查更新。
             </p>
             <p style={{ marginTop: 8 }}>
               安装包暂未签名，首次运行可能触发 Windows SmartScreen 提示。
             </p>
             <div className="setting-inline" style={{ marginTop: 16 }}>
-              <AppStatus tone="neutral" label="更新管道未接入" />
-              <AppButton
-                label="检查更新"
-                size="sm"
-                icon={<RefreshCw size={14} />}
-                isDisabled
-                title="更新管道尚未接入"
+              <AppStatus
+                tone={updates.update.phase === 'error' ? 'error' : info.update.supported ? 'success' : 'neutral'}
+                label={
+                  info.update.supported
+                    ? UPDATE_PHASE_LABELS[updates.update.phase]
+                    : '仅打包版可用'
+                }
               />
+              {updates.update.phase === 'available' ? (
+                <AppButton
+                  label="下载更新"
+                  size="sm"
+                  icon={<RefreshCw size={14} />}
+                  onClick={() => void handleUpdateDownload()}
+                />
+              ) : updates.update.phase === 'downloaded' ? (
+                <AppButton
+                  label="安装并退出"
+                  size="sm"
+                  icon={<RefreshCw size={14} />}
+                  onClick={() => void handleUpdateInstall()}
+                />
+              ) : (
+                <AppButton
+                  label={updates.update.phase === 'checking' ? '检查中…' : '检查更新'}
+                  size="sm"
+                  icon={<RefreshCw size={14} />}
+                  isDisabled={
+                    !updates.update.canCheck ||
+                    updates.update.phase === 'checking' ||
+                    updates.update.phase === 'downloading' ||
+                    updates.update.phase === 'installing'
+                  }
+                  onClick={() => void handleUpdateCheck()}
+                />
+              )}
             </div>
+            {updates.update.phase === 'downloading' && (
+              <p className="field__hint" style={{ marginTop: 8 }}>
+                {updates.update.progressPercent ?? 0}% ·{' '}
+                {formatBytes(updates.update.transferred)} / {formatBytes(updates.update.total)}
+              </p>
+            )}
+            {updates.update.message != null && (
+              <p className="field__hint" style={{ marginTop: 8 }}>
+                {updates.update.message}
+              </p>
+            )}
           </section>
         </div>
 

@@ -1,0 +1,184 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'SemVer without the leading v (e.g. 0.1.0-rc.2)'
+        required: true
+        type: string
+      tag:
+        description: 'Release tag (e.g. v0.1.0-rc.2)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark the GitHub Release as a prerelease'
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name }}-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: gui
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: Resolve version and tag
+        id: meta
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+            TAG="${{ inputs.tag }}"
+            PRERELEASE="${{ inputs.prerelease }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#v}"
+            if [[ "$VERSION" == *-* ]]; then
+              PRERELEASE=true
+            else
+              PRERELEASE=false
+            fi
+          fi
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid semver version: $VERSION" >&2
+            exit 1
+          fi
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "Tag $TAG does not match version $VERSION (expected v$VERSION)" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "Resolved version=$VERSION tag=$TAG prerelease=$PRERELEASE"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set package version
+        shell: bash
+        run: npm version "${{ steps.meta.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Build application
+        run: npm run build
+
+      - name: Package NSIS installer
+        run: npx electron-builder --win nsis --publish never
+
+      - name: Verify local release assets
+        run: node scripts/verify-release.mjs --dir release --version "${{ steps.meta.outputs.version }}"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-workbench-${{ steps.meta.outputs.version }}
+          path: |
+            gui/release/*.exe
+            gui/release/*.exe.blockmap
+            gui/release/latest.yml
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish GitHub Release assets
+        working-directory: .
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+          NOTES: |
+            Automated build from `.github/workflows/release.yml`.
+
+            - Commit: ${{ github.sha }}
+            - Version: ${{ steps.meta.outputs.version }}
+            - Assets are validated by `gui/scripts/verify-release.mjs` before and after upload.
+        run: |
+          set -euo pipefail
+          FILES=(
+            "gui/release/AgentWorkbench-Setup-${VERSION}.exe"
+            "gui/release/AgentWorkbench-Setup-${VERSION}.exe.blockmap"
+            "gui/release/latest.yml"
+          )
+          for file in "${FILES[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "Missing release asset: $file" >&2
+              exit 1
+            fi
+          done
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${FILES[@]}" --clobber
+            if [ "$PRERELEASE" = "true" ]; then
+              gh release edit "$TAG" --title "Agent Workbench $VERSION" --prerelease
+            else
+              gh release edit "$TAG" --title "Agent Workbench $VERSION"
+            fi
+          else
+            ARGS=(--target "$GITHUB_SHA" --title "Agent Workbench $VERSION" --notes "$NOTES")
+            if [ "$PRERELEASE" = "true" ]; then
+              ARGS+=(--prerelease)
+            fi
+            gh release create "$TAG" "${FILES[@]}" "${ARGS[@]}"
+          fi
+
+      - name: Verify assets downloaded from the GitHub Release
+        working-directory: .
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          EXPECT_PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          rm -rf release-remote
+          gh release download "$TAG" --dir release-remote
+          node gui/scripts/verify-release.mjs --dir release-remote --version "$VERSION"
+          gh release view "$TAG" --json tagName,isPrerelease,assets > release-remote/release.json
+          node -e '
+            const fs = require("node:fs");
+            const info = JSON.parse(fs.readFileSync("release-remote/release.json", "utf8"));
+            const expected = ["AgentWorkbench-Setup-" + process.env.VERSION + ".exe", "AgentWorkbench-Setup-" + process.env.VERSION + ".exe.blockmap", "latest.yml"];
+            const names = info.assets.map((asset) => asset.name);
+            for (const name of expected) {
+              if (!names.includes(name)) {
+                throw new Error("release asset missing: " + name);
+              }
+            }
+            const wantPre = process.env.EXPECT_PRERELEASE === "true";
+            if (info.isPrerelease !== wantPre) {
+              throw new Error("isPrerelease=" + info.isPrerelease + " expected " + wantPre);
+            }
+            console.log("[verify-release] remote OK " + JSON.stringify({ tag: info.tagName, isPrerelease: info.isPrerelease, assets: names }));
+          '

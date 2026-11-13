@@ -16,12 +16,16 @@
     "build": "npm run theme:build && npm run build:main && npm run build:renderer",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
     "start": "electron .",
-    "preview": "npm run build && electron ."
+    "preview": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --win nsis --publish never",
+    "verify:release": "node scripts/verify-release.mjs",
+    "release:local": "npm run dist && npm run verify:release"
   },
   "dependencies": {
     "@astryxdesign/core": "0.7.15",
     "@astryxdesign/theme-neutral": "0.7.15",
     "@stylexjs/stylex": "0.19.2",
+    "electron-updater": "6.8.11",
     "lucide-react": "1.72.0",
     "react": "19.3.1",
     "react-dom": "19.3.1"
@@ -34,8 +38,64 @@
     "concurrently": "10.0.7",
     "cross-env": "10.1.0",
     "electron": "44.11.3",
+    "electron-builder": "26.18.0",
     "typescript": "5.9.3",
     "vite": "7.3.8",
     "wait-on": "9.5.1"
+  },
+  "build": {
+    "appId": "com.agentworkbench.gui",
+    "productName": "Agent Workbench",
+    "copyright": "Copyright © 2026 Agent Workbench",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../src",
+        "to": "engine/src"
+      },
+      {
+        "from": "../node_modules",
+        "to": "engine/node_modules"
+      },
+      {
+        "from": "../package.json",
+        "to": "engine/package.json"
+      },
+      {
+        "from": "../assets/branding",
+        "to": "assets/branding"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "../assets/branding/app-icon/agent-workbench.ico",
+      "artifactName": "AgentWorkbench-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true,
+      "installerIcon": "../assets/branding/app-icon/agent-workbench.ico",
+      "installerHeaderIcon": "../assets/branding/app-icon/agent-workbench.ico",
+      "uninstallerIcon": "../assets/branding/app-icon/agent-workbench.ico"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "mkmk56",
+        "repo": "agent-workbench",
+        "releaseType": "prerelease"
+      }
+    ]
   }
 }

@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { UpdateChannel, UpdateState } from './update';
 
 const workbench = {
   getAppInfo: () => ipcRenderer.invoke('app:info'),
@@ -24,6 +25,20 @@ const workbench = {
   sendTask: (taskId: string, prompt: string) =>
     ipcRenderer.invoke('engine:task-send', taskId, prompt),
   cancelTask: (taskId: string) => ipcRenderer.invoke('engine:task-cancel', taskId),
+  getUpdateState: (): Promise<UpdateState> => ipcRenderer.invoke('update:state'),
+  checkForUpdates: (): Promise<UpdateState> => ipcRenderer.invoke('update:check'),
+  downloadUpdate: (): Promise<UpdateState> => ipcRenderer.invoke('update:download'),
+  installUpdate: () =>
+    ipcRenderer.invoke('update:install') as Promise<{ ok: boolean; error?: string }>,
+  setUpdateChannel: (channel: UpdateChannel): Promise<UpdateState> =>
+    ipcRenderer.invoke('update:set-channel', channel),
+  onUpdateState: (callback: (state: UpdateState) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: UpdateState) => callback(state);
+    ipcRenderer.on('update:state', listener);
+    return () => {
+      ipcRenderer.removeListener('update:state', listener);
+    };
+  },
 };
 
 contextBridge.exposeInMainWorld('workbench', workbench);

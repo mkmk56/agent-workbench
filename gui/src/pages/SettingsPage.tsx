@@ -11,8 +11,14 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { Notice } from '../components/Layout';
 import { startEngine, stopEngine, useAgentInfo, useEngineStatus } from '../lib/engine';
-import { formatClock, formatUptime } from '../lib/labels';
-import { testToken, useAppInfo } from '../lib/workbench';
+import {
+  UPDATE_PHASE_LABELS,
+  formatBytes,
+  formatClock,
+  formatUptime,
+} from '../lib/labels';
+import { testToken, useAppInfo, useUpdateState } from '../lib/workbench';
+import type { UpdateChannel } from '../types';
 import {
   AlertDialog,
   AppBadge,
@@ -37,13 +43,13 @@ const DEFAULT_STATE = {
   autoStart: true,
   proxy: 'system',
   autoUpdate: true,
-  channel: 'stable',
 };
 
 export function SettingsPage() {
   const { info, refresh } = useAppInfo();
   const engine = useEngineStatus(5_000);
   const agentsState = useAgentInfo(30_000);
+  const updates = useUpdateState();
   const [activeSection, setActiveSection] = useState<SectionId>('credentials');
   const [tokenStored, setTokenStored] = useState<boolean | null>(null);
   const [editingToken, setEditingToken] = useState(false);
@@ -62,7 +68,6 @@ export function SettingsPage() {
   const [autoStart, setAutoStart] = useState(DEFAULT_STATE.autoStart);
   const [proxy, setProxy] = useState(DEFAULT_STATE.proxy);
   const [autoUpdate, setAutoUpdate] = useState(DEFAULT_STATE.autoUpdate);
-  const [channel, setChannel] = useState(DEFAULT_STATE.channel);
 
   const stored = tokenStored ?? info.tokenStored;
   const encryptionAvailable = info.encryptionAvailable;
@@ -200,6 +205,27 @@ export function SettingsPage() {
     }
   };
 
+  const handleUpdateCheck = async () => {
+    const next = await updates.check();
+    if (next.phase === 'error') {
+      setNotice({ tone: 'error', title: '检查更新失败', text: next.message ?? '未知错误。' });
+    }
+  };
+
+  const handleUpdateDownload = async () => {
+    const next = await updates.download();
+    if (next.phase === 'error') {
+      setNotice({ tone: 'error', title: '下载更新失败', text: next.message ?? '未知错误。' });
+    }
+  };
+
+  const handleUpdateInstall = async () => {
+    const result = await updates.install();
+    if (!result.ok) {
+      setNotice({ tone: 'error', title: '安装更新失败', text: result.error ?? '未知错误。' });
+    }
+  };
+
   const handleStopEngine = async () => {
     setEngineStopOpen(false);
     setEngineBusy('stop');
@@ -248,7 +274,7 @@ export function SettingsPage() {
         <div>
           <h1 className="page-title">设置</h1>
           <p className="page-subtitle">
-            凭据、引擎生命周期、执行器状态与任务 IPC 已接入；更新管道与非凭据配置持久化未接入。
+            凭据、引擎生命周期、执行器状态、任务 IPC 与更新管道已接入；非凭据配置持久化未接入。
           </p>
         </div>
       </div>
@@ -256,7 +282,7 @@ export function SettingsPage() {
       <AppBanner
         status="info"
         title="本次接入范围"
-        description="Token 使用 safeStorage 加密保存；引擎启停、健康检查、执行器与任务数据来自主进程和本地引擎。更新管道、非凭据配置持久化、日志虚拟列表尚未接入。"
+        description="Token 使用 safeStorage 加密保存；引擎启停、健康检查、执行器与任务数据来自主进程和本地引擎。更新通过 GitHub Releases 检查与安装；非凭据配置持久化、日志虚拟列表尚未接入。"
       />
 
       {notice != null && (
@@ -651,8 +677,12 @@ export function SettingsPage() {
                 更新
               </h2>
               <AppStatus
-                tone={info.update.supported ? 'success' : 'neutral'}
-                label={info.update.supported ? '已接入' : '未接入'}
+                tone={updates.update.phase === 'error' ? 'error' : info.update.supported ? 'success' : 'neutral'}
+                label={
+                  info.update.supported
+                    ? UPDATE_PHASE_LABELS[updates.update.phase]
+                    : '仅打包版可用'
+                }
               />
             </div>
             <div className="section__body settings-section__body">
@@ -663,11 +693,12 @@ export function SettingsPage() {
                 </div>
                 <div className="setting-control">
                   <AppStatus
-                    tone={info.update.supported ? 'success' : 'neutral'}
-                    label={info.update.supported ? '可用' : '未接入'}
+                    tone={updates.update.phase === 'error' ? 'error' : info.update.supported ? 'success' : 'neutral'}
+                    label={info.update.supported ? 'GitHub Releases' : '未接入'}
                   />
                   <p className="field__hint">
-                    状态由主进程提供；通道 {info.update.channel}，更新源 GitHub Releases。
+                    当前版本 v{info.version}；通道{' '}
+                    {updates.update.channel === 'stable' ? '稳定版' : '预发布版'}。
                   </p>
                 </div>
               </div>
@@ -676,7 +707,7 @@ export function SettingsPage() {
                 <div>
                   <div className="setting-label">自动检查更新</div>
                   <div className="setting-desc">
-                    启动时检查 GitHub Releases；发现新版本后提示下载与安装。
+                    打包版启动 8 秒后检查 GitHub Releases；发现新版本后由用户确认下载与安装。
                   </div>
                 </div>
                 <div className="setting-control">
@@ -690,14 +721,19 @@ export function SettingsPage() {
               <div className="setting-row">
                 <div>
                   <div className="setting-label">更新通道</div>
-                  <div className="setting-desc">稳定版只接收正式发布；预发布版用于验证更新流程。</div>
+                  <div className="setting-desc">
+                    稳定版只接收正式发布；预发布版接收 rc/beta 等测试版本。通道仅本次运行有效。
+                  </div>
                 </div>
                 <div className="setting-control">
                   <select
                     className="select"
                     aria-label="更新通道"
-                    value={channel}
-                    onChange={(event) => setChannel(event.target.value)}
+                    value={updates.update.channel}
+                    disabled={!info.update.supported}
+                    onChange={(event) => {
+                      void updates.setChannel(event.target.value as UpdateChannel);
+                    }}
                   >
                     <option value="stable">稳定版</option>
                     <option value="prerelease">预发布版</option>
@@ -709,20 +745,48 @@ export function SettingsPage() {
                 <div>
                   <div className="setting-label">当前版本</div>
                   <div className="setting-desc">
-                    安装包暂未签名，Windows SmartScreen 首次运行时会提示；自动更新管道尚未实现。
+                    安装包暂未签名，Windows SmartScreen 首次运行时会提示；更新安装为静默 NSIS。
                   </div>
                 </div>
                 <div className="setting-control">
                   <div className="setting-inline">
                     <span className="mono">v{info.version}</span>
-                    <AppButton
-                      label="检查更新"
-                      size="sm"
-                      isDisabled
-                      title="更新管道尚未接入"
-                    />
+                    {updates.update.phase === 'available' ? (
+                      <AppButton
+                        label="下载更新"
+                        size="sm"
+                        onClick={() => void handleUpdateDownload()}
+                      />
+                    ) : updates.update.phase === 'downloaded' ? (
+                      <AppButton
+                        label="安装并退出"
+                        size="sm"
+                        onClick={() => void handleUpdateInstall()}
+                      />
+                    ) : (
+                      <AppButton
+                        label={updates.update.phase === 'checking' ? '检查中…' : '检查更新'}
+                        size="sm"
+                        isDisabled={
+                          !updates.update.canCheck ||
+                          updates.update.phase === 'checking' ||
+                          updates.update.phase === 'downloading' ||
+                          updates.update.phase === 'installing'
+                        }
+                        onClick={() => void handleUpdateCheck()}
+                      />
+                    )}
                   </div>
-                  <p className="field__hint">本轮不实现 GitHub Actions 发布流水线与更新验证。</p>
+                  {updates.update.phase === 'downloading' && (
+                    <p className="field__hint">
+                      {updates.update.progressPercent ?? 0}% ·{' '}
+                      {formatBytes(updates.update.transferred)} / {formatBytes(updates.update.total)} ·{' '}
+                      {formatBytes(updates.update.bytesPerSecond)}/s
+                    </p>
+                  )}
+                  {updates.update.message != null && (
+                    <p className="field__hint">{updates.update.message}</p>
+                  )}
                 </div>
               </div>
             </div>
@@ -839,7 +903,7 @@ export function SettingsPage() {
                   setAutoStart(DEFAULT_STATE.autoStart);
                   setProxy(DEFAULT_STATE.proxy);
                   setAutoUpdate(DEFAULT_STATE.autoUpdate);
-                  setChannel(DEFAULT_STATE.channel);
+                  void updates.setChannel('stable');
                   setNotice({ tone: 'info', title: '已还原界面状态' });
                 }}
               />

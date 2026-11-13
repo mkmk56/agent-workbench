@@ -132,6 +132,37 @@ export interface TaskListPayload {
 
 export type EngineResult<T> = { ok: true; data: T } | { ok: false; error: string };
 
+export type UpdateChannel = 'stable' | 'prerelease';
+
+export type UpdatePhase =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'installing'
+  | 'error'
+  | 'unsupported';
+
+export interface UpdateState {
+  supported: boolean;
+  channel: UpdateChannel;
+  phase: UpdatePhase;
+  currentVersion: string;
+  availableVersion: string | null;
+  releaseDate: string | null;
+  progressPercent: number | null;
+  bytesPerSecond: number | null;
+  transferred: number | null;
+  total: number | null;
+  message: string | null;
+  checkedAt: string | null;
+  canCheck: boolean;
+  canDownload: boolean;
+  canInstall: boolean;
+}
+
 export interface AppInfo {
   name: string;
   version: string;
@@ -144,8 +175,8 @@ export interface AppInfo {
   tokenStored: boolean;
   encryptionAvailable: boolean;
   update: {
-    supported: false;
-    channel: 'stable';
+    supported: boolean;
+    channel: UpdateChannel;
     reason: string;
   };
   versions: {
@@ -190,6 +221,12 @@ export interface WorkbenchApi {
   startTask: (input: TaskStartInput) => Promise<EngineResult<EngineTaskStartResult>>;
   sendTask: (taskId: string, prompt: string) => Promise<EngineResult<EngineTaskStartResult>>;
   cancelTask: (taskId: string) => Promise<EngineResult<EngineTaskCancelResult>>;
+  getUpdateState: () => Promise<UpdateState>;
+  checkForUpdates: () => Promise<UpdateState>;
+  downloadUpdate: () => Promise<UpdateState>;
+  installUpdate: () => Promise<OperationResult>;
+  setUpdateChannel: (channel: UpdateChannel) => Promise<UpdateState>;
+  onUpdateState: (callback: (state: UpdateState) => void) => () => void;
 }
 
 export type Route =

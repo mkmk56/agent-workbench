@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { EngineManager, errorMessage } from './engine';
+import { UpdateManager, type UpdateChannel, type UpdateState } from './update';
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const DEV_URL = process.env.VITE_DEV_SERVER_URL ?? 'http://127.0.0.1:5173';
@@ -33,6 +34,10 @@ const TOKEN_FILE = path.join(CREDENTIALS_DIR, 'token.enc');
 type Result = { ok: boolean; error?: string };
 
 let mainWindow: BrowserWindow | null = null;
+let updateManager: UpdateManager | null = null;
+
+const VERIFY_MODE = process.argv.includes('--update-verify');
+const PRINT_VERSION_MODE = process.argv.includes('--print-version');
 
 function ensureDataDir(): void {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -141,6 +146,93 @@ async function openExternal(rawUrl: unknown): Promise<Result> {
   }
 }
 
+function currentUpdateState(): UpdateState {
+  if (updateManager != null) {
+    return updateManager.getState();
+  }
+  return {
+    supported: false,
+    channel: 'stable',
+    phase: 'unsupported',
+    currentVersion: app.getVersion(),
+    availableVersion: null,
+    releaseDate: null,
+    progressPercent: null,
+    bytesPerSecond: null,
+    transferred: null,
+    total: null,
+    message: '更新管理器尚未初始化。',
+    checkedAt: null,
+    canCheck: false,
+    canDownload: false,
+    canInstall: false,
+  };
+}
+
+function writeVerificationRecord(kind: string, payload: Record<string, unknown>): void {
+  const target = process.env.AGENT_WORKBENCH_UPDATE_TRACE?.trim();
+  const record = {
+    at: new Date().toISOString(),
+    kind,
+    version: app.getVersion(),
+    packaged: app.isPackaged,
+    executable: app.getPath('exe'),
+    ...payload,
+  };
+  if (target == null || target.length === 0) {
+    console.log(JSON.stringify(record));
+    return;
+  }
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.appendFileSync(`${target}.result.jsonl`, `${JSON.stringify(record)}\n`, 'utf8');
+  } catch {
+    // Verification output is best effort.
+  }
+}
+
+function updateChannelFromArgs(): UpdateChannel {
+  const arg = process.argv.find((value) => value.startsWith('--update-channel='));
+  const value = arg?.slice('--update-channel='.length) ?? process.env.AGENT_WORKBENCH_UPDATE_CHANNEL;
+  return value === 'prerelease' ? 'prerelease' : 'stable';
+}
+
+async function runUpdateVerification(manager: UpdateManager): Promise<void> {
+  const channel = updateChannelFromArgs();
+  manager.setChannel(channel);
+  writeVerificationRecord('verify-start', { channel, argv: process.argv.slice(1) });
+
+  const checked = await manager.check();
+  if (checked.phase !== 'available') {
+    writeVerificationRecord('verify-no-update', { phase: checked.phase, message: checked.message });
+    app.quit();
+    return;
+  }
+
+  const downloaded = await manager.download();
+  if (downloaded.phase !== 'downloaded') {
+    writeVerificationRecord('verify-download-failed', {
+      phase: downloaded.phase,
+      message: downloaded.message,
+    });
+    app.quit();
+    return;
+  }
+
+  writeVerificationRecord('verify-install', {
+    availableVersion: downloaded.availableVersion,
+  });
+  const installed = manager.install();
+  if (!installed.ok) {
+    writeVerificationRecord('verify-install-failed', { error: installed.error });
+    app.quit();
+    return;
+  }
+  // quitAndInstall exits the process. The timer is a fallback if the
+  // installer fails to take over within 60 seconds.
+  setTimeout(() => app.quit(), 60_000).unref();
+}
+
 function registerIpc(): void {
   handle('app:info', () => ({
     name: app.getName(),
@@ -154,9 +246,11 @@ function registerIpc(): void {
     tokenStored: hasStoredToken(),
     encryptionAvailable: safeStorage.isEncryptionAvailable(),
     update: {
-      supported: false,
-      channel: 'stable',
-      reason: 'GitHub Releases 更新管道尚未实现（计划在后续任务接入）。',
+      supported: app.isPackaged,
+      channel: currentUpdateState().channel,
+      reason: app.isPackaged
+        ? 'GitHub Releases（electron-updater，支持预发布通道）。'
+        : '开发构建不检查更新；请使用打包版本验证更新流程。',
     },
     versions: {
       electron: process.versions.electron ?? '',
@@ -179,6 +273,17 @@ function registerIpc(): void {
     }
     clipboard.writeText(text);
     return { ok: true };
+  });
+
+  handle('update:state', () => currentUpdateState());
+  handle('update:check', () => updateManager?.check() ?? currentUpdateState());
+  handle('update:download', () => updateManager?.download() ?? currentUpdateState());
+  handle('update:install', () => updateManager?.install() ?? { ok: false, error: '更新管理器未初始化。' });
+  handle('update:set-channel', (channel) => {
+    if (channel !== 'stable' && channel !== 'prerelease') {
+      throw new Error('更新通道必须是 stable 或 prerelease。');
+    }
+    return updateManager?.setChannel(channel) ?? currentUpdateState();
   });
 
   handle('engine:status', () => engineResult(() => engine.status()));
@@ -416,9 +521,27 @@ if (!hasSingleInstanceLock) {
   void app.whenReady().then(() => {
     ensureDataDir();
     app.setAppUserModelId('com.agentworkbench.gui');
-    Menu.setApplicationMenu(null);
+
+    if (PRINT_VERSION_MODE) {
+      writeVerificationRecord('version', {});
+      app.quit();
+      return;
+    }
+
     applySessionPolicy();
+    updateManager = new UpdateManager((state) => {
+      if (mainWindow != null && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('update:state', state);
+      }
+    });
     registerIpc();
+
+    if (VERIFY_MODE) {
+      void runUpdateVerification(updateManager);
+      return;
+    }
+
+    Menu.setApplicationMenu(null);
     createWindow();
 
     // Attach to an already running engine, otherwise start one that this
@@ -426,6 +549,8 @@ if (!hasSingleInstanceLock) {
     void engine.start().catch(() => {
       // The manager keeps the detailed error in lastError/status.
     });
+
+    updateManager.scheduleAutoCheck();
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

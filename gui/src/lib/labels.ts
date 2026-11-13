@@ -7,6 +7,7 @@ import type {
   LogStream,
   TaskRow,
   TaskStatus,
+  UpdatePhase,
 } from '../types';
 
 export const STATUS_LABELS: Record<TaskStatus, string> = {
@@ -195,4 +196,33 @@ export function formatUptime(seconds: number | null): string {
 
 export function executorLabel(executor: Executor): string {
   return executor === 'claude' ? 'Claude Code' : 'DeepSeek Harness';
+}
+
+export const UPDATE_PHASE_LABELS: Record<UpdatePhase, string> = {
+  idle: '待检查',
+  checking: '检查中',
+  available: '发现新版本',
+  'not-available': '已是最新',
+  downloading: '下载中',
+  downloaded: '待安装',
+  installing: '安装中',
+  error: '更新失败',
+  unsupported: '不可用',
+};
+
+export function formatBytes(bytes: number | null): string {
+  if (bytes == null || !Number.isFinite(bytes) || bytes < 0) {
+    return '—';
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  const units = ['KiB', 'MiB', 'GiB'];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`;
 }
