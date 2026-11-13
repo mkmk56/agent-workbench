@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+  <title>Agent Workbench Spike</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Agent Workbench · Electron Spike</h1>
+      <p class="muted" id="versionLine">读取中…</p>
+    </div>
+    <span class="badge" id="packagedBadge">—</span>
+  </header>
+
+  <main>
+    <section class="card">
+      <div class="card-head">
+        <h2>引擎控制（spike 实例）</h2>
+        <div class="actions">
+          <button id="startElectronBtn">以 Electron Node 启动</button>
+          <button id="startSystemBtn" class="secondary">以系统 Node 启动</button>
+          <button id="stopBtn" class="danger">停止</button>
+        </div>
+      </div>
+      <dl class="grid" id="engineInfo"></dl>
+      <pre class="logbox" id="engineLog">尚未启动</pre>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>任务与日志</h2>
+        <div class="actions">
+          <select id="sourceSelect">
+            <option value="existing">现有引擎 :8080（只读）</option>
+            <option value="managed">Spike 引擎 :18080</option>
+          </select>
+          <button id="refreshTasksBtn">刷新任务</button>
+        </div>
+      </div>
+      <div class="split">
+        <div>
+          <table>
+            <thead>
+              <tr><th>任务</th><th>执行器</th><th>状态</th><th>更新时间</th></tr>
+            </thead>
+            <tbody id="taskRows"><tr><td colspan="4" class="muted">尚未加载</td></tr></tbody>
+          </table>
+        </div>
+        <div>
+          <h3>日志 <span class="muted" id="logTaskId"></span></h3>
+          <pre class="logbox tall" id="taskLog">选择左侧任务查看日志</pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>ELECTRON_RUN_AS_NODE 验证</h2>
+        <button id="runAsNodeBtn" class="secondary">重新验证</button>
+      </div>
+      <pre class="logbox" id="runAsNodeBox">验证中…</pre>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>自动更新</h2>
+        <div class="actions">
+          <button id="checkUpdateBtn">检查更新</button>
+          <button id="installUpdateBtn" class="secondary" disabled>安装已下载更新</button>
+        </div>
+      </div>
+      <p class="muted" id="updateStatus">仅在打包版本中可用。</p>
+      <pre class="logbox" id="updateEvents"></pre>
+    </section>
+  </main>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

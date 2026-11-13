@@ -1,0 +1,70 @@
+{
+  "name": "agent-workbench-gui-spike",
+  "version": "0.0.2",
+  "private": true,
+  "description": "Disposable Electron spike for agent-workbench GUI feasibility",
+  "main": "main.js",
+  "type": "module",
+  "author": "mkmk56",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke-test",
+    "dist": "electron-builder --win nsis --publish never",
+    "publish:release": "electron-builder --win nsis --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.11"
+  },
+  "devDependencies": {
+    "electron": "44.4.5",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "com.mkmk56.agent-workbench.spike",
+    "productName": "Agent Workbench Spike",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.cjs",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../../src",
+        "to": "engine/src"
+      },
+      {
+        "from": "../../node_modules",
+        "to": "engine/node_modules"
+      },
+      {
+        "from": "../../package.json",
+        "to": "engine/package.json"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "AgentWorkbenchSpike-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": false
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "mkmk56",
+        "repo": "agent-workbench",
+        "releaseType": "release"
+      }
+    ]
+  }
+}
