@@ -52,8 +52,10 @@ function createMcpServer() {
 function authorized(req) {
   const header = req.headers.authorization;
   if (typeof header !== 'string') return false;
-  const provided = Buffer.from(header);
-  const expected = Buffer.from(`Bearer ${config.token}`);
+  // Auth scheme is case-insensitive (RFC 7235); some MCP clients send "bearer" or no scheme at all.
+  const credential = header.trim().replace(/^bearer\s+/i, '').trim();
+  const provided = Buffer.from(credential);
+  const expected = Buffer.from(config.token);
   return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
@@ -122,6 +124,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (!authorized(req)) {
+    const header = req.headers.authorization;
+    console.error(header
+      ? `401: authorization rejected (len=${header.length}, bearer_prefix=${/^\s*bearer\s/i.test(header)})`
+      : '401: authorization header missing');
     sendJson(res, 401, { error: 'unauthorized' });
     return;
   }

@@ -1,6 +1,6 @@
 # RESUME — agent-workbench 项目长期状态记忆
 
-> 最后更新：2026-11-13（阶段一 项目接管；含接管后续修正）
+> 最后更新：2026-11-13（阶段一 项目接管；含接管后续修正、token 鉴权排障、GUI 技术选型调研）
 > 本文件用于跨会话恢复项目上下文。只记录已验证的事实；无法观测的数据（如额度消耗）明确标注，不编造数字或测试结果。
 > 事实来源：仓库代码与文档、git 记录、2026-11-13 的运行验证记录。
 
@@ -53,6 +53,7 @@
   - 本文件与 `DAILY_LOG.md` 的建立属于接管初始化，已完成。
   - 接管后的第一项决策是 GUI 技术选型与产品需求确认。
 - 后续阶段（命名仅为规划方向，未形成正式排期）：GUI 原型与桌面打包、稳定公网入口、测试与文档完善。
+- 2026-11-13：GUI 技术选型调研完成，决策文档 `docs/gui-decision.md`，推荐 Electron；**技术栈仍待用户确认，未锁定**。
 
 ---
 
@@ -106,7 +107,7 @@ start-hidden.vbs     隐藏启动入口
 |---|---|---|
 | 本机 | `http://127.0.0.1:8080/mcp` | 正常 |
 | tailnet（备用） | `http://niumoi.tail117bda.ts.net/mcp` | Tailscale Serve HTTP/80；Muse 官方客户端不支持该 HTTP 入口 |
-| 公网 HTTPS（临时） | `https://compete-cab-superintendent-reasonable.trycloudflare.com/mcp` | Cloudflare quick Tunnel，**URL 会变化**，需换命名 Tunnel |
+| 公网 HTTPS（临时） | `https://distinct-wish-invoice-animal.trycloudflare.com/mcp` | Cloudflare quick Tunnel；2026-11-13 验证当日生效，**URL 会随隧道重启变化**，需换命名 Tunnel |
 
 ### 安全与运行保障
 
@@ -131,12 +132,13 @@ start-hidden.vbs     隐藏启动入口
 | [DONE] | 2026-11-12 验收 | `TESTS.md` 记录 21 项验收通过（含鉴权、工具列表、dsh/claude 任务与续聊、并发、取消、崩溃恢复、tailnet 入口、看门狗、Cloudflare HTTPS、token 轮换） |
 | [DONE] | GitHub 首次发布 | 公开仓库（已在 GitHub 页面核实），`main` 分支，基线提交 `be2a86a`（Initial commit，2026-11-13 01:25 CST 提交），27 个追踪文件，工作区干净 |
 | [DONE] | 2026-11-13 MCP 在线验证 | `initialize` 返回 200；`tools/list` 返回 8 个工具；`agent_info` 返回的两个执行器符合预期。证据：验证任务 `40d7e908-e68d-4161-8d36-39d414b7d742` |
-| [DONE] | custom connector 接入 | `custom.agent-workbench` 已连接；2026-11-13 01:20 connector 调用 `agent_info` 返回 `logged_in=true` |
+| [DONE] | 2026-11-13 token 鉴权排障 | 复核 token 来源（仅 `workbench.env` → 进程环境 → `config.token`，无系统环境变量、无任务计划、无硬编码副本）；`workbench.env` 的 token 经本机与公网隧道 `initialize` 均返回 200，无需轮换。定位到 401 真因是 `authorized()` 对 `Authorization` 头做逐字节比较，scheme 大小写或缺少 `Bearer` 前缀即拒绝；已改为忽略 scheme 大小写、容忍空白与裸 token，并新增不泄露 token 的 401 诊断日志。重启后 PID 3980，三种写法本机/公网均 200，错误 token 仍 401 |
 | [DONE] | 首次真实派单 | 通过工作台把本项目发布到 GitHub 公开仓库，任务 `c68b9d69-b138-42a7-88e1-401156e50e38`，2026-11-13 01:24–01:25 CST，耗时约 70 秒；claude tokens 输入 35215、输出 6215（单次任务用量，非每日额度余额） |
 | [DONE] | 首次派单审核 | 审核任务 `e4753c1f-d077-401c-93de-782c0a853d9c` |
 | [DONE] | 阶段一接管初始化 | 创建 `RESUME.md` 与 `DAILY_LOG.md`，提交 `db9999a` 并推送 |
-| [IN_PROGRESS] | 阶段一 项目接管 | 接管持续进行，下一步为 GUI 技术选型与需求确认 |
-| [TODO] | GUI 技术选型 | Electron / Tauri 待调研并由用户确认；先产出决策文档，不写大代码 |
+| [IN_PROGRESS] | 阶段一 项目接管 | 接管持续进行；GUI 选型调研已完成，等待用户确认技术栈 |
+| [DONE] | GUI 技术选型调研 | 2026-11-13 完成 Electron / Tauri 对比，决策文档 `docs/gui-decision.md`；推荐 Electron（引擎复用、单人维护、自动更新成熟），Tauri 作为体积优先时的备选。未写 GUI 业务代码，未锁定技术栈 |
+| [NEEDS_USER_DECISION] | GUI 技术栈确认 | 推荐 Electron，最终由用户确认；确认前不创建 GUI 工程、不改核心服务代码 |
 | [TODO] | 稳定公网入口 | 将 Cloudflare quick Tunnel 换为命名 Tunnel，获得固定 URL |
 | [TODO] | 测试覆盖完善 | 在现有验收脚本基础上补齐自动化与回归覆盖 |
 | [TODO] | 文档整理 | 统一 README / TESTS / RESUME 的口径，处理已知文档差异（见 E） |
@@ -156,6 +158,7 @@ start-hidden.vbs     隐藏启动入口
 
 4. **[KNOWN_BUG] 历史日志记录过真实 token（执行器检查结论）**
    本地执行器检查 `data/` 时报告历史日志中记录过真实 token（未上传）；该结论来自执行器检查，仓库内无可核验痕迹，分享前仍按已泄露风险处理并轮换 token。
+   2026-11-13 复核：`workbench.env` 的 token 与运行进程实际使用值一致（本机与公网 `initialize` 均 200），本次未轮换；历史泄露风险仍按已泄露对待。
 
 5. **[NEEDS_REVIEW] 公开 README 含基础设施信息**
    README 含内网主机名、tailnet 域名、回环地址 `127.0.0.1` 与本地路径。这些属于基础设施信息而非密钥，但公开分享前应评估是否需要脱敏。
@@ -176,9 +179,10 @@ start-hidden.vbs     隐藏启动入口
 按优先级排列，具体排期以用户确认为准：
 
 1. **P1 GUI 技术选型与产品需求确认**
-   - 调研 Electron 与 Tauri 在 Windows 11、Node.js 22、现有 MCP 引擎复用、安装包体积、权限模型、自动更新等方面的差异。
-   - 产出决策文档与推荐方案，交由用户确认；确认前不锁定技术栈，也不编写大段 GUI 代码。
-   - 计划作为下一天的首个小任务执行。
+   - [DONE] 调研 Electron 与 Tauri 在 Windows 11、Node.js 22、现有 MCP 引擎复用、安装包体积、权限模型、自动更新、维护成本等方面的差异。
+   - [DONE] 产出决策文档 `docs/gui-decision.md`，推荐 Electron，含对比表、风险与下一步。
+   - [NEXT] 等待用户确认技术栈。确认后执行 1–2 天 spike：最小 Electron 应用启动/停止引擎、读取 `/health`、展示任务与日志、打包 NSIS 并实测体积、走通一次自动更新。
+   - 确认前不锁定技术栈，不创建 GUI 工程，不编写大段 GUI 代码。
 
 2. **P1 稳定公网入口**
    - 配置 Cloudflare 命名 Tunnel（需自有域名），替换 quick Tunnel，获得固定 HTTPS URL。
@@ -207,7 +211,7 @@ start-hidden.vbs     隐藏启动入口
 - 接管前工作区：干净
 - 本地被忽略目录：`data/`、`logs/`、`node_modules/`、`bin/`、`.certs-test/`、`workbench.env`
 
-本次接管新增 `RESUME.md` 与 `DAILY_LOG.md`，以一次提交推送到 `origin/main`。接管提交为 `db9999a`（`docs: add project takeover status and daily log`）；本次后续修正提交的 hash 以 `git log -1` 与任务汇报为准（本文件无法记录自身所在提交的 hash）。
+本次接管新增 `RESUME.md` 与 `DAILY_LOG.md`，以一次提交推送到 `origin/main`。接管提交为 `db9999a`（`docs: add project takeover status and daily log`）；接管后续修正提交为 `2f04f2e`（`docs: correct takeover records and status details`）。2026-11-13 的鉴权修复、GUI 调研文档与本次日志更新的提交 hash 以 `git log -1` 与任务汇报为准（本文件无法记录自身所在提交的 hash）。
 
 ---
 
@@ -218,6 +222,7 @@ start-hidden.vbs     隐藏启动入口
 - **整体状态**：[IN_PROGRESS]
 - **阶段一（项目接管）**：[IN_PROGRESS]
   - 接管初始化（长期记忆文件 + 每日日志 + 首次同步）：[DONE]
-  - GUI 选型与需求确认：待执行（P1）
+  - GUI 选型调研：已完成，决策文档 `docs/gui-decision.md`，推荐 Electron
+  - GUI 技术栈确认：等待用户决策（P1）
 - **当前可用性结论**：8 个 MCP 工具可用，claude 与 dsh 均可执行任务；claude 支持原生续跑，dsh 依赖服务端历史拼接；Muse connector 已连通；首次真实派单已成功完成。
 - **下一次会话入口**：先读本文件与 `DAILY_LOG.md` 最新日期区块，再用 `agent_info` 复核执行器状态，然后按 F 节优先级推进。

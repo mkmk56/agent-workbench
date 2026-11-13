@@ -98,3 +98,121 @@
 7. 继续遵守每日 10% 额度上限，按保守估算控制用量。
 
 > 修正说明（接管后续修正）：原标题“2026-11-13（周四）”星期写错，已更正为“2026-11-13（周五）”。
+
+---
+
+## 2026-11-13（周五）· 补充：Muse 401 与 token 鉴权排障
+
+### 问题
+
+Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与当日对话中给出的 token 都不通过。
+
+### 排查过程
+
+1. 复核 token 来源，确认只有一个来源：`workbench.env` → `start-workbench.cmd` 的 `--env-file-if-exists=workbench.env` → `process.env.MCP_BEARER_TOKEN` → `config.token`。
+   - 用户级 / 系统级 `MCP_BEARER_TOKEN`：均为空。
+   - 任务计划程序：无 agent-workbench 相关任务。
+   - 启动项：`Startup\AgentWorkbench.vbs` 与仓库内 `start-hidden.vbs` 内容一致，只负责调起 `start-workbench.cmd` 并看门狗重启。
+   - 仓库内无硬编码 token 副本（仅 `workbench.env` 与历史 `data/` 日志出现过，后者属既有遗留风险）。
+2. 验证 token 有效性：
+   - 本机 `POST http://127.0.0.1:8080/mcp` `initialize` → 200。
+   - 公网隧道 `POST https://distinct-wish-invoice-animal.trycloudflare.com/mcp` `initialize` → 200。
+   - 本地与隧道 `/health` 的 `uptime_s` 一致（1631 / 1632），确认隧道确实指向 PID 25844 这一个进程。
+   - 结论：服务器实际使用的 token 与 `workbench.env` 一致，**不存在 token 不一致，也无需轮换**。
+3. 定位真正原因：`src/server.js` 的 `authorized()` 把整个 `Authorization` 头与 `Bearer <token>` 逐字节比较，因此 `bearer`、`BEARER` 或缺少 `Bearer` 前缀时即使 token 正确也返回 401；而 HTTP 认证 scheme 按 RFC 7235 不区分大小写。
+   - 实测：同一 token 写成 `bearer <token>` 经隧道返回 401，写成 `Bearer <token>` 返回 200。
+
+### 改动
+
+- `src/server.js`：
+  - `authorized()` 改为忽略 scheme 大小写、去除首尾空白、并接受裸 token；仍用 `timingSafeEqual` 做定长比较，密钥要求不变。
+  - 401 分支新增诊断日志，只记录头长度与是否带 `bearer` 前缀，不记录 token。
+- 按项目既有方式重启：结束 PID 25844，启动项看门狗 5 秒内拉起新进程 PID 3980。
+
+### 验证结果
+
+| 用例 | 结果 |
+|---|---|
+| 本机 `Bearer <token>` | 200 |
+| 本机 `bearer <token>` | 200 |
+| 本机裸 token | 200 |
+| 本机错误 token | 401（日志记录 `len=42, bearer_prefix=true`） |
+| 公网 `Bearer <token>` | 200 |
+| 公网 `bearer <token>` | 200 |
+| 公网 `/health` | 200 |
+
+### 遗留说明
+
+- token 未写入任何文件、日志或外发；本日文档与日志均不含 token 明文。
+- 若 Muse 仍 401，需在 Muse 侧确认 connector 的认证字段：必须发送 `Authorization: Bearer <token>` 请求头（不能只填 API key 走别的头），并确认 token 无多余空格或换行；此时 401 诊断日志会记录到 `logs/server.log` 以便定位。
+- 公网入口仍为 quick Tunnel，URL 会随隧道重启变化。
+---
+
+## 2026-11-13（周五）· 补充：GUI 技术选型调研（P1）
+
+### 今日目标
+
+- 恢复项目状态：读取 `RESUME.md` 与 `DAILY_LOG.md`，确认今早鉴权修复的记录情况。
+- 完成 GUI 技术选型调研（Electron vs Tauri），产出决策文档，交由用户决策。
+- 只做调研与文档：不写 GUI 业务代码，不锁定技术栈，不修改核心服务逻辑。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%。
+- 额度消耗无法直接观测，按保守估算控制；本区块不记录虚构的百分比或精确余额。
+- 本次为文档型小任务：一次技术调研 + 一份决策文档 + 两处状态文件更新，未启动批量代码检索或构建。
+
+### 代理分工
+
+- 用户：下达调研任务，保留 GUI 技术栈最终决策权。
+- 本地接管会话：恢复状态、调研、写决策文档、更新 `RESUME.md` / `DAILY_LOG.md`、提交并推送。
+- MCP 引擎：本任务未调用执行器派单；现有服务运行状态未改动。
+
+### 实际执行内容
+
+1. 状态恢复与鉴权修复核对：
+   - 读取 `RESUME.md`、`DAILY_LOG.md`，确认 2026-11-13 的 `authorized()` 修复已记录在 `RESUME.md` D 节“2026-11-13 token 鉴权排障”与 `DAILY_LOG.md` 的“Muse 401 与 token 鉴权排障”补充区块（scheme 大小写/空白兼容、裸 token 兼容、不泄露 token 的 401 诊断日志）。记录完整，本次未重复补记。
+   - 核对工作区：`src/server.js` 的鉴权修复与上述文档改动当时尚未提交；本次随调研文档一并提交，未再修改服务代码。
+2. GUI 选型调研：
+   - 对比 Electron 与 Tauri 2 在 Windows 11、Node.js 22 引擎复用、安装包体积、权限模型、自动更新、开发维护成本等维度的差异。
+   - 结合本项目约束（Node 22 + `node:sqlite` + Streamable HTTP 引擎、单人维护、GitHub Releases 分发）形成推荐。
+   - 结论：推荐 Electron；Tauri 在“体积优先且愿意引入 Rust + Node sidecar”时仍是备选。**技术栈未锁定，等待用户确认。**
+3. 文档产出：
+   - 新增 `docs/gui-decision.md`：背景与约束、候选方案、加权对比表、推荐结论、推荐架构、风险与缓解、下一步。
+   - 更新 `RESUME.md`：B 研发阶段、D 开发进度（调研完成 / 待用户决策）、F 下一步、G 同步状态、H 交付状态。
+   - 追加本区块到 `DAILY_LOG.md`。
+
+### 测试与验证
+
+- 本次未修改核心服务代码，未运行服务级测试；验证范围为文档与仓库状态。
+- 决策文档中的安装包体积为公开资料量级估算，已在文中明确标注“未实测”，并列入确认后的 spike 验证项。
+- 调研时网络访问受限，未能在线复核 Electron/Tauri 最新版本文档；文档未写具体版本号，避免过时信息误导。
+- 提交前用 `git status` / `git diff --stat` 核对改动范围；推送后用 `git ls-remote origin main` 核对远程 `main` 与本地 HEAD 一致。
+
+### GitHub 同步
+
+- 仓库：https://github.com/mkmk56/agent-workbench
+- 分支：`main`。
+- 本次同步内容：`docs/gui-decision.md`（新增）、`RESUME.md`、`DAILY_LOG.md`、以及今早已完成但未提交的 `src/server.js` 鉴权修复。
+- 本次提交 hash：以 `git log -1` 与任务汇报为准（本文件无法记录自身所在提交的 hash）。
+- `workbench.env`、`data/`、`logs/` 仍未进入仓库；本次文档不含 token 明文。
+
+### 遗留问题
+
+- 沿用 `RESUME.md` E 节，本次无新增。
+- GUI 技术栈仍待用户确认；确认前不创建 GUI 工程、不锁定依赖。
+- 决策文档中的体积/启动耗时数据为估算，需在 spike 中实测。
+
+### 今日成果
+
+- GUI 技术选型决策文档完成：`docs/gui-decision.md`，推荐 Electron，含对比表、推荐架构、风险与下一步。
+- 今早鉴权修复的记录已确认完整，其代码与文档改动已随本次提交入库。
+- `RESUME.md` 与 `DAILY_LOG.md` 已同步到最新状态。
+
+### 下一次启动建议
+
+1. 先读 `RESUME.md` 与 `DAILY_LOG.md` 最新区块，恢复上下文。
+2. 等待用户对 GUI 技术栈的决策；确认 Electron 后再启动 1–2 天 spike（启动/停止引擎、`/health`、任务与日志、NSIS 打包实测、自动更新）。
+3. 确认前不创建 GUI 工程、不改核心服务代码。
+4. 继续推进 P1 稳定公网入口（Cloudflare 命名 Tunnel），与 GUI 选型互不阻塞。
+5. 继续遵守每日 10% 额度上限，按保守估算控制用量。
