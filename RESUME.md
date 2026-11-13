@@ -138,6 +138,7 @@ start-hidden.vbs     隐藏启动入口
 | [DONE] | 阶段一接管初始化 | 创建 `RESUME.md` 与 `DAILY_LOG.md`，提交 `db9999a` 并推送 |
 | [IN_PROGRESS] | 阶段一 项目接管 | 接管持续进行；GUI 选型调研已完成，等待用户确认技术栈 |
 | [DONE] | GUI 技术选型调研 | 2026-11-13 完成 Electron / Tauri 对比，决策文档 `docs/gui-decision.md`；推荐 Electron（引擎复用、单人维护、自动更新成熟），Tauri 作为体积优先时的备选。未写 GUI 业务代码，未锁定技术栈 |
+| [DONE] | GUI 决策文档审核修正 | 2026-11-13 dsh 独立只读审核提出 10 项问题（无高危），已逐项修正：加权总分改为 4.50 / 3.10 并附计算过程与敏感性分析；修正 Electron 安全默认值、Tauri attach/sidecar 同口径、体积比值、权限论证、`ELECTRON_RUN_AS_NODE`、Tauri Ed25519 更新密钥、官方文档链接、Cloudflare URL 口径。推荐结论不变 |
 | [NEEDS_USER_DECISION] | GUI 技术栈确认 | 推荐 Electron，最终由用户确认；确认前不创建 GUI 工程、不改核心服务代码 |
 | [TODO] | 稳定公网入口 | 将 Cloudflare quick Tunnel 换为命名 Tunnel，获得固定 URL |
 | [TODO] | 测试覆盖完善 | 在现有验收脚本基础上补齐自动化与回归覆盖 |
@@ -148,7 +149,8 @@ start-hidden.vbs     隐藏启动入口
 ## E 当前遗留问题
 
 1. **[TODO] Cloudflare quick Tunnel URL 临时**
-   `https://compete-cab-superintendent-reasonable.trycloudflare.com/mcp` 会在隧道重启后变化，需要命名 Tunnel + 自有域名才能稳定。当前每次变更都要重新配置 connector。
+   当前有效入口为 `https://distinct-wish-invoice-animal.trycloudflare.com/mcp`（2026-11-13 验证），会在隧道重启后变化，需要命名 Tunnel + 自有域名才能稳定。当前每次变更都要重新配置 connector。
+   （2026-11-13 修正：早前记录的 `https://compete-cab-superintendent-reasonable.trycloudflare.com/mcp` 已失效；quick Tunnel URL 随隧道重启变化，以最新验证记录为准。）
 
 2. **[BLOCKED] Tailscale HTTPS 证书无法签发**
    本机访问 Let's Encrypt ACME（`acme-v02.api.letsencrypt.org`）超时，无法为 tailnet 域名签发 HTTPS 证书。当前 HTTPS 走 Cloudflare Tunnel，tailnet 仅保留 HTTP/80 备用入口；Muse 官方客户端强制 HTTPS，因此 tailnet 入口不可用于该客户端。
@@ -181,7 +183,8 @@ start-hidden.vbs     隐藏启动入口
 1. **P1 GUI 技术选型与产品需求确认**
    - [DONE] 调研 Electron 与 Tauri 在 Windows 11、Node.js 22、现有 MCP 引擎复用、安装包体积、权限模型、自动更新、维护成本等方面的差异。
    - [DONE] 产出决策文档 `docs/gui-decision.md`，推荐 Electron，含对比表、风险与下一步。
-   - [NEXT] 等待用户确认技术栈。确认后执行 1–2 天 spike：最小 Electron 应用启动/停止引擎、读取 `/health`、展示任务与日志、打包 NSIS 并实测体积、走通一次自动更新。
+   - [DONE] dsh 独立审核（只读）提出 10 项问题（无高危），已逐项修正并复算加权总分；推荐结论不变。
+   - [NEXT] 等待用户确认技术栈。确认后执行 1–2 天 spike：最小 Electron 应用启动/停止引擎、读取 `/health`、展示任务与日志、打包 NSIS 并实测体积、验证 `ELECTRON_RUN_AS_NODE` + `node:sqlite`、走通一次自动更新。
    - 确认前不锁定技术栈，不创建 GUI 工程，不编写大段 GUI 代码。
 
 2. **P1 稳定公网入口**

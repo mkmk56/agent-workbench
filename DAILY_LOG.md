@@ -67,7 +67,8 @@
 
 ### 遗留问题
 
-1. **Cloudflare quick Tunnel URL 临时**：当前公网入口 `https://compete-cab-superintendent-reasonable.trycloudflare.com/mcp` 会在隧道重启后发生变化，需换用命名 Tunnel 获得固定 URL。
+1. **Cloudflare quick Tunnel URL 临时**：当前公网入口 `https://distinct-wish-invoice-animal.trycloudflare.com/mcp` 会在隧道重启后发生变化，需换用命名 Tunnel 获得固定 URL。
+   - 2026-11-13 修正：早前记录的 `https://compete-cab-superintendent-reasonable.trycloudflare.com/mcp` 已失效；quick Tunnel URL 随隧道重启变化，以 `RESUME.md` 与最新验证记录为准。
 2. **Tailscale HTTPS 证书无法签发**：Let's Encrypt ACME 超时；tailnet 仅保留 HTTP/80 备用入口，Muse 官方客户端不可用。
 3. **dsh 无原生续跑**：上游 0.1.0-rc.6 限制，当前依赖服务端拼接历史；`agent_info` 已标注 `resume_supported: false`。
 4. **历史 token 风险（执行器检查结论）**：本地执行器检查 `data/` 时报告历史日志中记录过真实 token（未上传）；该结论来自执行器检查，仓库内无可核验痕迹，分享前仍按已泄露风险处理并轮换 token。
@@ -215,4 +216,73 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 2. 等待用户对 GUI 技术栈的决策；确认 Electron 后再启动 1–2 天 spike（启动/停止引擎、`/health`、任务与日志、NSIS 打包实测、自动更新）。
 3. 确认前不创建 GUI 工程、不改核心服务代码。
 4. 继续推进 P1 稳定公网入口（Cloudflare 命名 Tunnel），与 GUI 选型互不阻塞。
+5. 继续遵守每日 10% 额度上限，按保守估算控制用量。
+
+---
+
+## 2026-11-13（周五）· 补充：GUI 决策文档审核修正
+
+### 今日目标
+
+- 处理 dsh 对 `docs/gui-decision.md` 的独立只读审核意见（10 项，无高危）。
+- 逐项修正文档，更新 `RESUME.md` / `DAILY_LOG.md`，提交并推送。
+- 不修改核心服务代码，不删除文件，不锁定 GUI 技术栈。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%。
+- 额度消耗无法直接观测，按保守估算控制；本区块不记录虚构的百分比或精确余额。
+- 本次为文档修正型小任务：无代码改动、无构建、无新依赖。
+
+### 实际执行内容
+
+按审核意见逐项修正：
+
+| 编号 | 问题 | 修正结果 |
+|---|---|---|
+| P1 | 加权总分算错 | 按表内分数与权重复算：Electron **4.50**、Tauri **3.10**；新增 §3.1 加权计算表与公式，逐项展示 `得分 × 权重` 及复算式 |
+| P2 | Electron 权限模型描述过时 | 改为：`contextIsolation` 自 Electron 12 起默认 true；`sandbox` 自 20 起在未启用 `nodeIntegration` 时默认 true；`nodeIntegration` 自 5 起默认 false；仅 CSP、导航/新窗口限制等需自行配置。同步更新 §3 表格、§6 风险表、§7 安全基线 |
+| P3 | “Tauri 必须引入 Node sidecar”绝对化 | 改为同口径：Electron 与 Tauri 都支持 attach 外部引擎或自包含分发；Tauri 的 sidecar 仅在 GUI 自管理/自包含时需要。§2、§3、§4、§5.1 已统一 |
+| P4 | 体积“2 倍以内”表述不符 | 改为区间比值：自包含口径下端点比值 0.89×–3.75×，中点约 1.77×；并注明计算口径，不再概括为“2 倍以内” |
+| P5 | “严格权限被稀释”论证牵强 | 重写为：Tauri capability 约束的是前端可调用的命令面，不是后端 OS 权限；两种方案后端都需要广泛权限，Tauri 的优势在命令面白名单粒度，Electron 默认隔离已安全但需自行设计 CSP/IPC |
+| P6 | 缺少 `ELECTRON_RUN_AS_NODE` 选项 | 在 §2、§5.1、§6、§7 补充：可用 `ELECTRON_RUN_AS_NODE=1` 复用 Electron 自带 Node 跑引擎子进程，并列入 spike 验证 `node:sqlite` |
+| P7 | 缺少权重敏感性说明 | 新增 §3.2：体积权重提高到 30% 的示例重算，Electron 4.00 对 Tauri 3.29，结论不变 |
+| P8 | Tauri 更新成本表述不准 | 改为：单个 Ed25519 密钥对签名；公开仓库可用 GitHub Releases 托管 `latest.json`，无需自建静态源或 PKI |
+| P9 | 缺少官方来源 | §8 增加 Electron / Tauri 官方文档链接，并注明安全默认值最终以 spike 锁定的具体版本为准 |
+| P10 | Cloudflare URL 口径不一致 | `RESUME.md` E-1 与 `DAILY_LOG.md` 2026-11-13 首区块统一为当前有效入口 `https://distinct-wish-invoice-animal.trycloudflare.com/mcp`；注明旧地址 `https://compete-cab-superintendent-reasonable.trycloudflare.com/mcp` 已失效，URL 随隧道重启变化 |
+
+### 测试与验证
+
+- 加权总分人工复算：Electron `5×0.30 + 5×0.25 + 2×0.10 + 5×0.10 + 3×0.10 + 5×0.05 + 5×0.05 + 5×0.05 = 4.50`；Tauri `3×0.30 + 2×0.25 + 4×0.10 + 4×0.10 + 4×0.10 + 4×0.05 + 3×0.05 + 3×0.05 = 3.10`。
+- 敏感性示例复算：调整权重后 Electron 4.00、Tauri 3.29。
+- 全文检索确认无残留的 `4.55` / `3.05` / “2 倍以内” / “必须引入 Node sidecar” / “Electron 需自行启用 contextIsolation/sandbox”表述。
+- 未修改核心服务代码，未运行服务级测试；验证范围为文档内容与仓库状态。
+- 推送后使用 `git ls-remote origin refs/heads/main` 核对远程与本地 HEAD 一致。
+
+### GitHub 同步
+
+- 仓库：https://github.com/mkmk56/agent-workbench
+- 分支：`main`。
+- 本次同步内容：`docs/gui-decision.md`、`RESUME.md`、`DAILY_LOG.md`。
+- 本次提交 hash：以 `git log -1` 与任务汇报为准（本文件无法记录自身所在提交的 hash）。
+- 直连 `github.com:443` 超时，沿用系统代理 `127.0.0.1:7897` 完成推送；未修改全局 Git 配置。
+
+### 遗留问题
+
+- 推荐结论不变：Electron（待用户确认）。
+- 体积、启动耗时仍为估算，需在 spike 实测。
+- GUI 技术栈未锁定，确认前不创建 GUI 工程。
+
+### 今日成果
+
+- 10 项审核意见全部修正，加权计算过程可复核，推荐结论成立。
+- `RESUME.md` / `DAILY_LOG.md` 已同步审核与修正记录。
+- Cloudflare URL 口径已统一，并标注旧地址失效。
+
+### 下一次启动建议
+
+1. 先读 `RESUME.md` 与 `DAILY_LOG.md` 最新区块，恢复上下文。
+2. 等待用户确认 GUI 技术栈；确认后执行 spike（含 `ELECTRON_RUN_AS_NODE` + `node:sqlite` 验证）。
+3. 确认前不创建 GUI 工程、不改核心服务代码。
+4. 继续推进 P1 稳定公网入口（Cloudflare 命名 Tunnel）。
 5. 继续遵守每日 10% 额度上限，按保守估算控制用量。
