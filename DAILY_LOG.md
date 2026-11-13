@@ -961,3 +961,78 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 
 - 未触碰 `spike/electron`、`design/brand-icon`、`src/`；`spike/` 仍未跟踪、未提交。
 - 测试 Release、tag 与安装实例保留作为证据；不删除，避免影响已安装 rc.2 的更新源。
+
+---
+
+## 2026-11-14（周六）· 补充：Agent HUD 第一期——引擎内 agent 互发消息
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%；额度消耗数据**无法直接观测**，本日志不记录虚构的百分比或余额，只做保守估算与控制。
+- 今日真实 agent 流共 3 次（隔离实例）：`20261113192250`、`20261113192546`、`20261113193005`；另有多次协议-only 回归（不调用 agent），最终为 `20261113193307`。最终真实流的 claude 首任务 tokens 为输入 5686 / 输出 432（单任务用量，非额度余额）。
+- 为控制额度，未做长轮询等待、未重复跑无必要的真实流；dsh 任务为 headless 一次性调用。
+
+### 今日目标
+
+- 只改引擎，实现 Agent HUD 第一期内 agent 互发消息：claude 能连接本地 MCP；新增结论消息协议与持久化；10 条交换上限并显式等待用户；打通 claude→dsh review→claude revision 回路。
+- 不碰 GUI（sidebar、纸飞机动画、结论卡、审批均不做）；不改签名；审批保持全自动/关闭；不删除文件；不做破坏性 git 操作。
+
+### 实现
+
+- **claude MCP 接入**：`src/executors/claude.js` 启动参数加 `--mcp-config <data/claude-mcp.json>`；新增 `src/mcp-config.js` 原子写配置（rename，mode `0600`），指向 `http://127.0.0.1:<port>/mcp` 并带 Bearer token；服务启动与每次 claude 启动前写入。`src/executors/process.js` 不再剥离 `MCP_*` / `WORKBENCH_*`。
+- **消息协议**：新增 `src/messages.js` 与 `send_message` / `list_messages` 工具；SQLite 新增 `threads`、`task_threads`、`messages` 表；`message_id` 服务端 UUID；`reply_to` 唯一索引；结论体 `{summary, files, question}`；summary 默认 500 tokens 上限，保守估算 + 截断。
+- **线程与上限**：agent-to-agent 连续消息默认 10 条；第 10 条 `held`，线程 `WAITING_USER`，`task_status` / `list_messages` 暴露 `waiting_for_user`；第 11 条被拒；用户消息重置计数并恢复 `ACTIVE`；发给 `user` 的最终报告不占上限、在等待用户时仍可写入。
+- **自动投递**：目标空闲时创建任务并续用线程 session，忙碌时 `queued`；dsh 无 MCP 客户端，回复从最终结果的 `<agent_reply>` JSON 解析；任务自己调用 `send_message` 时不重复自动回复。
+- **提示词与状态**：`{{task_id}}`、`{{session_id}}`、`{{thread_id}}`、`{{agent}}` 启动时渲染；`task_status` / `agent_info` 增加线程状态与协议参数。
+
+### 验证
+
+隔离实例 `127.0.0.1:18091`，独立 data/db/log 目录与随机 48 字符 token；生产 `:8080` 未重启、未改数据，仅做只读健康检查。验证脚本 `scripts/verify-agent-messages.mjs` 同时覆盖真实流、上限、summary、持久化与 MCP 证据。
+
+- **真实流最终运行** `data/agent-hud-verify-20261113193005/verify-result.json`，`ok: true`：
+  - claude 任务 `c9c136b4-89f6-4a1d-bdd9-676aed549df0`，`COMPLETED`，tokens 5686/432；claude init 报告 `agent-workbench: connected`；实际调用 `mcp__agent-workbench__send_message` 与 `agent_info`；服务端 `tools/list` 3 次、`tools/call` 56 次。
+  - 消息 1 `bd32c451-7622-4134-a448-7c31b43217fb`（claude→dsh，`reply_to: null`，37 tokens）→ dsh 任务 `00607ace-f783-49a0-8560-acad18be4cf2`（`COMPLETED`）。
+  - 消息 2 `50f4c445-a446-40dd-8d45-cf81e362c1d0`（dsh→claude，`reply_to` = 消息 1，241 tokens）→ claude revision 任务 `a04547df-4eb8-4ab7-ab0a-daae4addfcce`（`COMPLETED`）。
+  - 消息 3 `6c1f1dca-2775-446f-97d6-5898fe48b93f`（claude→dsh，`reply_to` = 消息 2，199 tokens）→ dsh 任务 `cf3a3a3d-e8b6-416a-b086-b976fc49e936`；测试清理时取消该后续任务，三段链不受影响。
+  - 线程 `ACTIVE`，`exchange_count: 3`；`server.log` 第 1 行记录 claude MCP 配置路径，第 4 行监听 18091，包含 3 次 `MCP tools/list` 与多次 `MCP tools/call`，未记录 token/参数。
+- **协议回归最终运行** `data/agent-hud-verify-20261113193307/verify-result.json`，`ok: true`：
+  - 上限线程 `ea00be09-5151-4ad3-b095-578a4d29e71b`：10 条 agent 消息；第 10 条 `held`；`WAITING_USER`、`waiting_for_user: true`；第 11 条被拒（“waiting for user input; send a message from user to resume”）。
+  - 第 9 条在第 10 条 held 后保持 `stored`（不误标 answered）；对 user 报告写入成功（`stored`），`exchange_count` 保持 10；用户消息重置为 0/`ACTIVE`，下一条 agent 消息计 1。
+  - summary 截断：`a0550e3d-0ac0-44be-9859-d0259ad1dc4b`，500 tokens，`summary_truncated: true`，2000 字符。
+  - 持久化：重启前后均 13 条，`reply_to` 链完整，线程状态保留。
+- **评审原文证据**：较早真实流 `data/agent-hud-verify-20261113192546`，`383e13c1-410d-4b28-ac3b-087bab190689` → `1a8adcad-b310-4b74-94d0-b40dc5d59890`（500 tokens，已截断）→ `9bff8e95-db86-45a8-a1bf-254eacee2f12`（`is_final: true`）；dsh 在该轮提出 held/answered 问题。
+- 生产健康检查返回 `{"ok":true,...}`；验证结束后 18091 测试实例已关闭。
+
+### 评审回路与修正
+
+- claude 第一轮通过 `send_message` 请 dsh review；dsh 用 `reply_to` 回复；回复自动投递回 claude revision 任务；revision 完成后再次回复。全程无用户介入，证明回路可用。
+- dsh 第一轮发现：`held` 行无重试/失败路径；回复为 held 时原消息仍被标 `answered`；`attemptDelivery` 在非 `ACTIVE` 线程写 held 形成死状态。已修：只有非 held 回复才标 answered；非 ACTIVE 投递标 `failed` 并记日志。
+- dsh 第二轮发现：`onTaskFinished` 的 `taskHasReplyFrom` 仍把 held 回复算作 answered；达到上限时发给 user 的消息也会 held。已修：改为状态感知的 `taskReplyFrom`（仅 delivered/stored/queued 算 answered）；agent-to-agent 才计入上限，发给 user 的报告不占额度且在等待用户时可写。
+- 未采纳“用户恢复时自动重排 held”：本期将 held-at-cap 作为可见终态，用户恢复后不自动重放，避免刚恢复就再次消耗额度；后续可按产品需要改为重排。
+- revision 任务为只读协议测试，未授权改文件；上述修正由实现方在评审后完成，并以 `20261113193307` 回归验证。
+
+### 错误与修正（实现/验证过程）
+
+- 探针脚本误用 `new StreamableHTTPTransport()`；改为直接调用 `StreamableHTTPClientTransport` 工厂。
+- zod 可选字段传 `null` 导致校验失败；改为条件展开、省略 null 字段。
+- 上限判断最初用历史 agent 消息总数，用户重置后仍误拒；改为持久化的 `thread.exchange_count`，用户消息重置。
+- 验证脚本清理阶段 `ReferenceError: threadId is not defined`；将 `claudeTask` / `threadId` 提升到块外并加保护。
+- 消息选择依赖数组下标，顺序变化会错；改为按 `reply_to` 链显式查找。
+- 重启前残留任务风险；增加 5 秒宽限并取消线程内非终态任务。
+- 首次推送后直接 `git ls-remote` 失败（未带代理）；推送本身已成功，随后用同样的 `-c http.proxy=...` 重试核对远程 HEAD。
+
+### Git 同步
+
+- 分支 `gui/v0.1`；引擎提交 `f121f0b`（`feat(engine): add agent-to-agent message protocol`），包含 10 个文件、1256 insertions / 15 deletions。
+- 推送命令严格使用：`git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未修改全局 git 配置；命令中未出现 token。
+- 推送结果 `f833a4d..f121f0b gui/v0.1 -> gui/v0.1`；用带代理的 `git ls-remote` 核对远程 HEAD 为 `f121f0ba458c445e0e3fa4b705b98e7c13f4c1b3`。
+- 本日志与 `RESUME.md` 的文档提交随后推送；文档提交 hash 以 `git log -1` 为准。
+
+### 未做 / 注意
+
+- 生产 `:8080` 未重启，新工具尚未在生产上线；当前任务由该引擎拉起，任务内重启会杀死自身，需在外部重启。
+- 未改 GUI、`spike/`、签名与审批；审批仍全自动/关闭。
+- `docs/AGENT_HUD_SPEC.md` 与 `spike/` 保持未跟踪，未提交；`data/`、`logs/` 仍为 gitignored。
+- 临时探针配置 `data/mcp-probe/config.json` 为自建、含真实 token，位于 gitignored `data/`；未提交、未打印、未删除。
+- 运行时生成的 `data/claude-mcp.json`（或对应 `MCP_DATA_DIR` 下）同样含真实 token，代码以 mode `0600` 写入，不得提交或打印。
+- 额度无法直接观测，今日按 10% 上限保守控制，不声称精确达标。
