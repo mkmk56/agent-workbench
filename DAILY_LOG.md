@@ -914,3 +914,50 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 
 - 未触碰 `spike/electron`、`design/brand-icon`、`src/`；`spike/` 仍未跟踪、未提交。
 - 临时截图与测试脚本未纳入版本库。
+
+---
+
+## 2026-11-13（周五）· 补充：发布流水线、打包与自动更新验证
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%；额度无法直接观测，按保守估算控制。
+- 全程未在聊天、日志或文件中输出 token；未改任何全局 git 配置；推送使用单条命令临时 `-c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897`，认证头仅在内存中构造。
+
+### 流水线
+
+- 新增 `.github/workflows/release.yml`：Windows runner、Node 22、`npm ci`、按 tag/输入设定版本、`npm run build`、`electron-builder --win nsis --publish never`。
+- 新增 `gui/scripts/verify-release.mjs`：校验安装包、`*.exe.blockmap`、`latest.yml`；交叉核对版本、文件名、字节数、SHA-512，并解压 blockmap 检查格式与记录。
+- 工作流在构建目录校验一次，上传 Actions Artifacts（14 天）后，用 `gh release create/upload` 发布三项资产，再从 Release 重新下载并二次校验；任一缺失或不一致即失败。
+- 不使用 `--publish always`，规避 spike 中 422 与漏传 `latest.yml`/blockmap 的问题；构建来源固定为触发 tag 的提交。
+- tag `v0.1.0-rc.1`：运行 43416584484，成功，2m14s；tag `v0.1.0-rc.2`：运行 43417098023，成功，1m59s。两者均为 prerelease。
+- rc.1 资产：安装包 128,493,300 B（122.54 MiB）、blockmap 134,677 B、latest.yml 372 B；rc.2：128,493,382 B、134,531 B、372 B。三项均通过上传后重新下载校验。
+- 非阻塞提示：`actions/checkout@v4`、`actions/setup-node@v4`、`actions/upload-artifact@v4` 被 GitHub 强制在 Node 24 运行（action 自身的 Node 20 弃用提示），未影响结果。
+
+### 打包与更新实现
+
+- `gui/package.json` 增加 electron-builder 26.18.0、electron-updater 6.8.11 与 NSIS 配置；产物名 `AgentWorkbench-Setup-${version}.exe`，`publish` 指向 `mkmk56/agent-workbench`，未签名。
+- 新增 `gui/electron/update.ts`：electron-updater 状态机（检查/可用/下载中/已下载/安装/错误）、稳定/预发布通道、下载进度、启动后 8 秒自动检查；可选代理/直连与 JSONL 验证轨迹。
+- 新增 6 个更新 IPC 与 preload 暴露；设置页、关于页由“未接入”改为真实状态与“检查/下载/安装”操作。
+- 新增 `--update-verify --update-channel=prerelease`、`--print-version` 与 `AGENT_WORKBENCH_UPDATE_TRACE`，用于无人值守验证并记录耗时。
+- 本地 `npm run typecheck`、`npm run build`、`npm run release:local` 通过；本地 0.1.0 安装包 132,880,375 B（126.72 MiB），blockmap 138,240 B。
+
+### 自动更新端到端验证
+
+- 静默安装 rc.1（`/S`），`--print-version` 确认 `0.1.0-rc.1`；`FileVersion` 同为 rc.1。
+- 差分更新（缓存命中）：检查 2.0 s；下载 800,228 B / 12.4 s；安装开始 14.55 s；进程退出 17 s；随后 `--print-version` 确认 `0.1.0-rc.2`。
+- 清空 updater 缓存后的完整下载：检查 2.65 s；下载 128,493,382 B / 14.6 s（约 10.5 MB/s，经 `127.0.0.1:7897`）；安装开始 17.47 s；进程退出 20.1 s；文件版本在 37.5 s 变为 rc.2，无手动点击安装。
+- 直连大文件复测失败：下载到约 50% 时 `net::ERR_CONNECTION_RESET`，耗时 429 s；同一 URL 经代理 20 MB 分片 4.8 s（约 4.3 MB/s）。结论：完整更新建议保持系统代理或设置 `AGENT_WORKBENCH_UPDATE_PROXY`；`AGENT_WORKBENCH_UPDATE_DIRECT=1` 仅用于诊断。
+- 最终安装版本 `0.1.0-rc.2`，安装目录约 434 MB（含引擎资源）。
+
+### 未做事项（按用户范围）
+
+- 未发正式 v0.1 Release；rc.1/rc.2 仅为 prerelease 测试发布。
+- 未做日志虚拟列表、设置页除凭据外的配置持久化。
+- 未做代码签名；SmartScreen 首次安装仍需“仍要运行”。
+- `workflow_dispatch` 在当前分支可用性受限：工作流文件尚未合并到默认分支，本次验证均通过 tag 推送触发；合并后可按文档手动触发。
+
+### 备注
+
+- 未触碰 `spike/electron`、`design/brand-icon`、`src/`；`spike/` 仍未跟踪、未提交。
+- 测试 Release、tag 与安装实例保留作为证据；不删除，避免影响已安装 rc.2 的更新源。

@@ -235,9 +235,11 @@ start-hidden.vbs     隐藏启动入口
    - [DONE] 合并 `assets/branding/`（来自 `design/brand-icon`，未重画图标/字标）。
    - [DONE] 工程基线：数据目录 `app.getPath('userData')`；token 使用 `safeStorage`/DPAPI；单实例；`contextIsolation`/`sandbox`/关闭 `nodeIntegration`；IPC 白名单与可信来源校验；严格 CSP；权限拒绝与导航/新窗口防护。
    - [DONE] 引擎 IPC 对接（2026-11-13）：主进程 `EngineManager` 接管引擎生命周期与 MCP 传输，渲染进程不接触 token/网络；5 屏全部改用真实数据；共 16 个白名单 IPC（原 6 + 新增 10）。真实任务派发、日志轮询、跟进与二次确认取消已端到端验证；`/health` 不可达时界面如实显示 `lastError`，不静默失败。
-   - [NEXT] 日志虚拟列表、GitHub Actions 发布流水线、打包与更新验证、设置页非凭据配置持久化。当前引擎若由外部脚本启动，GUI 只 attach、不接管生命周期，界面会如实标注。
-   - [TODO] 发布流水线：v0.1 暂不做代码签名；保留 Release 资产校验（安装包、blockmap、`latest.yml`）与失败回滚。
-   - [TODO] 现有 `v0.0.2` 按用户决定保留（E-8），但其产物不可追溯，不作为发布流水线证据。
+   - [DONE] GitHub Actions 发布流水线（2026-11-13）：`.github/workflows/release.yml` 在 `windows-latest` 构建 NSIS，强制校验安装包 + blockmap + `latest.yml`（构建目录与 Release 下载后各一次），任一缺失或字节不一致即失败；产物上传 Actions Artifacts，并支持 tag 触发与手动触发。rc.1 / rc.2 两次真实运行通过（约 2 分钟/次），详见 `docs/RELEASE_PIPELINE.md`。
+   - [DONE] 自动更新（2026-11-13）：设置页/关于页接入 electron-updater 状态机（检查、下载、安装）、稳定/预发布通道与真实进度；rc.1 → rc.2 实机验证检查、下载、静默安装、新版本启动全部通过；清缓存完整下载经代理 14.6 s、安装完成 37.5 s，无需手动干预；差分更新仅下载 800,228 B。
+   - [NEXT] 日志虚拟列表、设置页非凭据配置持久化。当前引擎若由外部脚本启动，GUI 只 attach、不接管生命周期，界面会如实标注。
+   - [TODO] 正式 v0.1 Release 待 IPC 与流水线稳定后由用户确认；v0.1 暂不做代码签名。
+   - [TODO] 现有 `v0.0.2` 按用户决定保留（E-8），但其产物不可追溯；正式发布一律走 tag → CI 构建，不从工作区直接发布。
 
 3. **P1 稳定公网入口**
    - 配置 Cloudflare 命名 Tunnel（需自有域名），替换 quick Tunnel，获得固定 HTTPS URL。
