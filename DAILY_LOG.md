@@ -662,3 +662,84 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 4. 同步补齐 SignPath 阻断项：README Code signing policy/隐私说明、正式产品名、GitHub Actions 可追溯构建、MFA 与角色。
 5. 由用户本人决定申请时机并提交申请；不要代替用户提交。
 6. 继续遵守每日 10% 额度上限，按保守估算控制用量。
+
+---
+
+## 2026-11-13（周五）· 补充：签名方案纠正为“暂不签名”（SignPath 记录作废）
+
+### 今日目标
+
+- 纠正上个任务把签名方案误记为 SignPath 的错误，恢复用户在 2026-11-13 14:08 的最终决定：**暂不签名**（自用 + 小圈子分享，不做公开分发）。
+- 删除已取消方案的 `docs/SIGNING_SIGNPATH.md`，避免留下误导性文档。
+- 同步 `docs/MVP_SCOPE.md` / `RESUME.md`，并追加本区块记录纠正；不回改历史区块。
+- 纠正 `v0.0.2` 状态：用户已于 2026-11-13 13:16 决定**保留**，不是未决问题。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%。
+- 额度消耗**无法直接观测，按保守估算控制**；本区块不记录虚构的百分比或精确余额。
+- 本次仅修改/删除文档：无构建、无安装依赖、未派发执行器任务。
+
+### 纠正记录
+
+1. **最终签名方案：暂不签名**
+   - 2026-11-13 14:08 用户明确决定：应用自用 + 小圈子分享，不做公开分发；v0.1 暂不签名。
+   - SmartScreen 首次安装时点一次“仍要运行”即可；签名不作为 v0.1 验收条件。
+   - 以后如需公开分发，再考虑 SignPath 免费签名。
+2. **作废记录**
+   - 提交 `9e4ba3c` 与 `1800683` 中关于“采用 SignPath Foundation 签名”的记录**作废**，不代表用户决定。
+   - `docs/SIGNING_SIGNPATH.md` 已删除；`docs/MVP_SCOPE.md`、`RESUME.md` 的签名口径已统一为“暂不签名”。
+   - 历史 `DAILY_LOG.md` 区块按规则保留原文，不回改；本区块为最新口径。
+3. **v0.0.2 保留**
+   - 用户已于 2026-11-13 13:16 决定保留公开 Release/tag `v0.0.2`（安装包 + blockmap + `latest.yml`，约 119 MiB）；删除会移除已安装 0.0.2 的后续更新源。
+   - 保留不等于产物可追溯：该 Release 仍由未提交工作区构建、tag 与产物不一致，不作为签名或发布流水线证据。
+
+### SignPath 预评估结论（已评估、暂缓）
+
+- 若未来改为公开分发，SignPath 要求可追溯的 CI 构建（GitHub Actions + 可信构建）、项目首页的 **Code signing policy**、隐私/数据流说明、产品元数据统一、MFA 与签名角色分工。
+- 现有 `v0.0.2` 不满足可追溯构建要求；项目仓库较新、信誉证据弱，届时申请仍可能被拒。
+- 以上仅作为未来备查，**不进入 v0.1，不再维护独立签名文档**。
+
+### 实际执行内容
+
+1. `docs/MVP_SCOPE.md`：恢复“暂不签名”口径；分发范围改为“自用 + 小圈子分享”；验收口径恢复为未签名安装包；变更记录注明本次纠正与作废提交。
+2. `RESUME.md`：B/D/E/F/G/H 的签名方案统一为暂不签名；删除 SignPath 申请待办；E-8 改为 `[DECIDED]` 保留 `v0.0.2`；G 节注明 `9e4ba3c` / `1800683` 的 SignPath 记录作废。
+3. 删除 `docs/SIGNING_SIGNPATH.md`。
+4. 追加本区块到 `DAILY_LOG.md`，不回改历史区块。
+
+### 测试与验证
+
+- 本次未改代码，未运行服务级测试；验证范围为文件内容、Git 状态与远程同步。
+- 提交前用 `git status --short` / `git diff --stat` 核对：仅文档变更与一份文档删除，未触碰 `src/`、`spike/electron`、`design/brand-icon`。
+- `LICENSE` 保持不变；GitHub 仓库仍识别为 MIT。
+- 推送后使用 `git ls-remote origin refs/heads/main` 核对远程 HEAD 与本地 `main` 一致。
+- 额度无法直接观测，按保守估算控制；未在聊天、日志或代码中输出 token。
+
+### GitHub 同步
+
+- 仓库：https://github.com/mkmk56/agent-workbench
+- 分支：`main`。
+- 本次同步内容：`docs/MVP_SCOPE.md`、`RESUME.md`、`DAILY_LOG.md`；删除 `docs/SIGNING_SIGNPATH.md`。
+- 本次提交 hash：以 `git log -1` 与任务汇报为准（本文件无法记录自身所在提交的 hash）。
+- 推送经系统代理 `127.0.0.1:7897`；未修改全局 Git 配置；未在聊天、日志或代码中输出 token。
+
+### 遗留问题
+
+- 签名方案已定：暂不签名；无 SignPath 申请待办。
+- `v0.0.2` 按用户决定保留，但产物不可追溯。
+- 正式 GUI 工程尚未创建；`spike/electron` 与 `design/brand-icon` 分支仍未合并 `main`。
+- 首次启动引擎耗时、默认 `:8080` 端口冲突、GUI 强杀后的孤儿引擎、双实例并发等风险仍按 `RESUME.md` E 节跟踪。
+
+### 今日成果
+
+- 签名口径已纠正为“暂不签名”，与用户 14:08 的决定一致。
+- 已删除误导性的 `docs/SIGNING_SIGNPATH.md`；有用结论以“已评估、暂缓”记入本区块。
+- `docs/MVP_SCOPE.md` 与 `RESUME.md` 已同步纠正；`v0.0.2` 保留状态已明确。
+
+### 下一次启动建议
+
+1. 先读 `RESUME.md` 与 `DAILY_LOG.md` 最新区块，注意 `9e4ba3c` / `1800683` 的 SignPath 签名记录作废。
+2. 创建正式 GUI 工程（与 `spike/electron` 分离），按 `docs/MVP_SCOPE.md` 实现 MVP v0.1。
+3. 优先落地工程基线：`userData` 数据目录、`safeStorage`/DPAPI 存 token、单实例、最小 IPC/CSP。
+4. 保持 Windows x64 优先；v0.1 暂不签名，SmartScreen 首次安装点“仍要运行”。
+5. 继续遵守每日 10% 额度上限，按保守估算控制用量。
