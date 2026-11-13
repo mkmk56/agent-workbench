@@ -1,6 +1,6 @@
 # RESUME — agent-workbench 项目长期状态记忆
 
-> 最后更新：2026-11-13（阶段一 项目接管；含接管后续修正、token 鉴权排障、GUI 技术选型与 Electron spike 实测、dsh spike 文档复核修正）
+> 最后更新：2026-11-13（MVP v0.1 范围确认、MIT 许可证、签名方案确定；含 GUI 技术选型、Electron spike 实测与 dsh 复核修正）
 > 本文件用于跨会话恢复项目上下文。只记录已验证的事实；无法观测的数据（如额度消耗）明确标注，不编造数字或测试结果。
 > 事实来源：仓库代码与文档、git 记录、2026-11-13 的运行验证记录。
 
@@ -32,6 +32,8 @@
 
 把 agent-workbench 从“本地 MCP 服务器”发展为**带图形界面的可安装桌面软件**；MCP 服务器继续作为核心引擎，负责执行器管理、任务调度、状态与日志持久化。GUI 技术栈已由用户确认 **Electron**，并已完成可行性 spike；正式 GUI 工程尚未开始。
 
+2026-11-13：MVP v0.1 范围已由用户确认，见 `docs/MVP_SCOPE.md`。分发范围为用户本人自用 + 小范围分享，不做公开分发，**暂不签名**。
+
 ### 当前产品形态
 
 - Muse 经公网 HTTPS 调用；tailnet HTTP 入口仅作本机与手工调试备用。
@@ -52,12 +54,16 @@
 - **阶段一：项目接管** —— [DONE]
   - 本文件与 `DAILY_LOG.md` 的建立属于接管初始化，已完成。
   - GUI 技术选型与产品需求确认已完成。
-- **阶段二：GUI 可行性** —— [DONE]
+- **阶段二：GUI 技术选型** —— [DONE]
+  - 决策文档 `docs/gui-decision.md`，用户已确认 Electron。
+- **阶段三：GUI 可行性** —— [DONE]
   - Electron spike 五项全部通过，见 `docs/gui-spike-results.md`。
-- **阶段三：正式 GUI 工程** —— [TODO]（命名仅为规划方向，未形成正式排期）
-  - GUI MVP、桌面打包与签名、稳定公网入口、测试与文档完善。
+- **阶段四：GUI 产品化** —— [IN_PROGRESS]（准备中）
+  - MVP v0.1 范围与工程基线已确认（`docs/MVP_SCOPE.md`，2026-11-13）；正式 GUI 工程尚未创建。
+  - 签名方案：暂不签名（自用 + 小范围分享），以后公开分发再评估 SignPath 免费签名。
 - 2026-11-13：GUI 技术选型调研完成，决策文档 `docs/gui-decision.md`，推荐 Electron；**用户已确认 Electron**。
-- 2026-11-13：Electron 选型 spike 完成（独立分支 `spike/electron`，提交 `ef09762`），五项验证全部通过；实测结果见 `docs/gui-spike-results.md`。核心 `src/` 未修改，spike 代码不并入 main。
+- 2026-11-13：Electron 选型 spike 完成（独立分支 `spike/electron`，提交 `ef09762`），五项验证全部通过；实测结果见 `docs/gui-spike-results.md`。核心 `src/` 未修改，spike 代码不并入 main。后续 spike 分支推进到 `56904d2`（接入 Converge 品牌图标），仅作验证记录，不改变正式工程边界。
+- 2026-11-13：MVP v0.1 范围确认；仓库补充 MIT LICENSE；签名方案确定为暂不签名，见 `docs/MVP_SCOPE.md`。
 
 ---
 
@@ -141,12 +147,15 @@ start-hidden.vbs     隐藏启动入口
 | [DONE] | 首次派单审核 | 审核任务 `e4753c1f-d077-401c-93de-782c0a853d9c` |
 | [DONE] | 阶段一接管初始化 | 创建 `RESUME.md` 与 `DAILY_LOG.md`，提交 `db9999a` 并推送 |
 | [DONE] | 阶段一 项目接管 | 接管初始化、GUI 选型与用户确认均已完成 |
-| [DONE] | 阶段二 GUI 可行性 | Electron spike 五项全部通过；正式 GUI 工程尚未开始 |
+| [DONE] | 阶段三 GUI 可行性 | Electron spike 五项全部通过；正式 GUI 工程尚未开始 |
 | [DONE] | GUI 技术选型调研 | 2026-11-13 完成 Electron / Tauri 对比，决策文档 `docs/gui-decision.md`；推荐 Electron（引擎复用、单人维护、自动更新成熟），Tauri 作为体积优先时的备选。调研阶段未锁定技术栈；后已由用户确认 Electron |
 | [DONE] | GUI 决策文档审核修正 | 2026-11-13 dsh 独立只读审核提出 10 项问题（无高危），已逐项修正：加权总分改为 4.50 / 3.10 并附计算过程与敏感性分析；修正 Electron 安全默认值、Tauri attach/sidecar 同口径、体积比值、权限论证、`ELECTRON_RUN_AS_NODE`、Tauri Ed25519 更新密钥、官方文档链接、Cloudflare URL 口径。推荐结论不变 |
 | [DONE] | GUI 技术栈确认 | 2026-11-13 用户确认 Electron；决策文档 `docs/gui-decision.md` |
 | [DONE] | Electron GUI spike | 2026-11-13 完成，分支 `spike/electron` @ `ef09762`；五项全通过：引擎启停、`/health` 与任务日志、NSIS 打包（安装包 **119.18 MiB**、解包 386.13 MiB）、GitHub Releases 自动更新（0.0.1→0.0.2）、`ELECTRON_RUN_AS_NODE`（内置 Node 24.21.0 + `node:sqlite` 可用）。结果见 `docs/gui-spike-results.md` |
 | [DONE] | dsh spike 文档复核修正 | 2026-11-13 dsh 只读审核（任务 `faf4d74d-3bd6-4e8c-b5c8-1bf588ff3967`）指出 11 项文档问题，结论“Electron 可行”不变。已修正：下载耗时改为缓存命中如实表述、打包版 attach 需 `SPIKE_EXISTING_ENV`、blockmap 字节数、`tools/list` 补证据、`:8080` 只读口径、源码仅存于 spike 分支、Release 可追溯性与未测风险。README 修正提交 `82a4bfd` |
+| [DONE] | MVP v0.1 范围确认 | 2026-11-13 用户确认 v0.1 包含/不做/工程基线，正式文档 `docs/MVP_SCOPE.md` |
+| [DONE] | MIT LICENSE | 2026-11-13 在 `main` 根目录补充 MIT LICENSE（Copyright (c) 2026 mkmk56） |
+| [DONE] | 签名方案确定 | 2026-11-13 用户决定：自用 + 小范围分享，不做公开分发，v0.1 **暂不签名**；SmartScreen 首次安装点一次“仍要运行”即可。以后公开分发再考虑 SignPath 免费签名 |
 | [TODO] | 稳定公网入口 | 将 Cloudflare quick Tunnel 换为命名 Tunnel，获得固定 URL |
 | [TODO] | 测试覆盖完善 | 在现有验收脚本基础上补齐自动化与回归覆盖 |
 | [TODO] | 文档整理 | 统一 README / TESTS / RESUME 的口径，处理已知文档差异（见 E） |
@@ -188,8 +197,8 @@ start-hidden.vbs     隐藏启动入口
 9. **[TODO] electron-builder 发布流水线不完整**
    本机执行 `--publish always` 时返回 422（`Published releases must have a valid tag`），Release 虽创建且上传了安装包，但漏传 `latest.yml`/blockmap；本次用 `gh release upload --clobber` 手工补齐。正式发布需在 CI/脚本中校验资产完整性，并调查 422 的重复发布竞态。
 
-10. **[RISK] 安装包未签名**
-    spike 安装包无代码签名，SmartScreen 会警告，自动更新也缺少发布者身份保证。正式分发前必须确定签名方案。
+10. **[DECIDED] 安装包暂不签名**
+    2026-11-13 用户决定：应用仅自用并小范围分享，不做公开分发，v0.1 暂不签名；SmartScreen 首次安装点一次“仍要运行”即可。该方案已写入 `docs/MVP_SCOPE.md`。以后如需公开分发，再评估 SignPath Foundation 免费开源签名（届时发布者显示为 “SignPath Foundation”）。
 
 11. **[RISK] 首次启动引擎耗时明显**
     打包版首次拉起引擎实测 **4,264 ms**（引擎资源 3,670 个文件，冷缓存/Defender 扫描），热启动 264–273 ms。正式产品需评估预启动、减少文件数或安装后预热。
@@ -212,11 +221,13 @@ start-hidden.vbs     隐藏启动入口
    - [DONE] dsh 独立审核（只读）提出 10 项问题（无高危），已逐项修正并复算加权总分；推荐结论不变。
    - [DONE] 用户确认 Electron（2026-11-13）。
    - [DONE] 执行 1–2 天 spike（分支 `spike/electron` @ `ef09762`）：引擎启停、`/health`、任务与日志、NSIS 打包、自动更新、`ELECTRON_RUN_AS_NODE` 全部通过；结果见 `docs/gui-spike-results.md`。
-   - [NEXT] 启动正式 GUI 工程（与 spike 分离）：先定 MVP 范围与安全基线，再处理签名/发布流水线与数据目录迁移。
+   - [DONE] spike 已完成并经 dsh 复核修正；MCP 范围与安全基线已确认（`docs/MVP_SCOPE.md`，2026-11-13）。
+   - [DONE] 签名方案已确认：自用 + 小范围分享，v0.1 暂不签名。
+   - [NEXT] 创建正式 GUI 工程（与 spike 分离），按 `docs/MVP_SCOPE.md` 实现 MVP v0.1。
 
 2. **P1 正式 GUI 工程（下一步）**
    - 数据目录改为 `app.getPath('userData')`；token 使用 `safeStorage`/DPAPI；单实例与进程所有权；最小 IPC/CSP。
-   - 发布流水线：代码签名、Release 资产校验（安装包、blockmap、`latest.yml`）、稳定/预发布通道、失败回滚。
+   - 发布流水线：v0.1 暂不做代码签名；保留 Release 资产校验（安装包、blockmap、`latest.yml`）与失败回滚。
    - 处理 E-8 测试 Release 保留/删除决策。
 
 3. **P1 稳定公网入口**
@@ -250,10 +261,11 @@ start-hidden.vbs     隐藏启动入口
 
 2026-11-13 Electron spike：
 - `main` 分支：`394500e`（`docs: record Electron GUI spike results`）已推送；本次 dsh 复核修正的提交 hash 以 `git log -1` 与任务汇报为准（本文件无法记录自身所在提交的 hash）。
-- spike 分支 `spike/electron`：`ef09762`（原型）→ `82a4bfd`（README 引擎隔离口径修正），已推送到 `origin/spike/electron`（经系统代理 `127.0.0.1:7897`）。
+- spike 分支 `spike/electron`：`ef09762`（原型）→ `82a4bfd`（README 引擎隔离口径修正）→ `56904d2`（接入 Converge 品牌图标与 NSIS 图标），已推送到 `origin/spike/electron`（经系统代理 `127.0.0.1:7897`）。
 - **源码仅存于 `spike/electron` 分支提交**（`package.json`、`main.js`、`preload.cjs`、`renderer/`、`scripts/`）；`main` 工作区没有这些源文件，只有被忽略/未跟踪的 `spike/electron/artifacts/`、`release/`、`node_modules/`。
 - `spike/electron/.gitignore`（`node_modules/`、`release/`、`artifacts/`、`.tmp/`）只存在于 spike 分支；在 `main` 上这些目录是普通未跟踪项，**不进入主线**。
 - `main` 分支仅新增/修改文档：`docs/gui-spike-results.md`、`docs/gui-decision.md`、`RESUME.md`、`DAILY_LOG.md`；未修改 `src/`、`start-workbench.cmd` 等核心服务代码。
+- 2026-11-13 MVP/许可更新（`main`）：新增根目录 `LICENSE`（MIT）、`docs/MVP_SCOPE.md`，并更新 `RESUME.md` / `DAILY_LOG.md`；未修改 `src/`、`spike/electron`、`design/brand-icon`。本次提交 hash 以 `git log -1` 与任务汇报为准。
 - 实测数据与本机证据（`artifacts/`、`release/`）不提交。
 - 并发状态：`design/brand-icon` 分支 `62957d8`（`design: add brand icon assets, design system and brand guidelines`，含 `assets/branding/**`、`docs/BRAND_GUIDELINES.md`、`docs/DESIGN_SYSTEM.md`）已提交但**未合并 main**；本次修正期间本地主工作区被切到 `spike/electron`，并有未提交的品牌图标接入改动（`main.js`、`package.json`、`renderer/` 等），本次未触碰。
 
@@ -262,14 +274,18 @@ start-hidden.vbs     隐藏启动入口
 ## H 最终交付状态
 
 - **最终交付目标**：可安装的图形界面桌面软件，MCP 服务器作为核心引擎；用户可在本机管理执行器、任务、日志与配置，并通过稳定入口接受云端编排端派单。
-- **当前交付形态**：本地 MCP 引擎已可用并通过验收；公网入口可用但为临时 URL；GUI 技术栈已确认 Electron，spike 已完成并全部通过；正式 GUI 工程尚未开始。
+- **当前交付形态**：本地 MCP 引擎已可用并通过验收；公网入口可用但为临时 URL；GUI 技术栈已确认 Electron，spike 已完成并全部通过；MVP v0.1 范围与工程基线已确认，正式 GUI 工程尚未开始；v0.1 暂不签名（自用 + 小范围分享）。
 - **整体状态**：[IN_PROGRESS]
 - **阶段一（项目接管）**：[DONE]
   - 接管初始化（长期记忆文件 + 每日日志 + 首次同步）：[DONE]
-- **阶段二（GUI 可行性）**：[DONE]
+- **阶段二（GUI 技术选型）**：[DONE]
   - GUI 选型调研：已完成，决策文档 `docs/gui-decision.md`，推荐 Electron
   - GUI 技术栈确认：用户已确认 Electron（2026-11-13）
+- **阶段三（GUI 可行性）**：[DONE]
   - Electron spike：全部 5 项通过，结果见 `docs/gui-spike-results.md`
-- **阶段三（正式 GUI 工程）**：[TODO] 尚未开始；范围、签名、发布流水线待定。品牌资产已在 `design/brand-icon` 分支 `62957d8` 准备（图标/logo/设计规范），未合并 `main`，不代表正式 GUI 工程已启动
+- **阶段四（GUI 产品化）**：[IN_PROGRESS] 准备中
+  - MVP v0.1 范围与工程基线已确认（`docs/MVP_SCOPE.md`，2026-11-13）
+  - 签名方案：暂不签名（自用 + 小范围分享，SmartScreen 首次安装点“仍要运行”）；以后公开分发再考虑 SignPath 免费签名
+  - 正式 GUI 工程尚未创建。品牌资产已在 `design/brand-icon` 分支 `62957d8` 准备（图标/logo/设计规范），spike 分支 `56904d2` 已接入图标，但均未合并 `main`，不代表正式 GUI 工程已启动
 - **当前可用性结论**：8 个 MCP 工具可用，claude 与 dsh 均可执行任务；claude 支持原生续跑，dsh 依赖服务端历史拼接；Muse connector 已连通；首次真实派单已成功完成。
 - **下一次会话入口**：先读本文件与 `DAILY_LOG.md` 最新日期区块，再用 `agent_info` 复核执行器状态，然后按 F 节优先级推进。

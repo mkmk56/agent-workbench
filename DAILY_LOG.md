@@ -474,3 +474,81 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 3. 正式工程先补单实例锁、端口冲突处理、崩溃后进程清理与 `userData` 数据目录。
 4. 发布改为“tag → CI 构建 → 资产完整性校验”，不得从工作区直接发布。
 5. 继续遵守每日 10% 额度上限，按保守估算控制用量。
+
+---
+
+## 2026-11-13（周五）· 补充：MVP v0.1 范围确认、MIT LICENSE 与签名决策
+
+### 今日目标
+
+- 落地用户已拍板的两个决定：MVP v0.1 范围定稿、签名方案调整。
+- 补充 MIT `LICENSE`，为项目提供明确的开放源代码许可。
+- 新增 `docs/MVP_SCOPE.md`，并同步 `RESUME.md` / `DAILY_LOG.md`。
+- 只修改 `main` 分支的文档与 `LICENSE`，不触碰 `src/`、`spike/electron`、`design/brand-icon`。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%。
+- 额度消耗**无法直接观测，按保守估算控制**；本区块不记录虚构的百分比或精确余额。
+- 本次为文档与许可证小任务：无构建、无安装、无新依赖、未派发执行器任务。
+
+### 决定记录
+
+1. **MVP v0.1 范围已确认（2026-11-13）**，用户无修改意见，按提案定稿：
+   - 包含：任务列表（状态、智能体、用时）；任务详情 + 实时日志（日志流、发跟进消息）；派发新任务（选 claude/dsh、填 prompt、超时）；取消任务；智能体状态（claude/dsh 是否可用、模型）；引擎管理（启动/停止、`/health`、连接状态）；设置（token、端口、代理）；自动更新；品牌（图标 + 关于页，已完成）。
+   - 工程基线（必须做，不计入功能）：数据目录迁移到 `userData`、`safeStorage`/DPAPI 存 token、单实例、最小 IPC/CSP。
+   - v0.1 不做：多项目、历史统计仪表盘、定时任务、云同步/账号、插件、macOS 打包（先做 Windows）。
+2. **签名方案调整为暂不签名**：
+   - 应用只用于用户本人自用，并小范围分享给熟人，不做公开分发。
+   - SmartScreen 首次安装时点一次“仍要运行”即可；签名不作为 v0.1 验收条件。
+   - 以后如需公开分发，再考虑 SignPath Foundation 免费开源签名（发布者显示为 “SignPath Foundation”）。
+   - 原计划的 SignPath 资格核查与申请准备**已取消**，本次不执行、不提交申请。
+3. **补充 MIT LICENSE**：根目录新增 `LICENSE`，版权行为 `Copyright (c) 2026 mkmk56`。
+
+### 实际执行内容
+
+1. 新增根目录 `LICENSE`：标准 MIT 许可证，版权持有人 `mkmk56`，年份 2026。
+2. 新增 `docs/MVP_SCOPE.md`：记录目标与边界、v0.1 包含功能、工程基线、v0.1 不做项、签名与分发、验收口径与变更记录；确认日期 2026-11-13。
+3. 更新 `RESUME.md`：
+   - B 节：研发阶段调整为阶段一接管、阶段二 GUI 技术选型、阶段三 GUI 可行性、阶段四 GUI 产品化（准备中）；记录 MVP 范围与暂不签名决定。
+   - D 节：新增 MVP 范围确认、MIT LICENSE、签名方案确定三项 [DONE]。
+   - E 节：原“安装包未签名”风险改为 [DECIDED]，记录自用 + 小范围分享、暂不签名及 SmartScreen 处理方式。
+   - F 节：spike 相关 [NEXT] 改为 [DONE]；下一步为创建正式 GUI 工程并实现 MVP v0.1；发布流水线去掉代码签名要求。
+   - G/H 节：记录本次 `main` 文档与许可证更新、spike 分支最新提交 `56904d2`（品牌图标接入），并将 H 节阶段状态更新为阶段四（GUI 产品化）准备中。
+4. 追加本区块到 `DAILY_LOG.md`，不回改历史区块。
+
+### 测试与验证
+
+- 本次仅修改文档与 `LICENSE`，未运行服务级测试；验证范围为文件内容、Git 状态与远程同步。
+- 提交前用 `git status --short` / `git diff --stat` 核对改动范围，确认未修改 `src/`、`spike/electron`、`design/brand-icon`。
+- 推送后使用 `git ls-remote origin refs/heads/main` 核对远程 HEAD 与本地 `main` 一致。
+- 额度无法直接观测，按保守估算控制。
+
+### GitHub 同步
+
+- 仓库：https://github.com/mkmk56/agent-workbench
+- 分支：`main`。
+- 本次同步内容：`LICENSE`（新增）、`docs/MVP_SCOPE.md`（新增）、`RESUME.md`、`DAILY_LOG.md`。
+- 本次提交 hash：以 `git log -1` 与任务汇报为准（本文件无法记录自身所在提交的 hash）。
+- 推送经系统代理 `127.0.0.1:7897`；未修改全局 Git 配置；未在聊天、日志或代码中输出 token。
+
+### 遗留问题
+
+- 签名已确定暂不做；E-8 测试 Release/tag `v0.0.2` 是否保留/删除仍待用户决定。
+- 正式 GUI 工程尚未创建；`spike/electron` 与 `design/brand-icon` 分支仍未合并 `main`。
+- 首次启动引擎耗时、默认 `:8080` 端口冲突、GUI 强杀后的孤儿引擎、双实例并发等风险仍按 `RESUME.md` E 节跟踪。
+
+### 今日成果
+
+- MIT `LICENSE` 入库，仓库具备明确的开放源代码许可。
+- `docs/MVP_SCOPE.md` 完成，MVP v0.1 的包含/不做/工程基线/验收口径有正式依据。
+- 签名方案明确为暂不签名，避免了与“自用 + 小范围分享”定位不符的发布工程投入。
+- `RESUME.md` 与 `DAILY_LOG.md` 已同步，阶段四（GUI 产品化）进入准备中状态。
+
+### 下一次启动建议
+
+1. 先读 `RESUME.md` 与 `DAILY_LOG.md` 最新区块，恢复上下文。
+2. 创建正式 GUI 工程（与 `spike/electron` 分离），按 `docs/MVP_SCOPE.md` 实现 MVP v0.1。
+3. 优先落地工程基线：`userData` 数据目录、`safeStorage`/DPAPI 存 token、单实例、最小 IPC/CSP。
+4. 保持 Windows x64 优先；签名暂不做，若未来公开分发再评估 SignPath。
+5. 继续遵守每日 10% 额度上限，按保守估算控制用量。
