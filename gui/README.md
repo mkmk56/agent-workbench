@@ -1,0 +1,47 @@
+# Agent Workbench GUI
+
+正式 Electron GUI 工程（阶段四）。本轮搭建可运行界面壳：Electron + React 19 + TypeScript + Vite + Astryx 0.7.15 + 品牌适配层与静态主题。
+
+## 运行
+
+```bash
+npm install
+npm run dev        # Vite + tsc watch + Electron
+npm run build      # 生成主题 CSS、主进程、渲染进程
+npm start          # 运行已构建的壳
+npm run typecheck
+```
+
+首次安装 Electron 二进制若下载失败，可在安装时指定镜像：
+
+```bash
+ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm install
+```
+
+## 结构
+
+```text
+electron/main.ts      主进程：窗口、单实例、CSP、IPC 白名单、safeStorage
+electron/preload.ts   contextBridge 暴露的最小 API
+src/ui/astryx.tsx     Astryx 适配层（Button / Status / Table / Field 等）
+src/theme/            静态品牌主题源（defineTheme）与构建产物（忽略提交）
+src/pages/            5 个屏：任务、任务详情、派发、设置、关于
+src/styles/           品牌样式（来自 mockups）与 Astryx 适配覆盖
+scripts/build-theme.mjs  构建时生成主题 CSS，避免运行时注入
+```
+
+## 安全基线
+
+- 数据目录：`app.getPath('userData')`，Windows 为 `%APPDATA%\agent-workbench`。
+- Token：主进程 `safeStorage`（Windows DPAPI）加密后写入 `credentials/token.enc`；渲染进程只能设置/清除，不能读取明文。
+- 单实例锁；第二个实例聚焦已有窗口。
+- 渲染进程：`contextIsolation: true`、`sandbox: true`、`nodeIntegration: false`、`webSecurity: true`。
+- 最小 IPC：固定频道白名单 + 可信来源校验；外部链接仅允许 https 的 GitHub 域名。
+- 严格 CSP 由主进程注入；权限请求全部拒绝；禁止导航到外部页面、禁止新窗口与 webview。
+- 主题使用构建期生成的静态 CSS，不依赖运行时 `<style>` 注入。
+
+## 本轮范围
+
+已接入：5 屏可运行壳、品牌资产、路由、主题切换、Token 安全存储、数据目录与单实例状态展示。
+
+未接入：引擎 IPC、任务派发/取消端到端逻辑、日志虚拟列表、更新管道、GitHub Actions 发布流水线与打包验证。界面中相关位置均标注“未接入”或“示例数据”。

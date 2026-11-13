@@ -227,12 +227,16 @@ start-hidden.vbs     隐藏启动入口
    - [DONE] 执行 1–2 天 spike（分支 `spike/electron` @ `ef09762`）：引擎启停、`/health`、任务与日志、NSIS 打包、自动更新、`ELECTRON_RUN_AS_NODE` 全部通过；结果见 `docs/gui-spike-results.md`。
    - [DONE] spike 已完成并经 dsh 复核修正；MVP 范围与安全基线已确认（`docs/MVP_SCOPE.md`，2026-11-13）。
    - [DONE] 签名方案已确认：**暂不签名**（自用 + 小圈子分享）；SignPath 已评估并暂缓，不进入 v0.1。
-   - [NEXT] 创建正式 GUI 工程（与 spike 分离），按 `docs/MVP_SCOPE.md` 实现 MVP v0.1。
+   - [DONE] 创建正式 GUI 工程（与 spike 分离）：分支 `gui/v0.1`，目录 `gui/`，可运行界面壳；未触碰 `spike/electron`。
 
-2. **P1 正式 GUI 工程（下一步）**
-   - 数据目录改为 `app.getPath('userData')`；token 使用 `safeStorage`/DPAPI；单实例与进程所有权；最小 IPC/CSP。
-   - 发布流水线：v0.1 暂不做代码签名；保留 Release 资产校验（安装包、blockmap、`latest.yml`）与失败回滚。
-   - 现有 `v0.0.2` 按用户决定保留（E-8），但其产物不可追溯，不作为发布流水线证据。
+2. **P1 正式 GUI 工程（进行中）**
+   - [DONE] 技术栈落地：Electron 44 + React 19 + TypeScript + Vite + Astryx 0.7.15 + 适配层；品牌主题用 `defineTheme` 在构建期生成静态 CSS，避免运行时 `<style>` 注入与 CSP 冲突。
+   - [DONE] 5 屏可运行壳：任务列表、任务详情 + 实时日志、派发、设置、关于；数据为标注的示例数据，引擎相关状态如实显示“未接入”。
+   - [DONE] 合并 `assets/branding/`（来自 `design/brand-icon`，未重画图标/字标）。
+   - [DONE] 工程基线：数据目录 `app.getPath('userData')`；token 使用 `safeStorage`/DPAPI；单实例；`contextIsolation`/`sandbox`/关闭 `nodeIntegration`；IPC 白名单与可信来源校验；严格 CSP；权限拒绝与导航/新窗口防护。
+   - [NEXT] 引擎 IPC 对接、任务派发/取消端到端逻辑、日志虚拟列表；之后再补更新管道与发布流水线。
+   - [TODO] 发布流水线：v0.1 暂不做代码签名；保留 Release 资产校验（安装包、blockmap、`latest.yml`）与失败回滚。
+   - [TODO] 现有 `v0.0.2` 按用户决定保留（E-8），但其产物不可追溯，不作为发布流水线证据。
 
 3. **P1 稳定公网入口**
    - 配置 Cloudflare 命名 Tunnel（需自有域名），替换 quick Tunnel，获得固定 HTTPS URL。

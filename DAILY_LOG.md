@@ -829,3 +829,40 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 - 未改全局 `http.sslbackend=schannel` 与代理配置；同类环境下推送需临时 `-c http.sslBackend=openssl -c http.proxy=...`。
 - 本段原写于 `design/ui-redesign-astrxy` 工作区；随后整理提交到 `main` 并推送，提交 hash 以 `git log` 与任务汇报为准。
 - 未触碰 `src/`、`spike/electron`、`design/brand-icon`；`RESUME.md` 未改。
+
+---
+
+## 2026-11-13（周五）· 补充：正式 GUI 工程启动（阶段四第一步）
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%；额度无法直接观测，按保守估算控制。
+- 全程未在聊天、日志或文件中输出 token；未改任何全局 git 配置。
+
+### Git 整理与推送
+
+- `design/ui-redesign-astrxy` 已推送到 GitHub，远程 SHA `22b0be467473350f869a626ed4da62c82d57c410`；`ls-remote` 核对一致。
+- `DAILY_LOG.md` 中未提交的 gstack 与 gh 修复记录已整理提交到 `main`（`e9bb721fdca825c13583615394d6a840eff7a78f`）并推送；`ls-remote` 核对一致。
+- 推送均按单条命令走 `-c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897`；认证头仅在内存中构造。
+
+### 正式 GUI 工程
+
+- 从 `main` 切出 `gui/v0.1`，新工程放在 `gui/`；`spike/electron` 未触碰，仍作为原型保留。
+- 技术栈：Electron 44.11.3、React 19.3.1、TypeScript 5.9.3、Vite 7.3.8、Astryx 0.7.15（锁定）、`@stylexjs/stylex` 0.19.2。
+- 品牌主题：`defineTheme` 定义 light/dark token，`generateThemeCSS()` 在构建期生成 `brand.generated.css`；设置 `theme.__built = true`，避免运行时注入样式。品牌 CSS 复用 mockups 样式，另加 Astryx 适配覆盖。
+- 5 屏已实现为可运行壳：任务列表、任务详情 + 实时日志、派发、设置、关于；hash 路由与深浅主题切换可用。
+- 品牌资产已合并：`assets/branding/`（logo、icon、concept、source）来自 `design/brand-icon`，未重画。
+- 工程基线已落地：数据目录 `app.getPath('userData')`（Windows `%APPDATA%\agent-workbench`）；token 使用 `safeStorage`/DPAPI 加密到 `credentials/token.enc`；单实例锁；`contextIsolation`/`sandbox` 开启、`nodeIntegration` 关闭；IPC 白名单 + 可信 sender 校验；严格 CSP、权限拒绝、导航/新窗口/webview 防护；外部链接仅允许 https GitHub 域名。
+- 构建验证：`npm install`（经代理与 npmmirror、Electron 镜像）、`npm run theme:build`、`npm run typecheck`、`npm run build` 均通过。
+- 运行验证：启动构建后的 Electron 壳，逐一渲染 5 屏，控制台无错误；任务表水平溢出已修正；浅色/深色主题均检查。
+- 安全验证：生产 `file://` 文档确认收到 CSP 响应头；渲染进程 `require`/`process` 均为 undefined；`window.workbench` 仅暴露 6 个白名单方法；用一次性哑 token 验证 `safeStorage` 写入后可被 `getAppInfo` 识别、随后清除，未输出 token 值。
+
+### 本轮未做（按用户范围）
+
+- 未接入完整引擎 IPC、任务派发/取消端到端逻辑、日志虚拟列表。
+- 未实现 GitHub Actions 发布流水线、打包与更新验证。
+- 设置页中除凭据外的配置仅界面状态，不持久化；引擎/更新/执行器状态均如实标注“未接入”或“示例数据”。
+
+### 备注
+
+- 本次新增并提交 `gui/` 工程源码；`spike/` 仍为未跟踪原型，本次不提交。
