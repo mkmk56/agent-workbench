@@ -286,3 +286,109 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 3. 确认前不创建 GUI 工程、不改核心服务代码。
 4. 继续推进 P1 稳定公网入口（Cloudflare 命名 Tunnel）。
 5. 继续遵守每日 10% 额度上限，按保守估算控制用量。
+
+## 2026-11-13（周五）· 补充：Electron GUI spike 实测
+
+### 今日目标
+
+- 用户已确认 GUI 技术栈为 **Electron**（决策文档 `docs/gui-decision.md`，远程 `main` 基线 `581725b`）。
+- 执行 1–2 天 spike，只做可行性验证，不创建正式 GUI 工程，不修改 `main` 分支核心服务代码；验证代码放在独立 `spike/electron/` 目录与 `spike/electron` 分支。
+- 五项验证目标：
+  1. Electron 主进程拉起与停止现有 MCP 引擎；
+  2. 调通 `/health`，展示任务与日志；
+  3. NSIS 打包实测，记录真实安装包体积与启动耗时；
+  4. electron-builder + electron-updater 对 GitHub Releases 的自动更新实测；
+  5. 验证 `ELECTRON_RUN_AS_NODE` 是否成立。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%。
+- 额度消耗**无法直接观测**，按保守估算控制；本区块不记录虚构的百分比或精确余额。
+- 控制措施：spike 使用独立端口 `18080`、独立 DB `data/spike/workbench.db`、独立日志 `logs/spike`，不触碰 `:8080` 正式引擎；验证任务均为本地短时运行，未批量派发。
+
+### 实际执行内容
+
+1. **环境核对**：`main` 分支干净，Node.js v22.20.0 / npm 10.9.3 可用；安装 Electron 44.4.5、electron-builder 26.18.0、electron-updater 6.8.11。
+2. **最小 Electron 应用**：主进程 `child_process.spawn(process.execPath, [engineEntry])` 启动 `src/server.js`，子进程设置 `ELECTRON_RUN_AS_NODE=1`；preload 通过 `contextBridge` 暴露白名单 IPC；渲染层 `contextIsolation: true`、`sandbox: true`、`nodeIntegration: false`、严格 CSP。
+3. **引擎隔离**：spike 实例固定端口 `18080`，`MCP_DB_PATH=data/spike/workbench.db`，`MCP_LOG_DIR=logs/spike`；token 只在主进程从 `workbench.env`（或 `SPIKE_EXISTING_ENV`）读取，不进入渲染进程。
+4. **`/health` 与 MCP**：主进程轮询 `/health` 判定就绪；通过原始 JSON-RPC `tools/call` 只读调用 `task_list`（5 条）与 `task_logs`（20 条），渲染层展示。
+5. **NSIS 打包**：`electron-builder --win nsis`，x64、oneClick、per-user、未签名；`extraResources` 打包 `src/`、`node_modules/` 与 `package.json` 作为引擎资源。
+6. **自动更新**：发布 0.0.1，再发布 0.0.2 到 GitHub Releases；0.0.1 内运行 `--update-check`，走通检查、下载、`update-downloaded`、静默安装。
+7. **`ELECTRON_RUN_AS_NODE` 验证**：用 Electron 自带 Node 执行 `process.versions` 与 `node:sqlite` 建表/插入/查询，并实际启动 `src/server.js`。
+8. **回归与加固**：增加启动前端口占用预检、PID 文件兜底停止、更新流程 try/catch 与错误结果落盘；开发模式与打包模式均跑通冒烟测试。
+
+### 测试与验证（本机实测）
+
+| 项目 | 实测结果 |
+|---|---|
+| 引擎启动（开发模式） | 264 / 269 / 390 ms（spawn → `/health` 成功） |
+| 引擎启动（打包版热启动） | 264 / 273 ms |
+| 引擎启动（打包版首次，冷缓存/Defender） | **4,264 ms** |
+| 引擎停止 | 451–494 ms；`taskkill /T /F` + PID 文件兜底，停止后端口释放 |
+| `/health` | `{"ok":true,"service":"agent-workbench","version":"0.1.0",...}` |
+| 任务与日志 | `task_list` 5 条、`task_logs` 20 条，只读读取成功 |
+| NSIS 安装包体积 | **124,969,012 B = 119.18 MiB**（0.0.1）；0.0.2 为 124,969,066 B |
+| blockmap | 132,728 B（0.13 MiB） |
+| 解包目录 | **386.13 MiB / 3,744 文件** |
+| 安装后目录 | 386.26 MiB / 3,745 文件 |
+| 其中引擎资源 | 16.62 MiB / 3,670 文件 |
+| 打包版窗口就绪 | 302–450 ms（进程启动 → 渲染层加载完成） |
+| 自动更新检查 | 2.2 s 找到 0.0.2 |
+| 自动更新下载 | 首次完整下载约 6–10 s（约 125 MB，本机网络） |
+| 更新安装结果 | 安装后 exe `--print-version` 输出 `version=0.0.2`，无残留进程 |
+| `ELECTRON_RUN_AS_NODE` | 成立：Electron 44.4.5 / Node **24.21.0** / V8 15.2；`node:sqlite` round-trip `sqliteOk=true`；引擎 8 个工具全部可用 |
+
+> 决策文档原估算“80–150 MB”被实测覆盖：实际安装包 **119.18 MiB**，处于估算区间内。体积、耗时均以本机实测为准。
+
+### 遇到的问题与修正
+
+| 问题 | 原因 | 修正 |
+|---|---|---|
+| Electron 二进制未下载 | npm install 未触发/镜像问题 | 执行 `node node_modules/electron/install.js` |
+| 渲染层 `Identifier 'spike' has already been declared` | 局部变量与 contextBridge 全局同名 | 局部变量改名 `api` |
+| 截图早于 UI 就绪 | 未等待渲染层初始化 | 增加 `renderer:ready` 握手，截图前主动调用刷新 |
+| 停止失败留下孤儿引擎，下次启动误连旧实例并报出 44 ms 假启动 | 首次停止未清理进程树 | 启动前端口预检 + `server.pid` 兜底；杀掉孤儿进程后复测，真实启动 264–390 ms |
+| 自动更新静默不启动 | ESM 命名空间不含 `autoUpdater` | 取 `module.default.autoUpdater` |
+| 经系统代理访问 GitHub API 返回 403 | 共享出口 IP 触发限流；直连 API 为 200 | 未指定 `SPIKE_PROXY` 时 Electron session 强制 `direct` |
+| 下载完成但未触发安装 | CLI 模式下 `win` 为 null，`if (isUpdateCheck && win)` 不成立 | 改为 `if (isUpdateCheck)` |
+| `--publish always` 返回 422 且漏传 `latest.yml`/blockmap | Release 已创建后发布竞态/资产不全 | 改用 `--publish never` 构建，再 `gh release upload --clobber` 手工补齐；正式流水线需校验资产 |
+| 安装未覆盖旧 asar | NSIS 默认安装后自动启动，锁定安装文件 | 设置 `runAfterFinish: false`，杀进程、静默卸载后干净重装 |
+| 构建下载 Electron 超时 | 直连 GitHub 受限 | 使用 `npmmirror.com` 的 Electron 与 electron-builder-binaries 镜像 |
+| `main.js` 被误删 | 从 asar 提取文件后误执行删除 | 从 0.0.2 的 `app.asar` 恢复，重新施加加固修改并通过语法检查与冒烟测试 |
+
+### GitHub 同步
+
+- 仓库：https://github.com/mkmk56/agent-workbench
+- spike 分支：`spike/electron` @ `ef09762`，已推送 `origin/spike/electron`（经系统代理 `127.0.0.1:7897`）。
+- `main` 分支：仅文档变更（`docs/gui-decision.md`、`docs/gui-spike-results.md`、`RESUME.md`、`DAILY_LOG.md`）；核心 `src/` 未修改。
+- 测试 Release：公开仓库 **v0.0.2**，资产为安装包、blockmap、`latest.yml`。
+- 本次 `main` 提交 hash 以 `git log -1` 与任务汇报为准（本文件无法记录自身所在提交的 hash）；推送后以 `git ls-remote` 核对远程 HEAD。
+- 未在聊天、日志或代码中输出 token。
+
+### 遗留问题
+
+1. **测试 Release/tag `v0.0.2` 仍保留在公开仓库**（约 119 MiB 资产），是否删除待用户决定；删除会移除已安装 0.0.2 的后续更新源。
+2. **发布流水线不完整**：electron-builder 发布出现 422 且漏传 `latest.yml`，本次手工补齐；正式发布必须在 CI/脚本中校验安装包、blockmap、`latest.yml`。
+3. **安装包未签名**：SmartScreen 会警告，自动更新缺少发布者身份保证；正式分发前必须确定签名方案。
+4. **首次启动引擎 4.26 s**：3,670 个引擎文件触发冷缓存/Defender 扫描；需评估预启动或减少文件数。
+5. **引擎数据目录仍在安装目录**：spike 沿用 `src/config.js` 的 root；正式产品应改为 `app.getPath('userData')`。
+6. **差分更新未单独验证**：已生成 blockmap，但本次命中完整安装包缓存，未测量差分下载量。
+7. **Electron 内置 Node 24 vs 项目 Node 22**：当前实测可用，升级 Electron 前需按 `TESTS.md` 回归。
+8. **代理策略**：spike 为绕过限流强制直连；正式产品应尊重系统代理并给出可诊断错误。
+
+### 今日成果
+
+- 五项 spike 目标全部完成并通过，**Electron 可行性确认**。
+- 安装包体积、启动耗时、更新流程均有真实测量值，替换决策文档中的估算。
+- 发现并修正引擎孤儿进程、ESM 更新导入、发布资产缺失、NSIS 覆盖安装等关键问题。
+- spike 代码独立在 `spike/electron` 分支；`main` 仅新增文档，核心服务未改动。
+- 产出 `docs/gui-spike-results.md`，并同步 `docs/gui-decision.md` / `RESUME.md`。
+
+### 下一次启动建议
+
+1. 先读 `RESUME.md` 与 `DAILY_LOG.md` 最新区块，恢复上下文。
+2. 与用户确认 MVP 范围、测试 Release 保留/删除、签名方案。
+3. 新建正式 GUI 工程（与 `spike/electron` 分离），冻结 Electron 版本。
+4. 优先处理工程化基线：`userData` 数据目录、`safeStorage`/DPAPI 存 token、单实例、最小 IPC/CSP。
+5. 建立 GitHub Actions 发布流水线与资产完整性校验；再评估差分更新与失败回滚。
+6. 继续遵守每日 10% 额度上限，按保守估算控制用量。

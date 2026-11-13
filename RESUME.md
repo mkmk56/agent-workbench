@@ -1,6 +1,6 @@
 # RESUME — agent-workbench 项目长期状态记忆
 
-> 最后更新：2026-11-13（阶段一 项目接管；含接管后续修正、token 鉴权排障、GUI 技术选型调研）
+> 最后更新：2026-11-13（阶段一 项目接管；含接管后续修正、token 鉴权排障、GUI 技术选型与 Electron spike 实测）
 > 本文件用于跨会话恢复项目上下文。只记录已验证的事实；无法观测的数据（如额度消耗）明确标注，不编造数字或测试结果。
 > 事实来源：仓库代码与文档、git 记录、2026-11-13 的运行验证记录。
 
@@ -30,7 +30,7 @@
 
 ### 最终目标
 
-把 agent-workbench 从“本地 MCP 服务器”发展为**带图形界面的可安装桌面软件**；MCP 服务器继续作为核心引擎，负责执行器管理、任务调度、状态与日志持久化。GUI 技术栈**尚未确定**，候选为 Electron / Tauri，须由用户确认后再锁定，不得擅自选型。
+把 agent-workbench 从“本地 MCP 服务器”发展为**带图形界面的可安装桌面软件**；MCP 服务器继续作为核心引擎，负责执行器管理、任务调度、状态与日志持久化。GUI 技术栈已由用户确认 **Electron**，并已完成可行性 spike；正式 GUI 工程尚未开始。
 
 ### 当前产品形态
 
@@ -49,11 +49,15 @@
 
 ### 研发阶段
 
-- **阶段一：项目接管** —— [IN_PROGRESS]
+- **阶段一：项目接管** —— [DONE]
   - 本文件与 `DAILY_LOG.md` 的建立属于接管初始化，已完成。
-  - 接管后的第一项决策是 GUI 技术选型与产品需求确认。
-- 后续阶段（命名仅为规划方向，未形成正式排期）：GUI 原型与桌面打包、稳定公网入口、测试与文档完善。
-- 2026-11-13：GUI 技术选型调研完成，决策文档 `docs/gui-decision.md`，推荐 Electron；**技术栈仍待用户确认，未锁定**。
+  - GUI 技术选型与产品需求确认已完成。
+- **阶段二：GUI 可行性** —— [DONE]
+  - Electron spike 五项全部通过，见 `docs/gui-spike-results.md`。
+- **阶段三：正式 GUI 工程** —— [TODO]（命名仅为规划方向，未形成正式排期）
+  - GUI MVP、桌面打包与签名、稳定公网入口、测试与文档完善。
+- 2026-11-13：GUI 技术选型调研完成，决策文档 `docs/gui-decision.md`，推荐 Electron；**用户已确认 Electron**。
+- 2026-11-13：Electron 选型 spike 完成（独立分支 `spike/electron`，提交 `ef09762`），五项验证全部通过；实测结果见 `docs/gui-spike-results.md`。核心 `src/` 未修改，spike 代码不并入 main。
 
 ---
 
@@ -136,10 +140,12 @@ start-hidden.vbs     隐藏启动入口
 | [DONE] | 首次真实派单 | 通过工作台把本项目发布到 GitHub 公开仓库，任务 `c68b9d69-b138-42a7-88e1-401156e50e38`，2026-11-13 01:24–01:25 CST，耗时约 70 秒；claude tokens 输入 35215、输出 6215（单次任务用量，非每日额度余额） |
 | [DONE] | 首次派单审核 | 审核任务 `e4753c1f-d077-401c-93de-782c0a853d9c` |
 | [DONE] | 阶段一接管初始化 | 创建 `RESUME.md` 与 `DAILY_LOG.md`，提交 `db9999a` 并推送 |
-| [IN_PROGRESS] | 阶段一 项目接管 | 接管持续进行；GUI 选型调研已完成，等待用户确认技术栈 |
-| [DONE] | GUI 技术选型调研 | 2026-11-13 完成 Electron / Tauri 对比，决策文档 `docs/gui-decision.md`；推荐 Electron（引擎复用、单人维护、自动更新成熟），Tauri 作为体积优先时的备选。未写 GUI 业务代码，未锁定技术栈 |
+| [DONE] | 阶段一 项目接管 | 接管初始化、GUI 选型与用户确认均已完成 |
+| [DONE] | 阶段二 GUI 可行性 | Electron spike 五项全部通过；正式 GUI 工程尚未开始 |
+| [DONE] | GUI 技术选型调研 | 2026-11-13 完成 Electron / Tauri 对比，决策文档 `docs/gui-decision.md`；推荐 Electron（引擎复用、单人维护、自动更新成熟），Tauri 作为体积优先时的备选。调研阶段未锁定技术栈；后已由用户确认 Electron |
 | [DONE] | GUI 决策文档审核修正 | 2026-11-13 dsh 独立只读审核提出 10 项问题（无高危），已逐项修正：加权总分改为 4.50 / 3.10 并附计算过程与敏感性分析；修正 Electron 安全默认值、Tauri attach/sidecar 同口径、体积比值、权限论证、`ELECTRON_RUN_AS_NODE`、Tauri Ed25519 更新密钥、官方文档链接、Cloudflare URL 口径。推荐结论不变 |
-| [NEEDS_USER_DECISION] | GUI 技术栈确认 | 推荐 Electron，最终由用户确认；确认前不创建 GUI 工程、不改核心服务代码 |
+| [DONE] | GUI 技术栈确认 | 2026-11-13 用户确认 Electron；决策文档 `docs/gui-decision.md` |
+| [DONE] | Electron GUI spike | 2026-11-13 完成，分支 `spike/electron` @ `ef09762`；五项全通过：引擎启停、`/health` 与任务日志、NSIS 打包（安装包 **119.18 MiB**、解包 386.13 MiB）、GitHub Releases 自动更新（0.0.1→0.0.2）、`ELECTRON_RUN_AS_NODE`（内置 Node 24.21.0 + `node:sqlite` 可用）。结果见 `docs/gui-spike-results.md` |
 | [TODO] | 稳定公网入口 | 将 Cloudflare quick Tunnel 换为命名 Tunnel，获得固定 URL |
 | [TODO] | 测试覆盖完善 | 在现有验收脚本基础上补齐自动化与回归覆盖 |
 | [TODO] | 文档整理 | 统一 README / TESTS / RESUME 的口径，处理已知文档差异（见 E） |
@@ -174,28 +180,46 @@ start-hidden.vbs     隐藏启动入口
 7. **[长期约束] 额度数据无法直接观测**
    每日额度策略为总额的 10% 上限，但额度消耗无法直接观测；只能按保守估算控制，禁止在文档或汇报中伪造精确数字。
 
+8. **[NEEDS_USER_DECISION] 自动更新测试 Release 仍在公开仓库**
+   spike 为验证自动更新，向公开仓库发布了 Release/tag `v0.0.2`（安装包 + blockmap + `latest.yml`，约 119 MiB）。当前保留；删除会移除已安装 0.0.2 的后续更新源，需用户决定保留或清理。
+
+9. **[TODO] electron-builder 发布流水线不完整**
+   本机执行 `--publish always` 时返回 422（`Published releases must have a valid tag`），Release 虽创建且上传了安装包，但漏传 `latest.yml`/blockmap；本次用 `gh release upload --clobber` 手工补齐。正式发布需在 CI/脚本中校验资产完整性，并调查 422 的重复发布竞态。
+
+10. **[RISK] 安装包未签名**
+    spike 安装包无代码签名，SmartScreen 会警告，自动更新也缺少发布者身份保证。正式分发前必须确定签名方案。
+
+11. **[RISK] 首次启动引擎耗时明显**
+    打包版首次拉起引擎实测 **4,264 ms**（引擎资源 3,670 个文件，冷缓存/Defender 扫描），热启动 264–273 ms。正式产品需评估预启动、减少文件数或安装后预热。
+
 ---
 
 ## F 下一步研发计划
 
 按优先级排列，具体排期以用户确认为准：
 
-1. **P1 GUI 技术选型与产品需求确认**
+1. **P1 GUI 技术栈与 spike（已完成）**
    - [DONE] 调研 Electron 与 Tauri 在 Windows 11、Node.js 22、现有 MCP 引擎复用、安装包体积、权限模型、自动更新、维护成本等方面的差异。
    - [DONE] 产出决策文档 `docs/gui-decision.md`，推荐 Electron，含对比表、风险与下一步。
    - [DONE] dsh 独立审核（只读）提出 10 项问题（无高危），已逐项修正并复算加权总分；推荐结论不变。
-   - [NEXT] 等待用户确认技术栈。确认后执行 1–2 天 spike：最小 Electron 应用启动/停止引擎、读取 `/health`、展示任务与日志、打包 NSIS 并实测体积、验证 `ELECTRON_RUN_AS_NODE` + `node:sqlite`、走通一次自动更新。
-   - 确认前不锁定技术栈，不创建 GUI 工程，不编写大段 GUI 代码。
+   - [DONE] 用户确认 Electron（2026-11-13）。
+   - [DONE] 执行 1–2 天 spike（分支 `spike/electron` @ `ef09762`）：引擎启停、`/health`、任务与日志、NSIS 打包、自动更新、`ELECTRON_RUN_AS_NODE` 全部通过；结果见 `docs/gui-spike-results.md`。
+   - [NEXT] 启动正式 GUI 工程（与 spike 分离）：先定 MVP 范围与安全基线，再处理签名/发布流水线与数据目录迁移。
 
-2. **P1 稳定公网入口**
+2. **P1 正式 GUI 工程（下一步）**
+   - 数据目录改为 `app.getPath('userData')`；token 使用 `safeStorage`/DPAPI；单实例与进程所有权；最小 IPC/CSP。
+   - 发布流水线：代码签名、Release 资产校验（安装包、blockmap、`latest.yml`）、稳定/预发布通道、失败回滚。
+   - 处理 E-8 测试 Release 保留/删除决策。
+
+3. **P1 稳定公网入口**
    - 配置 Cloudflare 命名 Tunnel（需自有域名），替换 quick Tunnel，获得固定 HTTPS URL。
    - 更新 connector 配置与 README 部署说明。
 
-3. **P2 完善测试覆盖**
+4. **P2 完善测试覆盖**
    - 在 `scripts/test-*.mjs` 基础上补充回归用例，覆盖鉴权、并发、取消、崩溃恢复、双执行器与续聊。
    - 保持 TESTS.md 与实际结果同步，避免再次出现状态表互相矛盾。
 
-4. **P3 文档整理**
+5. **P3 文档整理**
    - 统一 README / TESTS / RESUME / DAILY_LOG 的事实口径。
    - 处理 E-5、E-6 中的基础设施信息与文档差异。
 
@@ -214,18 +238,28 @@ start-hidden.vbs     隐藏启动入口
 - 接管前工作区：干净
 - 本地被忽略目录：`data/`、`logs/`、`node_modules/`、`bin/`、`.certs-test/`、`workbench.env`
 
-本次接管新增 `RESUME.md` 与 `DAILY_LOG.md`，以一次提交推送到 `origin/main`。接管提交为 `db9999a`（`docs: add project takeover status and daily log`）；接管后续修正提交为 `2f04f2e`（`docs: correct takeover records and status details`）。2026-11-13 的鉴权修复、GUI 调研文档与本次日志更新的提交 hash 以 `git log -1` 与任务汇报为准（本文件无法记录自身所在提交的 hash）。
+本次接管新增 `RESUME.md` 与 `DAILY_LOG.md`，以一次提交推送到 `origin/main`。接管提交为 `db9999a`（`docs: add project takeover status and daily log`）；接管后续修正提交为 `2f04f2e`（`docs: correct takeover records and status details`）；GUI 决策修正提交为 `581725b`（`docs: address GUI decision review findings`）。
+
+2026-11-13 Electron spike：
+- spike 分支 `spike/electron` @ `ef09762`，已推送到 `origin/spike/electron`（经系统代理 `127.0.0.1:7897`）。
+- spike 验证代码全部位于 `spike/electron/`，`main` 分支上为未跟踪目录，**不进入主线**。
+- `main` 分支本次仅新增/修改文档：`docs/gui-spike-results.md`、`docs/gui-decision.md`、`RESUME.md`、`DAILY_LOG.md`。该提交 hash 以 `git log -1` 与任务汇报为准（本文件无法记录自身所在提交的 hash）。
+- 未修改 `src/`、`start-workbench.cmd` 等核心服务代码。
+- 实测数据与本机证据（`artifacts/`、`release/`）不提交，均为 gitignore。
 
 ---
 
 ## H 最终交付状态
 
 - **最终交付目标**：可安装的图形界面桌面软件，MCP 服务器作为核心引擎；用户可在本机管理执行器、任务、日志与配置，并通过稳定入口接受云端编排端派单。
-- **当前交付形态**：本地 MCP 引擎已可用并通过验收；公网入口可用但为临时 URL；GUI 尚未开始。
+- **当前交付形态**：本地 MCP 引擎已可用并通过验收；公网入口可用但为临时 URL；GUI 技术栈已确认 Electron，spike 已完成并全部通过；正式 GUI 工程尚未开始。
 - **整体状态**：[IN_PROGRESS]
-- **阶段一（项目接管）**：[IN_PROGRESS]
+- **阶段一（项目接管）**：[DONE]
   - 接管初始化（长期记忆文件 + 每日日志 + 首次同步）：[DONE]
+- **阶段二（GUI 可行性）**：[DONE]
   - GUI 选型调研：已完成，决策文档 `docs/gui-decision.md`，推荐 Electron
-  - GUI 技术栈确认：等待用户决策（P1）
+  - GUI 技术栈确认：用户已确认 Electron（2026-11-13）
+  - Electron spike：全部 5 项通过，结果见 `docs/gui-spike-results.md`
+- **阶段三（正式 GUI 工程）**：[TODO] 尚未开始；范围、签名、发布流水线待定
 - **当前可用性结论**：8 个 MCP 工具可用，claude 与 dsh 均可执行任务；claude 支持原生续跑，dsh 依赖服务端历史拼接；Muse connector 已连通；首次真实派单已成功完成。
 - **下一次会话入口**：先读本文件与 `DAILY_LOG.md` 最新日期区块，再用 `agent_info` 复核执行器状态，然后按 F 节优先级推进。

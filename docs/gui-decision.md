@@ -1,10 +1,10 @@
 # GUI 技术选型决策文档（Electron vs Tauri）
 
-> 状态：**调研完成，待用户决策**
+> 状态：**用户已确认 Electron（2026-11-13）；选型 spike 已完成并实测通过**
 > 日期：2026-11-13
 > 适用范围：agent-workbench 桌面 GUI（阶段二）
-> 结论性质：本文给出推荐方案，但**不锁定技术栈**；最终选型由用户确认。
-> 事实边界：文中标注“估算”的体积/耗时数据未在本机实测，来自公开资料的量级判断；精确数字需在选型 spike 中实测。
+> 结论性质：推荐 Electron，已由用户确认；spike 实测结果见 `docs/gui-spike-results.md`。
+> 事实边界：文中标注“估算”的数据为公开资料量级判断；标注“实测”的数据来自 2026-11-13 本机 spike。
 > 审核记录：2026-11-13 dsh 独立只读审核提出 10 项问题（无高危），已逐项修正；推荐结论不变。
 
 ---
@@ -47,7 +47,7 @@
 - 引擎有两种使用方式：**attach** 已由现有启动脚本拉起的服务，或由主进程以子进程方式 **spawn**。子进程可使用系统 Node 22，也可用 `ELECTRON_RUN_AS_NODE=1` 复用 Electron 自带 Node 二进制（后者需验证 `node:sqlite` 支持）。
 - 渲染进程为 Chromium；通过 preload + IPC 与主进程通信，渲染进程不直接接触 Node、文件系统和 token。
 - 打包：electron-builder（NSIS 安装包）；自动更新：electron-updater（GitHub Releases，支持差分更新）。
-- 安装包体积：**估算约 80–150 MB**（含 Chromium + Node）；安装后占用更大。具体取决于裁剪与压缩。
+- 安装包体积：估算约 80–150 MB；**2026-11-13 spike 实测 NSIS 安装包 119.18 MiB，解包 386.13 MiB**（含 Chromium + Electron Node + 引擎依赖），见 `docs/gui-spike-results.md`。
 - 开发语言：JavaScript/TypeScript 一套；构建链为 Node 生态。
 
 ### 方案 B：Tauri 2
@@ -129,7 +129,9 @@
 | attach 外部 Node 服务（不随包携带 Node） | 80–150 MB | 3–10 MB | 约 8×–50× |
 | 自包含携带 Node 22 | 80–150 MB | 40–90 MB | 区间端点 0.89×–3.75×，中点约 1.77× |
 
-计算口径：比值 = 区间端点直接相除；中点比 = (80+150)/2 ÷ (40+90)/2 = 115 ÷ 65 ≈ 1.77。**不能概括为固定约 2 倍**：中点约 1.8 倍，按区间端点最坏可达约 3.75 倍；精确值需 spike 实测。
+计算口径：比值 = 区间端点直接相除；中点比 = (80+150)/2 ÷ (40+90)/2 = 115 ÷ 65 ≈ 1.77。**不能概括为固定约 2 倍**：中点约 1.8 倍，按区间端点最坏可达约 3.75 倍。
+
+**2026-11-13 spike 实测（Electron，自包含携带引擎）**：NSIS 安装包 119.18 MiB，解包 386.13 MiB；其中引擎资源 16.62 MiB、3,670 个文件。安装包体积落在原估算 80–150 MB 区间内。Tauri 侧未实测，仍是估算。
 
 对本项目的影响：
 
@@ -149,7 +151,7 @@
 2. **单人维护友好**：一套 JavaScript/TypeScript 技术栈、一套 npm 构建链，避免 Rust 工具链与跨语言调试。
 3. **自动更新最成熟**：electron-builder + electron-updater 对 GitHub Releases、NSIS、差分更新支持完善，适合当前公开仓库的分发方式。
 4. **Windows 11 渲染一致性**：自带 Chromium，不依赖系统 WebView2 的版本差异；对本地工具类应用足够。
-5. **体积可接受**：安装包约 80–150 MB（估算），对本机桌面工具不是关键否决项；若后续用户明确要求“极致小体积”，可重新评估 Tauri attach 外部 Node（估算 3–10 MB）或 Node sidecar 方案（估算 40–90 MB）。
+5. **体积可接受**：spike 实测 NSIS 安装包 119.18 MiB、解包 386.13 MiB，对本机桌面工具不是关键否决项；若后续用户明确要求“极致小体积”，可重新评估 Tauri attach 外部 Node（估算 3–10 MB）或 Node sidecar 方案（估算 40–90 MB）。
 
 **不推荐当前直接选 Tauri 的原因**：
 - 本项目的核心资产是 Node 引擎。Tauri 可以 attach 外部服务，但“安装即用、GUI 自管理引擎”的目标最终仍要引入 Node 运行时与 Rust 监管层，这是确定的维护成本。
@@ -219,16 +221,16 @@
 
 ## 7. 下一步
 
-1. **用户确认技术栈**（Electron / Tauri / 暂缓）。确认前不创建 GUI 工程、不锁定依赖。
-2. **选型 spike（1–2 天，确认后执行）**：
-   - 最小 Electron 应用：启动/停止现有引擎、读取 `/health`、展示任务列表与增量日志、打开数据目录。
-   - 打包 NSIS 安装包，记录**实测**安装包体积、冷启动时间、内存占用。
-   - 走通一次 GitHub Releases 自动更新（可先用测试 tag）。
-   - 验证 `ELECTRON_RUN_AS_NODE=1` 下 Electron 自带 Node 的版本与 `node:sqlite` 是否可用；不可用则确定“随包独立 Node 22”或“依赖系统 Node（attach）”方案。
+1. **[DONE] 用户确认技术栈**：用户已确认 Electron（2026-11-13）。
+2. **[DONE] 选型 spike（2026-11-13）**：五项验证全部通过，结果见 `docs/gui-spike-results.md`：
+   - 最小 Electron 应用：启动/停止现有引擎、读取 `/health`、展示任务列表与日志。
+   - NSIS 实测：安装包 119.18 MiB，解包 386.13 MiB；打包版窗口就绪 302–450 ms，引擎热启动 264–273 ms、冷启动 4.26 s。
+   - GitHub Releases 自动更新：0.0.1 → 0.0.2 走通并实测安装后版本。
+   - `ELECTRON_RUN_AS_NODE=1`：Electron 44.4.5 内置 Node 24.21.0，`node:sqlite` 可用，引擎实际启动成功。
 3. **确定 GUI MVP 范围**：执行器状态、任务列表/详情/日志、启动与取消、配置编辑、token 管理、开机自启、入口（Tailscale/Cloudflare）状态。
-4. **安全基线**：验证 Electron 安全默认值（`contextIsolation` 自 12、`sandbox` 自 20、`nodeIntegration=false` 自 5），配置严格 CSP、导航/新窗口限制、最小化 IPC 暴露面；token 存储、日志脱敏、单实例与进程所有权。
-5. **更新与签名**：确定代码签名方案与更新通道，再进入功能开发。
-6. 在用户确认前，GUI 相关工作保持 `[TODO]/[NEEDS_USER_DECISION]` 状态，不写入正式排期。
+4. **安全基线**：沿用 spike 已验证的 `contextIsolation` / `sandbox` / `nodeIntegration=false` / CSP，补齐 token 的 `safeStorage`/DPAPI 存储、日志脱敏、单实例与进程所有权。
+5. **更新与签名**：优先解决未签名安装包、发布流水线漏传 `latest.yml`、测试 Release 清理，再进入功能开发。
+6. **正式 GUI 工程**：与 `spike/electron` 分离，引擎数据目录改到 `app.getPath('userData')`；spike 代码不并入 main。
 
 ---
 
@@ -237,6 +239,7 @@
 - 本仓库：`package.json`（Node >=22.5、依赖）、`src/server.js`（HTTP/MCP/鉴权）、`src/config.js`（路径与环境变量）、`README.md`（部署与执行器）、`TESTS.md`（2026-11-12 验收）。
 - Electron 官方文档：<https://www.electronjs.org/docs/latest/>（安全默认值、`ELECTRON_RUN_AS_NODE`、electron-builder/electron-updater 生态）。
 - Tauri 官方文档：<https://v2.tauri.app/>（capabilities/ACL、updater 插件、sidecar、WebView2）。
-- 体积与版本类数字为公开资料量级估算，**未在本机实测**；以 spike 实测为准。
-- 文中默认值（`contextIsolation`/`sandbox`/`nodeIntegration`）以 Electron 官方文档所述版本引入点为准；**最终以 spike 时锁定的具体版本实测/文档为准**。
-- 2026-11-13 调研时网络访问受限，未能在线复核 Electron/Tauri 最新版本文档；本文不写具体版本号，避免过时信息误导。
+- 体积与版本类数字：Electron 侧 2026-11-13 spike 已实测（`docs/gui-spike-results.md`）；Tauri 侧仍为公开资料估算，未在本机实测。
+- spike 实测版本：Electron 44.4.5（内置 Node 24.21.0、Chromium 152.0.7977.130）、electron-builder 26.18.0、electron-updater 6.8.11。
+- 文中默认值（`contextIsolation`/`sandbox`/`nodeIntegration`）以 Electron 官方文档所述版本引入点为准；spike 已按安全默认值配置并通过运行验证。
+- 2026-11-13 调研时网络访问受限，未能在线复核 Electron/Tauri 最新版本文档；上述版本为 spike 锁定值，不代表最新版本。
