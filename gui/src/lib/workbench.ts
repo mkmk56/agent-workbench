@@ -1,16 +1,22 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { AppInfo, OperationResult } from '../types';
+import type { AppInfo, EngineAgent, EngineResult, OperationResult } from '../types';
 
 export const FALLBACK_APP_INFO: AppInfo = {
   name: 'Agent Workbench',
   version: '0.1.0',
   dataDir: '（浏览器预览：主进程未连接）',
   cwd: '（浏览器预览：主进程未连接）',
+  engineWorkdir: '',
   platform: 'browser',
   arch: '',
   isPackaged: false,
   tokenStored: false,
   encryptionAvailable: false,
+  update: {
+    supported: false,
+    channel: 'stable',
+    reason: '浏览器预览：主进程未连接。',
+  },
   versions: {
     electron: '—',
     node: '—',
@@ -83,4 +89,21 @@ export function platformLabel(platform: string, arch: string): string {
   };
   const name = names[platform] ?? platform;
   return arch ? `${name} · ${arch}` : name;
+}
+
+const NO_MAIN_PROCESS = '主进程未连接（浏览器预览）。';
+
+export function engineUnavailable<T>(): Promise<EngineResult<T>> {
+  return Promise.resolve({ ok: false, error: NO_MAIN_PROCESS });
+}
+
+export async function testToken(): Promise<EngineResult<EngineAgent[]>> {
+  if (!window.workbench) {
+    return { ok: false, error: NO_MAIN_PROCESS };
+  }
+  const result = await window.workbench.getAgentInfo();
+  if (!result.ok) {
+    return result;
+  }
+  return { ok: true, data: result.data.agents };
 }

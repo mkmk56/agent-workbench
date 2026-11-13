@@ -9,6 +9,7 @@ import {
 import type { ReactNode } from 'react';
 import logoInverse from '@brand/logo/logo-inverse.svg';
 import logoPrimary from '@brand/logo/logo-primary.svg';
+import { useEngineStatus } from '../lib/engine';
 import { navigate } from '../lib/router';
 import type { AppTheme } from '../lib/theme';
 import type { AppInfo, Route } from '../types';
@@ -83,6 +84,21 @@ export function AppFrame({
   children: ReactNode;
 }) {
   const selected = selectedNav(route);
+  const { status } = useEngineStatus(5_000);
+  const engineTone = status?.healthy
+    ? 'success'
+    : status?.state === 'starting'
+      ? 'warning'
+      : status?.state === 'error'
+        ? 'error'
+        : 'neutral';
+  const engineLabel = status?.healthy
+    ? '引擎在线'
+    : status?.state === 'starting'
+      ? '引擎启动中'
+      : status?.state === 'error'
+        ? '引擎启动失败'
+        : '引擎离线';
 
   return (
     <div className="app">
@@ -97,8 +113,8 @@ export function AppFrame({
         </nav>
         <div className="topbar__spacer" />
         <div className="engine-status">
-          <AppStatus tone="neutral" label="引擎未接入" />
-          <span className="mono dim">127.0.0.1:8080</span>
+          <AppStatus tone={engineTone} label={engineLabel} isPulsing={status?.state === 'starting'} />
+          <span className="mono dim">{status?.baseUrl ?? '127.0.0.1:8080'}</span>
         </div>
         <AppIconButton
           label={mode === 'light' ? '切换到深色模式' : '切换到浅色模式'}
@@ -124,7 +140,6 @@ export function AppFrame({
         >
           <ListTodo size={16} className="icon" aria-hidden="true" />
           任务
-          <span className="nav-count">6</span>
         </a>
         <a
           className={`nav-item${selected === 'dispatch' ? ' is-selected' : ''}`}
@@ -154,9 +169,21 @@ export function AppFrame({
         <div className="sidenav__footer">
           <div className="engine-mini">
             <div className="engine-mini__row">
-              <AppStatus tone="neutral" label="引擎 IPC 未接入" />
+              <AppStatus
+                tone={engineTone}
+                label={engineLabel}
+                isPulsing={status?.state === 'starting'}
+              />
             </div>
-            <div className="engine-mini__meta">执行器状态未知 · 示例数据</div>
+            <div className="engine-mini__meta">
+              {status?.managed
+                ? '由 GUI 启动和管理'
+                : status?.healthy
+                  ? '连接现有引擎（外部进程）'
+                  : status?.lastError
+                    ? '查看设置中的错误详情'
+                    : '尚未连接'}
+            </div>
             <a className="text-link" href="#/settings">
               管理引擎
             </a>

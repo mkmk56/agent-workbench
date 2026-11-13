@@ -12,6 +12,7 @@ import {
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { EngineManager, errorMessage } from './engine';
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const DEV_URL = process.env.VITE_DEV_SERVER_URL ?? 'http://127.0.0.1:5173';
@@ -73,6 +74,19 @@ function writeToken(token: string): Result {
   }
 }
 
+function readToken(): string | null {
+  if (!safeStorage.isEncryptionAvailable()) {
+    return null;
+  }
+  try {
+    const encrypted = fs.readFileSync(TOKEN_FILE);
+    const value = safeStorage.decryptString(encrypted).trim();
+    return value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function clearToken(): Result {
   try {
     fs.rmSync(TOKEN_FILE, { force: true });
@@ -81,6 +95,8 @@ function clearToken(): Result {
     return { ok: false, error: '删除已保存的 Token 失败。' };
   }
 }
+
+const engine = new EngineManager(readToken);
 
 function isTrustedSender(event: IpcMainInvokeEvent): boolean {
   const url = event.senderFrame?.url ?? '';
@@ -131,11 +147,17 @@ function registerIpc(): void {
     version: app.getVersion(),
     dataDir: DATA_DIR,
     cwd: process.cwd(),
+    engineWorkdir: engine.engineRoot,
     platform: process.platform,
     arch: process.arch,
     isPackaged: app.isPackaged,
     tokenStored: hasStoredToken(),
     encryptionAvailable: safeStorage.isEncryptionAvailable(),
+    update: {
+      supported: false,
+      channel: 'stable',
+      reason: 'GitHub Releases 更新管道尚未实现（计划在后续任务接入）。',
+    },
     versions: {
       electron: process.versions.electron ?? '',
       node: process.versions.node,
@@ -158,6 +180,105 @@ function registerIpc(): void {
     clipboard.writeText(text);
     return { ok: true };
   });
+
+  handle('engine:status', () => engineResult(() => engine.status()));
+  handle('engine:start', () => engineResult(() => engine.start()));
+  handle('engine:stop', () => engineResult(() => engine.stop()));
+  handle('engine:agent-info', () => engineResult(() => engine.agentInfo()));
+
+  handle('engine:task-list', (limit) => {
+    const resolved = optionalInteger(limit, 1, 500, 200);
+    return engineResult(() => engine.listTasks(resolved));
+  });
+
+  handle('engine:task-status', (taskId) =>
+    engineResult(() => engine.taskStatus(requireTaskId(taskId))),
+  );
+
+  handle('engine:task-logs', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      const taskId = requireTaskId(value.taskId);
+      const cursor = optionalInteger(value.cursor, 0, Number.MAX_SAFE_INTEGER, 0);
+      const limit = optionalInteger(value.limit, 1, 1000, 200);
+      return engine.taskLogs(taskId, cursor, limit);
+    }),
+  );
+
+  handle('engine:task-start', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      if (value.agent !== 'claude' && value.agent !== 'dsh') {
+        throw new Error('执行器必须是 claude 或 dsh。');
+      }
+      const prompt = requireText(value.prompt, 'Prompt', 20_000);
+      const cwd =
+        value.cwd == null || value.cwd === ''
+          ? undefined
+          : requireText(value.cwd, '工作目录', 1_024);
+      const timeoutMs = optionalInteger(value.timeoutMs, 1_000, 86_400_000, 30 * 60 * 1000);
+      return engine.startTask({ agent: value.agent, prompt, cwd, timeout_ms: timeoutMs });
+    }),
+  );
+
+  handle('engine:task-send', (taskId, prompt) =>
+    engineResult(() =>
+      engine.sendTask(requireTaskId(taskId), requireText(prompt, '跟进消息', 20_000)),
+    ),
+  );
+
+  handle('engine:task-cancel', (taskId) =>
+    engineResult(() => engine.cancelTask(requireTaskId(taskId))),
+  );
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('参数格式无效。');
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireText(value: unknown, label: string, maxLength: number): string {
+  if (typeof value !== 'string') {
+    throw new Error(`${label} 必须是字符串。`);
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new Error(`${label} 不能为空。`);
+  }
+  if (value.length > maxLength) {
+    throw new Error(`${label} 超过 ${maxLength} 个字符。`);
+  }
+  return value;
+}
+
+function requireTaskId(value: unknown): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
+    throw new Error('任务 ID 无效。');
+  }
+  return value;
+}
+
+function optionalInteger(value: unknown, min: number, max: number, fallback: number): number {
+  if (value == null || value === '') {
+    return fallback;
+  }
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`数值参数必须是 ${min}–${max} 之间的整数。`);
+  }
+  return parsed;
+}
+
+async function engineResult<T>(
+  call: () => Promise<T>,
+): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
+  try {
+    return { ok: true, data: await call() };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
 }
 
 function applySessionPolicy(): void {
@@ -300,11 +421,21 @@ if (!hasSingleInstanceLock) {
     registerIpc();
     createWindow();
 
+    // Attach to an already running engine, otherwise start one that this
+    // process owns. Failures are surfaced through engine:status and the UI.
+    void engine.start().catch(() => {
+      // The manager keeps the detailed error in lastError/status.
+    });
+
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
         createWindow();
       }
     });
+  });
+
+  app.on('before-quit', () => {
+    engine.shutdown();
   });
 
   app.on('window-all-closed', () => {

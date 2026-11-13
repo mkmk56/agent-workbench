@@ -234,7 +234,8 @@ start-hidden.vbs     隐藏启动入口
    - [DONE] 5 屏可运行壳：任务列表、任务详情 + 实时日志、派发、设置、关于；数据为标注的示例数据，引擎相关状态如实显示“未接入”。
    - [DONE] 合并 `assets/branding/`（来自 `design/brand-icon`，未重画图标/字标）。
    - [DONE] 工程基线：数据目录 `app.getPath('userData')`；token 使用 `safeStorage`/DPAPI；单实例；`contextIsolation`/`sandbox`/关闭 `nodeIntegration`；IPC 白名单与可信来源校验；严格 CSP；权限拒绝与导航/新窗口防护。
-   - [NEXT] 引擎 IPC 对接、任务派发/取消端到端逻辑、日志虚拟列表；之后再补更新管道与发布流水线。
+   - [DONE] 引擎 IPC 对接（2026-11-13）：主进程 `EngineManager` 接管引擎生命周期与 MCP 传输，渲染进程不接触 token/网络；5 屏全部改用真实数据；共 16 个白名单 IPC（原 6 + 新增 10）。真实任务派发、日志轮询、跟进与二次确认取消已端到端验证；`/health` 不可达时界面如实显示 `lastError`，不静默失败。
+   - [NEXT] 日志虚拟列表、GitHub Actions 发布流水线、打包与更新验证、设置页非凭据配置持久化。当前引擎若由外部脚本启动，GUI 只 attach、不接管生命周期，界面会如实标注。
    - [TODO] 发布流水线：v0.1 暂不做代码签名；保留 Release 资产校验（安装包、blockmap、`latest.yml`）与失败回滚。
    - [TODO] 现有 `v0.0.2` 按用户决定保留（E-8），但其产物不可追溯，不作为发布流水线证据。
 

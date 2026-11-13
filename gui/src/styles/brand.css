@@ -2097,3 +2097,21 @@ html[data-theme="dark"] .log-row {
     animation-iteration-count: 1 !important;
   }
 }
+.field__hint--error {
+  color: var(--status-error, #b42318);
+}
+
+.rail-note--error {
+  color: var(--status-error, #b42318);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.executor-card.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.64;
+}
+
+.executor-card.is-disabled:hover {
+  border-color: var(--border);
+}

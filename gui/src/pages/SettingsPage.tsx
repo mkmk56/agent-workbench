@@ -5,11 +5,14 @@ import {
   Server,
   Shield,
   Check,
+  Terminal,
 } from 'lucide-react';
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { Notice } from '../components/Layout';
-import { useAppInfo } from '../lib/workbench';
+import { startEngine, stopEngine, useAgentInfo, useEngineStatus } from '../lib/engine';
+import { formatClock, formatUptime } from '../lib/labels';
+import { testToken, useAppInfo } from '../lib/workbench';
 import {
   AlertDialog,
   AppBadge,
@@ -20,18 +23,17 @@ import {
   AppTextField,
 } from '../ui/astryx';
 
-type SectionId = 'credentials' | 'engine' | 'updates' | 'data';
+type SectionId = 'credentials' | 'engine' | 'executors' | 'updates' | 'data';
 
 const SECTIONS: Array<{ id: SectionId; label: string; icon: ReactNode }> = [
   { id: 'credentials', label: '凭据', icon: <KeyRound size={15} /> },
   { id: 'engine', label: '引擎', icon: <Server size={15} /> },
+  { id: 'executors', label: '执行器', icon: <Terminal size={15} /> },
   { id: 'updates', label: '更新', icon: <RefreshCw size={15} /> },
   { id: 'data', label: '数据', icon: <Database size={15} /> },
 ];
 
 const DEFAULT_STATE = {
-  port: '8080',
-  launchMode: 'managed',
   autoStart: true,
   proxy: 'system',
   autoUpdate: true,
@@ -40,20 +42,23 @@ const DEFAULT_STATE = {
 
 export function SettingsPage() {
   const { info, refresh } = useAppInfo();
+  const engine = useEngineStatus(5_000);
+  const agentsState = useAgentInfo(30_000);
   const [activeSection, setActiveSection] = useState<SectionId>('credentials');
   const [tokenStored, setTokenStored] = useState<boolean | null>(null);
   const [editingToken, setEditingToken] = useState(false);
   const [tokenDraft, setTokenDraft] = useState('');
   const [savingToken, setSavingToken] = useState(false);
+  const [testingToken, setTestingToken] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
+  const [engineStopOpen, setEngineStopOpen] = useState(false);
+  const [engineBusy, setEngineBusy] = useState<'start' | 'stop' | 'restart' | null>(null);
   const [notice, setNotice] = useState<{
     tone: 'info' | 'success' | 'warning' | 'error';
     title: string;
     text?: string;
   } | null>(null);
 
-  const [port, setPort] = useState(DEFAULT_STATE.port);
-  const [launchMode, setLaunchMode] = useState(DEFAULT_STATE.launchMode);
   const [autoStart, setAutoStart] = useState(DEFAULT_STATE.autoStart);
   const [proxy, setProxy] = useState(DEFAULT_STATE.proxy);
   const [autoUpdate, setAutoUpdate] = useState(DEFAULT_STATE.autoUpdate);
@@ -61,6 +66,25 @@ export function SettingsPage() {
 
   const stored = tokenStored ?? info.tokenStored;
   const encryptionAvailable = info.encryptionAvailable;
+  const actualLaunchMode = engine.status?.managed
+    ? 'managed'
+    : engine.status?.healthy
+      ? 'attach'
+      : 'stopped';
+  const engineTone = engine.status?.healthy
+    ? 'success'
+    : engine.status?.state === 'starting'
+      ? 'warning'
+      : engine.status?.state === 'error'
+        ? 'error'
+        : 'neutral';
+  const engineLabel = engine.status?.healthy
+    ? '在线'
+    : engine.status?.state === 'starting'
+      ? '启动中'
+      : engine.status?.state === 'error'
+        ? '启动失败'
+        : '离线';
 
   const scrollTo = (id: SectionId) => {
     setActiveSection(id);
@@ -137,21 +161,102 @@ export function SettingsPage() {
     }
   };
 
+  const handleTestToken = async () => {
+    setTestingToken(true);
+    try {
+      const result = await testToken();
+      if (result.ok) {
+        setNotice({
+          tone: 'success',
+          title: '认证通过',
+          text: `agent_info 返回 ${result.data.length} 个执行器；连接与 Token 均有效。`,
+        });
+        await agentsState.refresh();
+      } else {
+        setNotice({ tone: 'error', title: '连接测试失败', text: result.error });
+      }
+    } finally {
+      setTestingToken(false);
+    }
+  };
+
+  const handleStartEngine = async () => {
+    setEngineBusy('start');
+    try {
+      const result = await startEngine();
+      if (result.ok) {
+        setNotice({
+          tone: 'success',
+          title: '引擎已启动',
+          text: `健康检查通过：${result.data.baseUrl}。`,
+        });
+      } else {
+        setNotice({ tone: 'error', title: '引擎启动失败', text: result.error });
+      }
+      await engine.refresh();
+      await agentsState.refresh();
+    } finally {
+      setEngineBusy(null);
+    }
+  };
+
+  const handleStopEngine = async () => {
+    setEngineStopOpen(false);
+    setEngineBusy('stop');
+    try {
+      const result = await stopEngine();
+      if (result.ok) {
+        setNotice({ tone: 'success', title: '引擎已停止' });
+      } else {
+        setNotice({ tone: 'error', title: '引擎未停止', text: result.error });
+      }
+      await engine.refresh();
+      await agentsState.refresh();
+    } finally {
+      setEngineBusy(null);
+    }
+  };
+
+  const handleRestartEngine = async () => {
+    setEngineBusy('restart');
+    try {
+      const stopped = await stopEngine();
+      if (!stopped.ok) {
+        setNotice({ tone: 'error', title: '重启失败：无法停止引擎', text: stopped.error });
+        return;
+      }
+      const started = await startEngine();
+      if (started.ok) {
+        setNotice({
+          tone: 'success',
+          title: '引擎已重启',
+          text: `健康检查通过：${started.data.baseUrl}。`,
+        });
+      } else {
+        setNotice({ tone: 'error', title: '重启失败：引擎未启动', text: started.error });
+      }
+      await engine.refresh();
+      await agentsState.refresh();
+    } finally {
+      setEngineBusy(null);
+    }
+  };
+
   return (
     <>
       <div className="page-head">
         <div>
           <h1 className="page-title">设置</h1>
           <p className="page-subtitle">
-            凭据保存已接入主进程；引擎、更新与其余设置仍是界面状态，本轮不会持久化。
+            凭据、引擎生命周期、执行器状态与任务 IPC 已接入；更新管道与非凭据配置持久化未接入。
           </p>
         </div>
       </div>
 
       <AppBanner
         status="info"
-        title="本轮为可运行界面壳"
-        description="Token 使用 safeStorage 加密保存并已接入；引擎 IPC、任务派发、更新管道与其余设置尚未接入。修改非凭据设置只影响当前界面状态。"
+        title="本次接入范围"
+        description="Token 使用 safeStorage 加密保存；引擎启停、健康检查、执行器与任务数据来自主进程和本地引擎。更新管道、非凭据配置持久化、日志虚拟列表尚未接入。"
       />
 
       {notice != null && (
@@ -264,11 +369,12 @@ export function SettingsPage() {
                       label={stored ? 'Token 已保存' : '未保存 Token'}
                     />
                     <AppButton
-                      label="测试连接"
+                      label={testingToken ? '测试中…' : '测试连接'}
                       tone="ghost"
                       size="sm"
-                      isDisabled
-                      title="引擎 IPC 尚未接入"
+                      isLoading={testingToken}
+                      isDisabled={testingToken}
+                      onClick={() => void handleTestToken()}
                     />
                   </div>
                   <p className="field__hint">
@@ -286,26 +392,60 @@ export function SettingsPage() {
               <h2 className="section__title" id="engine-title">
                 引擎
               </h2>
-              <AppStatus tone="neutral" label="未接入" />
+              <AppStatus tone={engineTone} label={engineLabel} />
             </div>
             <div className="section__body settings-section__body">
               <div className="setting-row">
                 <div>
-                  <div className="setting-label">本地端口</div>
+                  <div className="setting-label">引擎地址</div>
                   <div className="setting-desc">
-                    GUI 通过 127.0.0.1 连接引擎。修改端口后需要重启引擎。
+                    GUI 通过主进程访问本地 MCP 引擎；渲染进程不能直接联网。
                   </div>
                 </div>
                 <div className="setting-control">
                   <input
                     className="input input--mono"
                     type="text"
-                    inputMode="numeric"
-                    value={port}
-                    onChange={(event) => setPort(event.target.value)}
-                    aria-label="本地端口"
+                    value={engine.status?.baseUrl ?? '127.0.0.1:8080'}
+                    readOnly
+                    aria-label="引擎地址"
                   />
-                  <p className="field__hint">范围 1024–65535；默认 8080。仅界面状态。</p>
+                  <p className="field__hint">实际值来自主进程；端口配置持久化未接入。</p>
+                </div>
+              </div>
+
+              <div className="setting-row">
+                <div>
+                  <div className="setting-label">连接</div>
+                  <div className="setting-desc">
+                    最近一次 /health 检查：{engine.status ? formatClock(engine.status.checkedAt) : '—'}
+                  </div>
+                </div>
+                <div className="setting-control">
+                  <div className="setting-inline">
+                    <AppStatus
+                      tone={engine.status?.healthy ? 'success' : 'warning'}
+                      label={engine.status?.healthy ? '健康检查通过' : '未连接'}
+                    />
+                    <span className="mono dim">版本 {engine.status?.version ?? '—'}</span>
+                    <span className="dim small">
+                      运行 {formatUptime(engine.status?.uptimeSeconds ?? null)}
+                    </span>
+                  </div>
+                  <p className="field__hint">
+                    Token 来源：
+                    {engine.status?.tokenConfigured
+                      ? engine.status.tokenSource === 'stored'
+                        ? 'safeStorage（已保存）'
+                        : '环境变量 / workbench.env'
+                      : '未配置'}
+                    。生命周期：
+                    {engine.status?.managed
+                      ? '由 GUI 启动和管理'
+                      : engine.status?.healthy
+                        ? '外部进程（attach）'
+                        : '—'}
+                  </p>
                 </div>
               </div>
 
@@ -318,13 +458,14 @@ export function SettingsPage() {
                   <select
                     className="select"
                     aria-label="启动方式"
-                    value={launchMode}
-                    onChange={(event) => setLaunchMode(event.target.value)}
+                    value={actualLaunchMode}
+                    disabled
                   >
                     <option value="managed">由 GUI 启动和管理</option>
                     <option value="attach">连接现有引擎</option>
+                    <option value="stopped">未运行</option>
                   </select>
-                  <p className="field__hint">连接现有引擎时需要提供 Token。</p>
+                  <p className="field__hint">实际状态只读；启动方式配置持久化未接入。</p>
                 </div>
               </div>
 
@@ -332,12 +473,12 @@ export function SettingsPage() {
                 <div>
                   <div className="setting-label">随应用启动</div>
                   <div className="setting-desc">
-                    打开应用时自动启动引擎；关闭应用时停止由 GUI 启动的引擎。
+                    打开应用时自动连接或启动引擎；关闭应用时停止由 GUI 启动的引擎。
                   </div>
                 </div>
                 <div className="setting-control">
                   <div className="setting-inline">
-                    <span className="muted">仅界面状态</span>
+                    <span className="muted">仅界面状态，持久化未接入</span>
                     <AppSwitch label="随应用启动" value={autoStart} onChange={setAutoStart} />
                   </div>
                 </div>
@@ -368,29 +509,139 @@ export function SettingsPage() {
               <div className="setting-row">
                 <div>
                   <div className="setting-label">引擎控制</div>
-                  <div className="setting-desc">重启会中断正在运行的任务；停止引擎前会二次确认。</div>
+                  <div className="setting-desc">
+                    重启会中断正在运行的任务；停止引擎前会二次确认。外部进程只能 attach，不能由 GUI 停止。
+                  </div>
                 </div>
                 <div className="setting-control">
                   <div className="setting-inline">
-                    <AppStatus tone="neutral" label="未接入" />
+                    <AppStatus tone={engineTone} label={engineLabel} />
                     <div className="setting-buttons">
                       <AppButton
-                        label="重启引擎"
+                        label={engineBusy === 'start' ? '启动中…' : '启动'}
                         size="sm"
-                        isDisabled
-                        title="引擎 IPC 尚未接入"
+                        isLoading={engineBusy === 'start'}
+                        isDisabled={
+                          engineBusy != null ||
+                          engine.status?.healthy === true ||
+                          engine.status?.state === 'starting'
+                        }
+                        onClick={() => void handleStartEngine()}
                       />
                       <AppButton
-                        label="停止"
+                        label={engineBusy === 'restart' ? '重启中…' : '重启引擎'}
+                        size="sm"
+                        isLoading={engineBusy === 'restart'}
+                        isDisabled={
+                          engineBusy != null ||
+                          !engine.status?.managed ||
+                          !engine.status?.healthy
+                        }
+                        title={
+                          engine.status?.managed
+                            ? '重启会中断正在运行的任务'
+                            : '外部启动的引擎不能由 GUI 重启'
+                        }
+                        onClick={() => void handleRestartEngine()}
+                      />
+                      <AppButton
+                        label={engineBusy === 'stop' ? '停止中…' : '停止'}
                         tone="ghost"
                         size="sm"
-                        isDisabled
-                        title="引擎 IPC 尚未接入"
+                        isLoading={engineBusy === 'stop'}
+                        isDisabled={
+                          engineBusy != null ||
+                          !engine.status?.managed ||
+                          !engine.status?.healthy
+                        }
+                        title={
+                          engine.status?.managed
+                            ? '停止前会二次确认'
+                            : '外部启动的引擎不能由 GUI 停止'
+                        }
+                        onClick={() => setEngineStopOpen(true)}
+                      />
+                      <AppButton
+                        label="刷新状态"
+                        tone="ghost"
+                        size="sm"
+                        onClick={() => void engine.refresh()}
                       />
                     </div>
                   </div>
+                  {engine.status?.lastError && (
+                    <p className="field__hint field__hint--error">{engine.status.lastError}</p>
+                  )}
                 </div>
               </div>
+            </div>
+          </section>
+
+          <section className="section" id="executors" aria-labelledby="executors-title">
+            <div className="section__head">
+              <h2 className="section__title" id="executors-title">
+                执行器
+              </h2>
+              <AppStatus
+                tone={agentsState.error ? 'warning' : agentsState.agents.length > 0 ? 'success' : 'neutral'}
+                label={
+                  agentsState.error
+                    ? '读取失败'
+                    : agentsState.agents.length > 0
+                      ? `${agentsState.agents.length} 个执行器`
+                      : '未读取'
+                }
+              />
+            </div>
+            <div className="section__body settings-section__body">
+              {agentsState.agents.length === 0 ? (
+                <div className="setting-row">
+                  <div>
+                    <div className="setting-label">没有执行器数据</div>
+                    <div className="setting-desc">
+                      {agentsState.error ?? '引擎未连接或 agent_info 尚未返回。'}
+                    </div>
+                  </div>
+                  <div className="setting-control">
+                    <AppButton
+                      label="刷新"
+                      size="sm"
+                      onClick={() => void agentsState.refresh()}
+                    />
+                  </div>
+                </div>
+              ) : (
+                agentsState.agents.map((agent) => (
+                  <div className="setting-row" key={agent.name}>
+                    <div>
+                      <div className="setting-label">
+                        {agent.name}
+                        {agent.version ? ` · v${agent.version}` : ''}
+                      </div>
+                      <div className="setting-desc">
+                        {agent.gateway?.model
+                          ? `模型 ${agent.gateway.model} · 网关 ${agent.gateway.base_url}`
+                          : '模型由执行器配置'}
+                        {agent.notes ? ` · ${agent.notes}` : ''}
+                      </div>
+                    </div>
+                    <div className="setting-control">
+                      <div className="setting-inline">
+                        <AppStatus
+                          tone={agent.available ? 'success' : 'error'}
+                          label={agent.available ? '可用' : '不可用'}
+                        />
+                        <span className="dim small">
+                          续跑 {agent.resume_supported ? '支持' : '不支持'}
+                          {agent.logged_in == null
+                            ? ''
+                            : ` · ${agent.logged_in ? '已登录' : '未登录'}`}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </section>
 
@@ -399,9 +650,28 @@ export function SettingsPage() {
               <h2 className="section__title" id="updates-title">
                 更新
               </h2>
-              <AppStatus tone="neutral" label="更新管道未接入" />
+              <AppStatus
+                tone={info.update.supported ? 'success' : 'neutral'}
+                label={info.update.supported ? '已接入' : '未接入'}
+              />
             </div>
             <div className="section__body settings-section__body">
+              <div className="setting-row">
+                <div>
+                  <div className="setting-label">更新管道</div>
+                  <div className="setting-desc">{info.update.reason}</div>
+                </div>
+                <div className="setting-control">
+                  <AppStatus
+                    tone={info.update.supported ? 'success' : 'neutral'}
+                    label={info.update.supported ? '可用' : '未接入'}
+                  />
+                  <p className="field__hint">
+                    状态由主进程提供；通道 {info.update.channel}，更新源 GitHub Releases。
+                  </p>
+                </div>
+              </div>
+
               <div className="setting-row">
                 <div>
                   <div className="setting-label">自动检查更新</div>
@@ -493,6 +763,42 @@ export function SettingsPage() {
 
               <div className="setting-row">
                 <div>
+                  <div className="setting-label">引擎根目录</div>
+                  <div className="setting-desc">
+                    主进程从这里启动本地引擎；打包版引擎资源集成尚未实现。
+                  </div>
+                </div>
+                <div className="setting-control">
+                  <input
+                    className="input input--mono"
+                    type="text"
+                    value={engine.status?.engineRoot ?? '—'}
+                    readOnly
+                    aria-label="引擎根目录"
+                  />
+                </div>
+              </div>
+
+              <div className="setting-row">
+                <div>
+                  <div className="setting-label">引擎日志</div>
+                  <div className="setting-desc">
+                    由 GUI 启动的引擎，其 stdout/stderr 追加到此文件（超过 5 MB 时启动前截断）。
+                  </div>
+                </div>
+                <div className="setting-control">
+                  <input
+                    className="input input--mono"
+                    type="text"
+                    value={engine.status?.logFile ?? '—'}
+                    readOnly
+                    aria-label="引擎日志"
+                  />
+                </div>
+              </div>
+
+              <div className="setting-row">
+                <div>
                   <div className="setting-label">单实例</div>
                   <div className="setting-desc">
                     应用只允许一个实例运行，避免重复启动引擎与端口冲突。
@@ -523,15 +829,13 @@ export function SettingsPage() {
           <div className="save-bar">
             <div className="save-bar__status">
               <Check size={15} aria-hidden="true" />
-              <span>凭据由主进程保存；其余设置为界面状态</span>
+              <span>凭据由主进程保存；引擎生命周期已接入，其余设置持久化未接入</span>
             </div>
             <div className="save-bar__actions">
               <AppButton
                 label="还原"
                 tone="ghost"
                 onClick={() => {
-                  setPort(DEFAULT_STATE.port);
-                  setLaunchMode(DEFAULT_STATE.launchMode);
                   setAutoStart(DEFAULT_STATE.autoStart);
                   setProxy(DEFAULT_STATE.proxy);
                   setAutoUpdate(DEFAULT_STATE.autoUpdate);
@@ -546,7 +850,7 @@ export function SettingsPage() {
                   setNotice({
                     tone: 'warning',
                     title: '设置尚未持久化',
-                    text: '本轮只接入凭据保存；引擎、更新与数据设置的主进程存储将在后续任务实现。',
+                    text: '本次只接入凭据保存与引擎生命周期；非凭据配置的主进程持久化将在后续任务实现。',
                   })
                 }
               />
@@ -567,6 +871,17 @@ export function SettingsPage() {
           setClearOpen(false);
           void clearToken();
         }}
+      />
+
+      <AlertDialog
+        isOpen={engineStopOpen}
+        onOpenChange={setEngineStopOpen}
+        title="停止本地引擎？"
+        description="停止会中断正在运行的任务；引擎重启后会将未完成任务标记为 FAILED。GUI 只停止由自己启动的引擎。"
+        cancelLabel="保留引擎"
+        actionLabel="停止引擎"
+        actionVariant="destructive"
+        onAction={() => void handleStopEngine()}
       />
     </>
   );

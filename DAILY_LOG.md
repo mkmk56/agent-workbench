@@ -866,3 +866,50 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 ### 备注
 
 - 本次新增并提交 `gui/` 工程源码；`spike/` 仍为未跟踪原型，本次不提交。
+
+---
+
+## 2026-11-13（周五）· 补充：GUI 引擎 IPC 接入与端到端验证
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%；额度无法直接观测，按保守估算控制。
+- 全程未在聊天、日志或文件中输出 token；未改任何全局 git 配置。
+
+### 主进程引擎生命周期
+
+- 新增 `gui/electron/engine.ts`：`EngineManager` 负责 `/health` 探测、token 解析（safeStorage > 环境变量 > `workbench.env`，token 不出主进程）、MCP Streamable HTTP 调用、引擎进程启停与日志落盘（`userData/engine/engine.log`）。
+- 现状：8080 上的引擎由启动脚本/看门狗以外部进程运行，GUI 采用 attach 模式（`managed=false`），不会越权停止；`engine:stop` 返回明确错误“引擎由外部进程启动，GUI 未接管其生命周期，无法从界面停止”。
+- 接管路径用独立端口 18080 + 临时 DB/日志验证（不改动正在运行的引擎）：主进程拉起真实 `src/server.js`，7.4 秒通过 `/health`，`agent_info`（claude/dsh 均可用）与 `task_list` 经 Bearer 鉴权成功；`stop` 后健康检查不可达。测试实例 PID 24660 已停止。
+- 失败路径：18081 端口被非引擎监听占用，子进程退出（EADDRINUSE），`start()` 抛出并保留 stderr 摘要的 `lastError`，状态为 `error`，未静默失败。
+- 为隔离测试给 `EngineManager` 增加可选 `port` 参数（默认仍为 8080），生产路径不变。
+
+### IPC 对接
+
+- 原 6 个 IPC 保留；新增 10 个：`engine:status`、`engine:start`、`engine:stop`、`engine:agent-info`、`engine:task-list`、`engine:task-status`、`engine:task-logs`、`engine:task-start`、`engine:task-send`、`engine:task-cancel`；preload 共暴露 16 个白名单方法。
+- 参数在主进程校验：任务 ID 正则、数值范围、执行器枚举、文本长度；返回统一 `{ok,data} | {ok:false,error}`。
+- 5 屏数据替换：任务列表（`task_list` + `agent_info`，状态/搜索/执行器筛选，5 秒刷新）；详情（`task_status` + `task_logs`，1.2 秒游标轮询至终态）；派发（校验后 `task_start`，成功跳转详情）；设置（真实引擎/执行器状态、测试连接、启停）；关于（沿用真实版本信息）。设置页非凭据配置仍明确标注“未接入”。
+
+### 端到端验证（真实 GUI 操作）
+
+- 派发：在派发页填 `ping -n 20 127.0.0.1`，点击“派发任务”，真实创建任务并跳转详情。
+- 取消：任务 `e68db5e1-fb19-4795-a5cd-37ba5313ae81` 进入 WORKING，页面轮询到 42 条日志（system/stdout/stderr）；点击“取消任务”→ AlertDialog 二次确认 → 状态 CANCELLED（process_state=cancelled，exit_code=1，elapsed 18.57s）。另一任务 `cf72f542-16fa-4b45-a4a9-26dcf6c23d27` 同样派发并取消。
+- 列表：显示真实任务；按执行器筛选（dsh 隐藏 / claude 显示）、按任务 ID 搜索、按状态段筛选（当时显示“成功 28 / 已取消 3”）均验证通过。
+- 跟进：任务 `b6a35dd0-8f85-4888-bddd-c3d1bd07184a` 完成后，在详情页发送跟进消息，创建 `288efffe-821e-488f-b1f2-0260ba2a1c87`，两者均为 COMPLETED 且 session_id 同为 `e62289da-50ae-45cf-8cf2-a8e5a74d70ee`，页面跳转到新任务。
+
+### 安全基线复测
+
+- 生产 `file://` 构建下 18 项检查全部通过：preload 恰好 16 个方法且不可扩展；renderer 无 `require`/`process`/`module`/`Buffer`/`ipcRenderer`；直接 fetch 引擎与 github.com 均被 CSP 拦截；内联脚本被 CSP 阻止；非法任务 ID/游标/执行器/空跟进/空 token 均在主进程被拒；`window.open` 被拒；导航被阻止；webview 不可用；`app:info` 返回真实版本（Electron 44.11.3 / Node 24.22.2 / Chrome 152）。
+- 单实例：应用运行中再次启动，1 秒内退出（exit 0）。
+- safeStorage/DPAPI：临时 userData 中用一次性哑 token 完成加密落盘→读回解密往返，密文不含明文，随后删除；真实 token 未读写、未输出。当前 `tokenStored=false`，token 来自 `workbench.env`（`tokenSource=environment`）。
+- `npm run typecheck`、`npm run build` 均通过（仅既有 chunk 体积警告）。
+
+### 未做事项（按用户范围）
+
+- 日志虚拟列表、GitHub Actions 发布流水线、打包与更新验证、设置页非凭据配置持久化。
+- 未通过杀外部引擎来制造 GUI 启动失败场景（会中断当前运行任务）；失败路径以同一 `EngineManager` 在隔离端口验证，界面展示同一 `lastError`。
+
+### 备注
+
+- 未触碰 `spike/electron`、`design/brand-icon`、`src/`；`spike/` 仍未跟踪、未提交。
+- 临时截图与测试脚本未纳入版本库。

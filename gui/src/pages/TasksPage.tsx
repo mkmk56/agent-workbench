@@ -1,9 +1,17 @@
-import { ChevronRight, Plus, RefreshCw, Terminal } from 'lucide-react';
+import { ChevronRight, Plus, RefreshCw, Server, Terminal } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { PageHead, Panel, RailCard } from '../components/Layout';
-import { DEMO_TASKS, STATUS_LABELS } from '../data/demo';
+import { startEngine, useAgentInfo, useEngineStatus, useTaskList } from '../lib/engine';
+import {
+  ENGINE_STATE_LABELS,
+  STATUS_LABELS,
+  formatClock,
+  formatDuration,
+  formatRelative,
+  formatUptime,
+} from '../lib/labels';
 import { navigate } from '../lib/router';
-import type { Executor, TaskStatus } from '../types';
+import type { TaskRow, TaskStatus, Executor } from '../types';
 import {
   AppBadge,
   AppButton,
@@ -27,25 +35,43 @@ const STATUS_TONE = {
   queued: 'neutral',
 } as const;
 
+function displayStatus(task: TaskRow): {
+  tone: 'running' | 'success' | 'error' | 'neutral';
+  label: string;
+} {
+  if (task.engineState === 'BLOCKED') {
+    return { tone: 'error', label: '阻塞' };
+  }
+  if (task.engineState === 'STALE') {
+    return { tone: 'error', label: '静默' };
+  }
+  if (task.engineState === 'WAITING') {
+    return { tone: 'running', label: '等待中' };
+  }
+  return { tone: STATUS_TONE[task.status], label: STATUS_LABELS[task.status] };
+}
+
 export function TasksPage() {
   const [filter, setFilter] = useState<StatusFilter>('all');
   const [executor, setExecutor] = useState<ExecutorFilter>('all');
   const [query, setQuery] = useState('');
-  const [lastUpdated, setLastUpdated] = useState(() =>
-    new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
-  );
+  const [starting, setStarting] = useState(false);
+
+  const tasksState = useTaskList(200, 5_000);
+  const engine = useEngineStatus(5_000);
+  const agentsState = useAgentInfo(30_000);
 
   const counts = useMemo(() => {
-    const result: Record<string, number> = { all: DEMO_TASKS.length };
-    for (const task of DEMO_TASKS) {
+    const result: Record<string, number> = { all: tasksState.tasks.length };
+    for (const task of tasksState.tasks) {
       result[task.status] = (result[task.status] ?? 0) + 1;
     }
     return result;
-  }, []);
+  }, [tasksState.tasks]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return DEMO_TASKS.filter((task) => {
+    return tasksState.tasks.filter((task) => {
       if (filter !== 'all' && task.status !== filter) {
         return false;
       }
@@ -53,12 +79,39 @@ export function TasksPage() {
         return false;
       }
       if (needle.length > 0) {
-        const haystack = `${task.title} ${task.id} ${task.executor} ${task.sha}`.toLowerCase();
+        const haystack = `${task.title} ${task.id} ${task.executor} ${task.sessionId}`.toLowerCase();
         return haystack.includes(needle);
       }
       return true;
     });
-  }, [executor, filter, query]);
+  }, [executor, filter, query, tasksState.tasks]);
+
+  const failures = tasksState.tasks.filter((task) => task.status === 'failed').slice(0, 3);
+  const lastUpdated = tasksState.lastUpdated
+    ? tasksState.lastUpdated.toLocaleTimeString('zh-CN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      })
+    : '—';
+
+  const refreshAll = () => {
+    void tasksState.refresh();
+    void engine.refresh();
+    void agentsState.refresh();
+  };
+
+  const handleStart = async () => {
+    setStarting(true);
+    try {
+      await startEngine();
+      await engine.refresh();
+      await tasksState.refresh();
+      await agentsState.refresh();
+    } finally {
+      setStarting(false);
+    }
+  };
 
   const segments = [
     { value: 'all', label: `全部 ${counts.all ?? 0}` },
@@ -68,24 +121,46 @@ export function TasksPage() {
     { value: 'cancelled', label: `已取消 ${counts.cancelled ?? 0}` },
   ];
 
+  const engineTone = engine.status?.healthy
+    ? 'success'
+    : engine.status?.state === 'starting'
+      ? 'warning'
+      : engine.status?.state === 'error'
+        ? 'error'
+        : 'neutral';
+  const engineLabel = engine.status?.healthy
+    ? '在线'
+    : engine.status?.state === 'starting'
+      ? '启动中'
+      : engine.status?.state === 'error'
+        ? '启动失败'
+        : '离线';
+
   return (
     <>
       <PageHead
         title="任务"
-        subtitle={`${DEMO_TASKS.length} 个示例任务 · ${counts.running ?? 0} 个运行中 · 最后更新 ${lastUpdated}`}
+        subtitle={
+          tasksState.error
+            ? `引擎数据读取失败：${tasksState.error}`
+            : `${tasksState.tasks.length} 个任务 · ${counts.running ?? 0} 个运行中 · 最后更新 ${lastUpdated}`
+        }
         actions={
           <>
+            {!engine.status?.healthy && (
+              <AppButton
+                label={starting ? '正在启动引擎…' : '启动引擎'}
+                tone="primary"
+                icon={<Server size={15} />}
+                isLoading={starting}
+                isDisabled={starting || engine.status?.state === 'starting'}
+                onClick={() => void handleStart()}
+              />
+            )}
             <AppButton
               label="刷新"
               icon={<RefreshCw size={15} />}
-              onClick={() =>
-                setLastUpdated(
-                  new Date().toLocaleTimeString('zh-CN', {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  }),
-                )
-              }
+              onClick={refreshAll}
             />
             <AppButton
               label="派发任务"
@@ -125,10 +200,29 @@ export function TasksPage() {
             </select>
           </div>
 
-          {filtered.length === 0 ? (
+          {tasksState.loading && tasksState.tasks.length === 0 ? (
+            <AppEmptyState title="正在读取任务" description="正在从本地引擎加载任务列表…" />
+          ) : tasksState.error && tasksState.tasks.length === 0 ? (
             <AppEmptyState
-              title="没有匹配的任务"
-              description="请调整状态、执行器或搜索条件。"
+              title="无法读取任务列表"
+              description={tasksState.error}
+              action={
+                <AppButton
+                  label="重试"
+                  tone="secondary"
+                  icon={<RefreshCw size={15} />}
+                  onClick={refreshAll}
+                />
+              }
+            />
+          ) : filtered.length === 0 ? (
+            <AppEmptyState
+              title={tasksState.tasks.length === 0 ? '还没有任务' : '没有匹配的任务'}
+              description={
+                tasksState.tasks.length === 0
+                  ? '通过“派发任务”创建第一个真实任务。'
+                  : '请调整状态、执行器或搜索条件。'
+              }
             />
           ) : (
             <Table
@@ -151,7 +245,7 @@ export function TasksPage() {
                       </a>
                       <div className="task-meta">
                         <span>#{task.id}</span>
-                        <span>{task.sha}</span>
+                        <span className="mono">{task.engineState}</span>
                       </div>
                     </div>
                   ),
@@ -171,20 +265,23 @@ export function TasksPage() {
                   key: 'status',
                   header: '状态',
                   width: proportional(13),
-                  renderCell: (task) => (
-                    <AppStatus
-                      tone={STATUS_TONE[task.status]}
-                      label={STATUS_LABELS[task.status]}
-                      isPulsing={task.status === 'running'}
-                    />
-                  ),
+                  renderCell: (task) => {
+                    const display = displayStatus(task);
+                    return (
+                      <AppStatus
+                        tone={display.tone}
+                        label={display.label}
+                        isPulsing={task.status === 'running'}
+                      />
+                    );
+                  },
                 },
                 {
                   key: 'duration',
                   header: '用时',
                   width: proportional(10),
                   align: 'end',
-                  renderCell: (task) => <span className="num">{task.duration}</span>,
+                  renderCell: (task) => <span className="num">{formatDuration(task.durationMs)}</span>,
                 },
                 {
                   key: 'updated',
@@ -192,8 +289,8 @@ export function TasksPage() {
                   width: proportional(17),
                   renderCell: (task) => (
                     <div>
-                      <span className="muted">{task.updated}</span>
-                      <div className="cell-sub">{task.updatedAt}</div>
+                      <span className="muted">{formatRelative(task.updatedAt)}</span>
+                      <div className="cell-sub">{formatClock(task.updatedAt)}</div>
                     </div>
                   ),
                 },
@@ -216,28 +313,48 @@ export function TasksPage() {
 
           <div className="panel__footer">
             <span>
-              显示 {filtered.length} / {DEMO_TASKS.length} 个示例任务
+              显示 {filtered.length} / {tasksState.tasks.length} 个任务
             </span>
-            <span>自动刷新未接入 · 数据为界面示例</span>
+            <span>自动刷新 5 秒 · 数据来自本地引擎</span>
           </div>
         </Panel>
 
         <aside className="rail" aria-label="引擎与执行器状态">
-          <RailCard title="引擎" meta={<AppStatus tone="neutral" label="未接入" />}>
+          <RailCard title="引擎" meta={<AppStatus tone={engineTone} label={engineLabel} />}>
             <dl className="kv">
               <dt>地址</dt>
-              <dd className="mono">127.0.0.1:8080</dd>
+              <dd className="mono">{engine.status?.baseUrl ?? '127.0.0.1:8080'}</dd>
               <dt>连接</dt>
               <dd>
-                <AppStatus tone="neutral" label="IPC 未接入" />
+                <AppStatus
+                  tone={engine.status?.healthy ? 'success' : 'neutral'}
+                  label={engine.status?.healthy ? '健康检查通过' : '未连接'}
+                />
               </dd>
-              <dt>执行器</dt>
-              <dd>状态未知</dd>
-              <dt>健康检查</dt>
+              <dt>版本</dt>
+              <dd className="mono">{engine.status?.version ?? '—'}</dd>
+              <dt>运行时长</dt>
+              <dd>{formatUptime(engine.status?.uptimeSeconds ?? null)}</dd>
+              <dt>生命周期</dt>
               <dd>
-                <AppStatus tone="neutral" label="未执行" />
+                {engine.status?.managed
+                  ? '由 GUI 启动和管理'
+                  : engine.status?.healthy
+                    ? '外部进程（attach）'
+                    : '—'}
+              </dd>
+              <dt>Token</dt>
+              <dd>
+                {engine.status?.tokenConfigured
+                  ? engine.status.tokenSource === 'stored'
+                    ? '已保存（safeStorage）'
+                    : '来自环境 / workbench.env'
+                  : '未配置'}
               </dd>
             </dl>
+            {engine.status?.lastError && (
+              <p className="rail-note rail-note--error">{engine.status.lastError}</p>
+            )}
             <div className="rail-actions">
               <AppButton
                 label="管理引擎"
@@ -248,25 +365,40 @@ export function TasksPage() {
             </div>
           </RailCard>
 
-          <RailCard title="执行器" meta={<span className="dim small">待接入</span>}>
-            <div className="agent-row">
-              <div>
-                <div className="agent-name">
-                  <AppStatus tone="neutral" label="claude" />
+          <RailCard
+            title="执行器"
+            meta={<span className="dim small">{agentsState.loading ? '读取中…' : 'agent_info'}</span>}
+          >
+            {agentsState.agents.length === 0 ? (
+              <p className="rail-note">
+                {agentsState.error ?? '暂无执行器数据；请确认引擎已启动。'}
+              </p>
+            ) : (
+              agentsState.agents.map((agent) => (
+                <div className="agent-row" key={agent.name}>
+                  <div>
+                    <div className="agent-name">
+                      <AppStatus
+                        tone={agent.available ? 'success' : 'error'}
+                        label={agent.name}
+                      />
+                    </div>
+                    <div className="agent-meta">
+                      {agent.version ? `v${agent.version}` : '版本未知'}
+                      {agent.gateway?.model ? ` · ${agent.gateway.model}` : ''}
+                    </div>
+                  </div>
+                  <AppBadge
+                    tone={agent.available ? 'success' : 'error'}
+                    label={agent.available ? '可用' : '不可用'}
+                  />
                 </div>
-                <div className="agent-meta">模型由执行器配置</div>
-              </div>
-              <AppBadge tone="neutral" label="默认" />
-            </div>
-            <div className="agent-row">
-              <div>
-                <div className="agent-name">
-                  <AppStatus tone="neutral" label="dsh" />
-                </div>
-                <div className="agent-meta">模型由执行器配置</div>
-              </div>
-            </div>
-            <p className="rail-note">执行器状态将在引擎 IPC 接入后显示。</p>
+              ))
+            )}
+            {agentsState.error && agentsState.agents.length > 0 && (
+              <p className="rail-note rail-note--error">{agentsState.error}</p>
+            )}
+            <p className="rail-note">执行器状态来自引擎 agent_info，每 30 秒刷新。</p>
           </RailCard>
 
           <RailCard
@@ -277,13 +409,19 @@ export function TasksPage() {
               </a>
             }
           >
-            <a className="recent-failure" href="#/tasks/T-1040">
-              <div className="recent-failure__title">排查 dsh 执行器退出码 1</div>
-              <div className="recent-failure__meta">
-                <AppStatus tone="error" label="失败" />
-                <span className="dim small">18 分钟前</span>
-              </div>
-            </a>
+            {failures.length === 0 ? (
+              <p className="rail-note">当前没有失败任务。</p>
+            ) : (
+              failures.map((task) => (
+                <a className="recent-failure" href={`#/tasks/${task.id}`} key={task.id}>
+                  <div className="recent-failure__title">{task.title}</div>
+                  <div className="recent-failure__meta">
+                    <AppStatus tone="error" label={ENGINE_STATE_LABELS[task.engineState]} />
+                    <span className="dim small">{formatRelative(task.updatedAt)}</span>
+                  </div>
+                </a>
+              ))
+            )}
           </RailCard>
         </aside>
       </div>
