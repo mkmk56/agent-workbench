@@ -19,7 +19,7 @@ export function App() {
   let page: ReactElement;
   switch (route.name) {
     case 'task':
-      page = <TaskDetailPage id={route.id} />;
+      page = <TaskDetailPage key={route.id} id={route.id} />;
       break;
     case 'dispatch':
       page = <DispatchPage />;

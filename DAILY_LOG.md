@@ -896,6 +896,7 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 - 取消：任务 `e68db5e1-fb19-4795-a5cd-37ba5313ae81` 进入 WORKING，页面轮询到 42 条日志（system/stdout/stderr）；点击“取消任务”→ AlertDialog 二次确认 → 状态 CANCELLED（process_state=cancelled，exit_code=1，elapsed 18.57s）。另一任务 `cf72f542-16fa-4b45-a4a9-26dcf6c23d27` 同样派发并取消。
 - 列表：显示真实任务；按执行器筛选（dsh 隐藏 / claude 显示）、按任务 ID 搜索、按状态段筛选（当时显示“成功 28 / 已取消 3”）均验证通过。
 - 跟进：任务 `b6a35dd0-8f85-4888-bddd-c3d1bd07184a` 完成后，在详情页发送跟进消息，创建 `288efffe-821e-488f-b1f2-0260ba2a1c87`，两者均为 COMPLETED 且 session_id 同为 `e62289da-50ae-45cf-8cf2-a8e5a74d70ee`，页面跳转到新任务。
+- 复测发现：详情页从任务 A 跳到任务 B 时组件复用、不重新挂载，跟进成功提示（sessionStorage flash）被吞掉；已在路由处加 `key={route.id}`，复测提示正常显示。
 
 ### 安全基线复测
 
