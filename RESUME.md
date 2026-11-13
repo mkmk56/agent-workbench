@@ -1,6 +1,6 @@
 # RESUME — agent-workbench 项目长期状态记忆
 
-> 最后更新：2026-11-13（MVP v0.1 范围确认、MIT 许可证、签名方案确定；含 GUI 技术选型、Electron spike 实测与 dsh 复核修正）
+> 最后更新：2026-11-13（MVP v0.1 范围确认、MIT 许可证、SignPath 签名方案与资格核查；含 GUI 技术选型、Electron spike 实测与 dsh 复核修正）
 > 本文件用于跨会话恢复项目上下文。只记录已验证的事实；无法观测的数据（如额度消耗）明确标注，不编造数字或测试结果。
 > 事实来源：仓库代码与文档、git 记录、2026-11-13 的运行验证记录。
 
@@ -32,7 +32,7 @@
 
 把 agent-workbench 从“本地 MCP 服务器”发展为**带图形界面的可安装桌面软件**；MCP 服务器继续作为核心引擎，负责执行器管理、任务调度、状态与日志持久化。GUI 技术栈已由用户确认 **Electron**，并已完成可行性 spike；正式 GUI 工程尚未开始。
 
-2026-11-13：MVP v0.1 范围已由用户确认，见 `docs/MVP_SCOPE.md`。分发范围为用户本人自用 + 小范围分享，不做公开分发，**暂不签名**。
+2026-11-13：MVP v0.1 范围已由用户确认，见 `docs/MVP_SCOPE.md`。分发范围为用户本人自用 + 小范围分享，不做面向公众的正式推广；**签名方案采用 SignPath Foundation 免费开源签名**（发布者显示为 “SignPath Foundation”，用户已知悉并接受）。
 
 ### 当前产品形态
 
@@ -60,10 +60,10 @@
   - Electron spike 五项全部通过，见 `docs/gui-spike-results.md`。
 - **阶段四：GUI 产品化** —— [IN_PROGRESS]（准备中）
   - MVP v0.1 范围与工程基线已确认（`docs/MVP_SCOPE.md`，2026-11-13）；正式 GUI 工程尚未创建。
-  - 签名方案：暂不签名（自用 + 小范围分享），以后公开分发再评估 SignPath 免费签名。
+  - 签名方案：SignPath Foundation 免费开源签名（发布者显示 “SignPath Foundation”）；资格核查与申请准备见 `docs/SIGNING_SIGNPATH.md`，申请尚未提交。
 - 2026-11-13：GUI 技术选型调研完成，决策文档 `docs/gui-decision.md`，推荐 Electron；**用户已确认 Electron**。
 - 2026-11-13：Electron 选型 spike 完成（独立分支 `spike/electron`，提交 `ef09762`），五项验证全部通过；实测结果见 `docs/gui-spike-results.md`。核心 `src/` 未修改，spike 代码不并入 main。后续 spike 分支推进到 `56904d2`（接入 Converge 品牌图标），仅作验证记录，不改变正式工程边界。
-- 2026-11-13：MVP v0.1 范围确认；仓库补充 MIT LICENSE；签名方案确定为暂不签名，见 `docs/MVP_SCOPE.md`。
+- 2026-11-13：MVP v0.1 范围确认；仓库补充 MIT LICENSE；签名方案确定为 SignPath Foundation 免费开源签名，见 `docs/MVP_SCOPE.md` 与 `docs/SIGNING_SIGNPATH.md`。同日早前的“暂不签名”口径已被用户后续决定取代。
 
 ---
 
@@ -155,7 +155,9 @@ start-hidden.vbs     隐藏启动入口
 | [DONE] | dsh spike 文档复核修正 | 2026-11-13 dsh 只读审核（任务 `faf4d74d-3bd6-4e8c-b5c8-1bf588ff3967`）指出 11 项文档问题，结论“Electron 可行”不变。已修正：下载耗时改为缓存命中如实表述、打包版 attach 需 `SPIKE_EXISTING_ENV`、blockmap 字节数、`tools/list` 补证据、`:8080` 只读口径、源码仅存于 spike 分支、Release 可追溯性与未测风险。README 修正提交 `82a4bfd` |
 | [DONE] | MVP v0.1 范围确认 | 2026-11-13 用户确认 v0.1 包含/不做/工程基线，正式文档 `docs/MVP_SCOPE.md` |
 | [DONE] | MIT LICENSE | 2026-11-13 在 `main` 根目录补充 MIT LICENSE（Copyright (c) 2026 mkmk56） |
-| [DONE] | 签名方案确定 | 2026-11-13 用户决定：自用 + 小范围分享，不做公开分发，v0.1 **暂不签名**；SmartScreen 首次安装点一次“仍要运行”即可。以后公开分发再考虑 SignPath 免费签名 |
+| [DONE] | 签名方案确定 | 2026-11-13 用户确认采用 **SignPath Foundation 免费开源签名**；发布者显示为 “SignPath Foundation”，用户已知悉并接受。同日早前“暂不签名”口径已被取代 |
+| [DONE] | SignPath 资格核查 | 2026-11-13 按官方条款逐项核对，结果与申请材料/步骤写入 `docs/SIGNING_SIGNPATH.md`；基本资格方向符合，但存在 CI 可追溯构建、Code signing policy、隐私说明、产品名统一等阻断项，且项目信誉较新，批准不确定 |
+| [TODO] | SignPath 申请 | 尚未提交；须由用户本人注册并提交。提交前先完成 `docs/SIGNING_SIGNPATH.md` 第 5 节阻断项 |
 | [TODO] | 稳定公网入口 | 将 Cloudflare quick Tunnel 换为命名 Tunnel，获得固定 URL |
 | [TODO] | 测试覆盖完善 | 在现有验收脚本基础上补齐自动化与回归覆盖 |
 | [TODO] | 文档整理 | 统一 README / TESTS / RESUME 的口径，处理已知文档差异（见 E） |
@@ -197,8 +199,9 @@ start-hidden.vbs     隐藏启动入口
 9. **[TODO] electron-builder 发布流水线不完整**
    本机执行 `--publish always` 时返回 422（`Published releases must have a valid tag`），Release 虽创建且上传了安装包，但漏传 `latest.yml`/blockmap；本次用 `gh release upload --clobber` 手工补齐。正式发布需在 CI/脚本中校验资产完整性，并调查 422 的重复发布竞态。
 
-10. **[DECIDED] 安装包暂不签名**
-    2026-11-13 用户决定：应用仅自用并小范围分享，不做公开分发，v0.1 暂不签名；SmartScreen 首次安装点一次“仍要运行”即可。该方案已写入 `docs/MVP_SCOPE.md`。以后如需公开分发，再评估 SignPath Foundation 免费开源签名（届时发布者显示为 “SignPath Foundation”）。
+10. **[IN_PROGRESS] 安装包签名：SignPath Foundation**
+    2026-11-13 用户确认采用 SignPath Foundation 免费开源签名；发布者将显示为 “SignPath Foundation”（用户接受）。资格核查与申请准备见 `docs/SIGNING_SIGNPATH.md`。
+    当前仍未签名，且申请尚未提交；主要阻断项：无可追溯 CI 构建、README 缺 Code signing policy 与隐私说明、产物名仍为 `AgentWorkbenchSpike`、GitHub 可信构建未配置、MFA 未核实。现有 `v0.0.2` 只能算公开测试发布，不能作为可追溯构建证据。
 
 11. **[RISK] 首次启动引擎耗时明显**
     打包版首次拉起引擎实测 **4,264 ms**（引擎资源 3,670 个文件，冷缓存/Defender 扫描），热启动 264–273 ms。正式产品需评估预启动、减少文件数或安装后预热。
@@ -221,14 +224,15 @@ start-hidden.vbs     隐藏启动入口
    - [DONE] dsh 独立审核（只读）提出 10 项问题（无高危），已逐项修正并复算加权总分；推荐结论不变。
    - [DONE] 用户确认 Electron（2026-11-13）。
    - [DONE] 执行 1–2 天 spike（分支 `spike/electron` @ `ef09762`）：引擎启停、`/health`、任务与日志、NSIS 打包、自动更新、`ELECTRON_RUN_AS_NODE` 全部通过；结果见 `docs/gui-spike-results.md`。
-   - [DONE] spike 已完成并经 dsh 复核修正；MCP 范围与安全基线已确认（`docs/MVP_SCOPE.md`，2026-11-13）。
-   - [DONE] 签名方案已确认：自用 + 小范围分享，v0.1 暂不签名。
-   - [NEXT] 创建正式 GUI 工程（与 spike 分离），按 `docs/MVP_SCOPE.md` 实现 MVP v0.1。
+   - [DONE] spike 已完成并经 dsh 复核修正；MVP 范围与安全基线已确认（`docs/MVP_SCOPE.md`，2026-11-13）。
+   - [DONE] 签名方案已确认：SignPath Foundation 免费开源签名（发布者显示 “SignPath Foundation”，用户接受）；资格核查见 `docs/SIGNING_SIGNPATH.md`。
+   - [NEXT] 创建正式 GUI 工程（与 spike 分离），按 `docs/MVP_SCOPE.md` 实现 MVP v0.1；同时完成 SignPath 申请阻断项。
 
 2. **P1 正式 GUI 工程（下一步）**
    - 数据目录改为 `app.getPath('userData')`；token 使用 `safeStorage`/DPAPI；单实例与进程所有权；最小 IPC/CSP。
-   - 发布流水线：v0.1 暂不做代码签名；保留 Release 资产校验（安装包、blockmap、`latest.yml`）与失败回滚。
-   - 处理 E-8 测试 Release 保留/删除决策。
+   - 发布流水线：GitHub Actions 从 tag 构建、资产完整性校验（安装包、blockmap、`latest.yml`）、失败回滚；接入 SignPath 可信构建与人工批准。签名会改变安装包字节，`latest.yml`/blockmap 必须在签名后重新生成或校验，`publisherName` 需匹配证书主体。
+   - SignPath：先完成 `docs/SIGNING_SIGNPATH.md` 第 5 节阻断项（README Code signing policy/隐私说明、正式产品名、CI 可追溯 Release、GitHub App/connector、MFA），再由用户本人提交申请。
+   - 处理 E-8 测试 Release 保留/删除决策；现有 `v0.0.2` 不作为可追溯构建证据。
 
 3. **P1 稳定公网入口**
    - 配置 Cloudflare 命名 Tunnel（需自有域名），替换 quick Tunnel，获得固定 HTTPS URL。
@@ -265,7 +269,8 @@ start-hidden.vbs     隐藏启动入口
 - **源码仅存于 `spike/electron` 分支提交**（`package.json`、`main.js`、`preload.cjs`、`renderer/`、`scripts/`）；`main` 工作区没有这些源文件，只有被忽略/未跟踪的 `spike/electron/artifacts/`、`release/`、`node_modules/`。
 - `spike/electron/.gitignore`（`node_modules/`、`release/`、`artifacts/`、`.tmp/`）只存在于 spike 分支；在 `main` 上这些目录是普通未跟踪项，**不进入主线**。
 - `main` 分支仅新增/修改文档：`docs/gui-spike-results.md`、`docs/gui-decision.md`、`RESUME.md`、`DAILY_LOG.md`；未修改 `src/`、`start-workbench.cmd` 等核心服务代码。
-- 2026-11-13 MVP/许可更新（`main`）：新增根目录 `LICENSE`（MIT）、`docs/MVP_SCOPE.md`，并更新 `RESUME.md` / `DAILY_LOG.md`；未修改 `src/`、`spike/electron`、`design/brand-icon`。本次提交 hash 以 `git log -1` 与任务汇报为准。
+- 2026-11-13 MVP/许可更新（`main`）：新增根目录 `LICENSE`（MIT）、`docs/MVP_SCOPE.md`，并更新 `RESUME.md` / `DAILY_LOG.md`；提交 `7dc4474`。未修改 `src/`、`spike/electron`、`design/brand-icon`。
+- 2026-11-13 SignPath 更新（`main`）：新增 `docs/SIGNING_SIGNPATH.md`，修订 `docs/MVP_SCOPE.md`、`RESUME.md`、`DAILY_LOG.md` 的签名口径；提交 hash 以 `git log -1` 与任务汇报为准。推送经系统代理 `127.0.0.1:7897`，推送后用 `git ls-remote` 核对远程 HEAD。
 - 实测数据与本机证据（`artifacts/`、`release/`）不提交。
 - 并发状态：`design/brand-icon` 分支 `62957d8`（`design: add brand icon assets, design system and brand guidelines`，含 `assets/branding/**`、`docs/BRAND_GUIDELINES.md`、`docs/DESIGN_SYSTEM.md`）已提交但**未合并 main**；本次修正期间本地主工作区被切到 `spike/electron`，并有未提交的品牌图标接入改动（`main.js`、`package.json`、`renderer/` 等），本次未触碰。
 
@@ -274,7 +279,7 @@ start-hidden.vbs     隐藏启动入口
 ## H 最终交付状态
 
 - **最终交付目标**：可安装的图形界面桌面软件，MCP 服务器作为核心引擎；用户可在本机管理执行器、任务、日志与配置，并通过稳定入口接受云端编排端派单。
-- **当前交付形态**：本地 MCP 引擎已可用并通过验收；公网入口可用但为临时 URL；GUI 技术栈已确认 Electron，spike 已完成并全部通过；MVP v0.1 范围与工程基线已确认，正式 GUI 工程尚未开始；v0.1 暂不签名（自用 + 小范围分享）。
+- **当前交付形态**：本地 MCP 引擎已可用并通过验收；公网入口可用但为临时 URL；GUI 技术栈已确认 Electron，spike 已完成并全部通过；MVP v0.1 范围与工程基线已确认，正式 GUI 工程尚未开始；安装包尚未签名，签名方案已确定为 SignPath Foundation（申请未提交）。
 - **整体状态**：[IN_PROGRESS]
 - **阶段一（项目接管）**：[DONE]
   - 接管初始化（长期记忆文件 + 每日日志 + 首次同步）：[DONE]
@@ -285,7 +290,7 @@ start-hidden.vbs     隐藏启动入口
   - Electron spike：全部 5 项通过，结果见 `docs/gui-spike-results.md`
 - **阶段四（GUI 产品化）**：[IN_PROGRESS] 准备中
   - MVP v0.1 范围与工程基线已确认（`docs/MVP_SCOPE.md`，2026-11-13）
-  - 签名方案：暂不签名（自用 + 小范围分享，SmartScreen 首次安装点“仍要运行”）；以后公开分发再考虑 SignPath 免费签名
+  - 签名方案：SignPath Foundation 免费开源签名（发布者显示 “SignPath Foundation”，用户接受）；资格核查见 `docs/SIGNING_SIGNPATH.md`，申请尚未提交
   - 正式 GUI 工程尚未创建。品牌资产已在 `design/brand-icon` 分支 `62957d8` 准备（图标/logo/设计规范），spike 分支 `56904d2` 已接入图标，但均未合并 `main`，不代表正式 GUI 工程已启动
 - **当前可用性结论**：8 个 MCP 工具可用，claude 与 dsh 均可执行任务；claude 支持原生续跑，dsh 依赖服务端历史拼接；Muse connector 已连通；首次真实派单已成功完成。
-- **下一次会话入口**：先读本文件与 `DAILY_LOG.md` 最新日期区块，再用 `agent_info` 复核执行器状态，然后按 F 节优先级推进。
+- **下一次会话入口**：先读本文件与 `DAILY_LOG.md` 最新日期区块，再用 `agent_info` 复核执行器状态，然后按 F 节优先级推进。涉及签名时先读 `docs/SIGNING_SIGNPATH.md` 的阻断项与用户待办，不要代替用户提交申请。

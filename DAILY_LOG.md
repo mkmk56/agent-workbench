@@ -552,3 +552,113 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 3. 优先落地工程基线：`userData` 数据目录、`safeStorage`/DPAPI 存 token、单实例、最小 IPC/CSP。
 4. 保持 Windows x64 优先；签名暂不做，若未来公开分发再评估 SignPath。
 5. 继续遵守每日 10% 额度上限，按保守估算控制用量。
+
+---
+
+## 2026-11-13（周五）· 补充：SignPath 签名方案确认、资格核查与申请准备
+
+### 今日目标
+
+- 落地用户最新拍板的两个决定：MVP v0.1 范围定稿、签名方案采用 **SignPath Foundation 免费开源签名**。
+- 补充并核对 MIT `LICENSE`；将 `docs/MVP_SCOPE.md` 的签名口径更新为 SignPath。
+- 按 SignPath 官方条款逐项核查本项目资格，产出 `docs/SIGNING_SIGNPATH.md`，列出申请材料、步骤与用户本人待办。
+- 只改 `main` 分支的文档与 `LICENSE`，不碰 `src/`、`spike/electron`、`design/brand-icon`；不代替用户提交申请。
+
+> 口径说明：本日较早的“MVP v0.1 范围确认、MIT LICENSE 与签名决策”区块记录了“暂不签名、SignPath 评估取消”。按“历史区块不回改”的规则保留原文；用户随后明确改为采用 SignPath，本区块为最新口径，覆盖签名相关结论。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%。
+- 额度消耗**无法直接观测，按保守估算控制**；本区块不记录虚构的百分比或精确余额。
+- 本次为文档、许可证与在线条款核查：无构建、无安装依赖、未派发执行器任务。
+
+### 决定记录
+
+1. **MVP v0.1 范围已确认（2026-11-13，用户无修改意见，按提案定稿）**
+   - 包含：任务列表（状态、智能体、用时）；任务详情 + 实时日志（日志流、发跟进消息）；派发新任务（选 claude/dsh、填 prompt、超时）；取消任务；智能体状态（claude/dsh 是否可用、模型）；引擎管理（启动/停止、`/health`、连接状态）；设置（token、端口、代理）；自动更新；品牌（图标 + 关于页，已完成）。
+   - 工程基线（必须做，不计入功能）：数据目录移到 `userData`、`safeStorage`/DPAPI 存 token、单实例、最小 IPC/CSP。
+   - v0.1 不做：多项目、历史统计仪表盘、定时任务、云同步/账号、插件、macOS 打包（先 Windows）。
+2. **签名方案：SignPath Foundation 免费开源签名**
+   - 使用该计划时证书签发给 SignPath Foundation，**发布者显示为 “SignPath Foundation”**，不是用户个人姓名；用户已知悉并接受。
+   - 前提是公开仓库、OSI 认可许可证（MIT）、可追溯构建与符合条款；申请尚未提交。
+3. **MIT LICENSE**：根目录 `LICENSE` 已存在（提交 `7dc4474`），标准 MIT 文本，`Copyright (c) 2026 mkmk56`；本次核对无误，未改动。
+
+### 实际执行内容
+
+1. 核对 `LICENSE`：内容为标准 MIT，版权行 `Copyright (c) 2026 mkmk56`。
+2. 更新 `docs/MVP_SCOPE.md`：加入 SignPath 签名方案与发布者名称；将验收口径改为“正式发布版本应使用 SignPath 签名；未获批前是否临时未签名发布由用户单独决定”；变更记录注明同日早前“暂不签名”口径已被取代。
+3. 新增 `docs/SIGNING_SIGNPATH.md`：
+   - 官方资格条款逐项核对表（18 项），结论为“基本资格方向符合，但当前不建议立即提交”；
+   - 对现有 `v0.0.2` 是否算有效发布历史的判断；
+   - 申请材料清单、获批后的 GitHub Actions + SignPath 接入步骤、发布前阻断项；
+   - Code signing policy 与隐私说明草稿；
+   - 需要用户本人完成的事项。
+4. 更新 `RESUME.md`：B/D/E/F/G/H 的签名口径改为 SignPath；记录资格核查结论、申请未提交及阻断项；F 节 spike 项保持 [DONE]，下一步为创建正式 GUI 工程并同步完成申请阻断项。
+
+### SignPath 资格核查摘要
+
+官方依据（2026-11-13 经系统代理 `127.0.0.1:7897` 访问）：
+
+- 条款：`https://signpath.org/terms`
+- 关于/发布者说明：`https://signpath.org/about`
+- 申请入口：`https://signpath.org/apply`
+- GitHub 可信构建文档：`https://docs.signpath.io/trusted-build-systems/github`
+
+关键结论：
+
+| 项目 | 结论 |
+|---|---|
+| 公开仓库 | 满足。GitHub API 返回 `private=false`、`visibility=public`。 |
+| OSI 许可证 | 满足（本次补 MIT）。推送前 GitHub API `license=null`；推送后需复核是否识别为 MIT。 |
+| 非商业 / 无双许可 | 满足。项目无付费版或商业双许可；外部 AI 服务属用户自行配置的依赖。 |
+| 无专有组件 | 基本满足。`package-lock.json` 95 个依赖许可证均为 MIT/ISC/BSD-2/BSD-3；`claude`/`dsh` 为外部执行器，不得打包进安装包；正式打包前仍需复核。 |
+| 活跃维护 | 形式满足但证据弱：单人维护、仓库 2026-11-12 创建。 |
+| 已发布 | 有公开 Release `v0.0.2`（NSIS 安装包 + blockmap + `latest.yml`，非 draft、非 prerelease），形式上满足；但产物由未提交工作区构建、tag 指向 `581725b` 与产物不一致，不可追溯，不能作为签名构建证据。 |
+| 功能文档 | 满足。README 已描述功能与部署。 |
+| Code signing policy | **不满足（阻断项）**。README 尚未按 SignPath 要求加入该小节。 |
+| 隐私政策/数据流 | **待补（阻断项）**。任务提示词会交给用户配置的 AI 执行器与外部服务，需明确披露。 |
+| 产品元数据 | **待补（阻断项）**。spike 产物名为 `AgentWorkbenchSpike`，正式产品需统一为项目正式名称与版本。 |
+| 可信构建/来源校验 | **不满足（阻断项）**。当前本地构建；需 GitHub Actions + GitHub 托管 runner + SignPath GitHub App/connector。 |
+| MFA / 角色 | 无法核实 / 待补。需 GitHub 2FA、SignPath MFA，并在签名政策中明确作者/审核者/批准者。 |
+| 项目信誉 | **风险**。0 star / 0 fork、仅一个测试 Release；SignPath 明确保留拒绝权，审核可能要求补充或拒绝。 |
+
+对 `v0.0.2` 的判断：可作为“已有公开版本”的辅助材料，但不应当作有效发布历史的核心证据；申请前建议用 CI 从 tag 构建一个干净、资产完整的可追溯 Release。
+
+### 测试与验证
+
+- 本次未改代码，未运行服务级测试；验证范围为文件内容、Git 状态、GitHub API 与官方条款。
+- GitHub API 核对：仓库公开；`license=null`（补 LICENSE 前）；Release `v0.0.2` 公开且非 prerelease；`stargazers_count=0`、`forks_count=0`、`created_at=2026-11-12T17:25:10Z`。
+- 许可证依赖审计：读取 `package-lock.json`，95 个包许可证为 MIT 85、ISC 7、BSD-3-Clause 2、BSD-2-Clause 1，无 UNKNOWN。
+- 提交前用 `git status --short` / `git diff --stat` 核对，确认仅文档与 `LICENSE` 变化，未触碰 `src/`、`spike/electron`、`design/brand-icon`。
+- 额度无法直接观测，按保守估算控制；未在聊天、日志或代码中输出 token。
+
+### GitHub 同步
+
+- 仓库：https://github.com/mkmk56/agent-workbench
+- 分支：`main`。
+- 本次同步内容：`docs/SIGNING_SIGNPATH.md`（新增）、`docs/MVP_SCOPE.md`、`RESUME.md`、`DAILY_LOG.md`；`LICENSE` 已由 `7dc4474` 入库，本次仅核对。
+- 本次提交 hash：以 `git log -1` 与任务汇报为准（本文件无法记录自身所在提交的 hash）。
+- 推送经系统代理 `127.0.0.1:7897`；推送后用 `git ls-remote origin refs/heads/main` 核对远程 HEAD。
+
+### 遗留问题
+
+- SignPath 申请未提交；阻断项与用户待办见 `docs/SIGNING_SIGNPATH.md` 第 5、7 节。
+- 项目信誉较新，即使补齐材料也可能被拒；是否先积累使用记录再申请，由用户决定。
+- E-8 测试 Release/tag `v0.0.2` 是否保留/删除仍待用户决定。
+- 正式 GUI 工程尚未创建；`spike/electron` 与 `design/brand-icon` 分支仍未合并 `main`。
+
+### 今日成果
+
+- 签名口径已统一为 SignPath Foundation；MIT `LICENSE` 已具备。
+- `docs/MVP_SCOPE.md` 与 `RESUME.md` 已同步 MVP 范围、阶段四（GUI 产品化）准备中与 SignPath 决定。
+- `docs/SIGNING_SIGNPATH.md` 完成：资格逐项核查、申请材料、接入步骤、阻断项与用户待办齐全。
+- 明确现有 `v0.0.2` 不能作为可追溯构建证据，避免申请材料夸大。
+
+### 下一次启动建议
+
+1. 先读 `RESUME.md` 与 `DAILY_LOG.md` 最新区块，再读 `docs/SIGNING_SIGNPATH.md`。
+2. 创建正式 GUI 工程（与 `spike/electron` 分离），按 `docs/MVP_SCOPE.md` 实现 MVP v0.1。
+3. 优先落地工程基线：`userData` 数据目录、`safeStorage`/DPAPI 存 token、单实例、最小 IPC/CSP。
+4. 同步补齐 SignPath 阻断项：README Code signing policy/隐私说明、正式产品名、GitHub Actions 可追溯构建、MFA 与角色。
+5. 由用户本人决定申请时机并提交申请；不要代替用户提交。
+6. 继续遵守每日 10% 额度上限，按保守估算控制用量。
