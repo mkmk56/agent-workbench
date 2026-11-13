@@ -9,7 +9,7 @@ const asError = (message) => ({
   isError: true
 });
 
-export function registerTools(server, { scheduler, store }) {
+export function registerTools(server, { scheduler, store, messages }) {
   server.registerTool('agent_info', {
     description: 'List available executors (claude, dsh) with version, capabilities and resume support.'
   }, async () => asText(scheduler.agentInfo()));
@@ -129,6 +129,45 @@ export function registerTools(server, { scheduler, store }) {
     }));
     return asText({ tasks });
   });
+
+  server.registerTool('send_message', {
+    description: 'Send a conclusion-only message from one local agent to the other. The server generates the '
+      + 'message_id, persists the message and links replies with reply_to. The summary is hard-capped at 500 tokens '
+      + '(configurable) and over-long summaries are truncated. When the target agent is idle the message is delivered '
+      + 'by starting a task; otherwise it is queued. Each thread stops after 10 agent messages and waits for a user '
+      + 'message unless AGENT_MESSAGE_LIMIT is changed.',
+    inputSchema: {
+      from: z.enum(['claude', 'dsh', 'user']).describe('Sender; must match the task agent unless user'),
+      to: z.enum(['claude', 'dsh', 'user']).describe('Recipient agent, or user for a final report'),
+      task_id: z.string().min(1).describe('Task sending the message; {{task_id}} is rendered into agent prompts'),
+      reply_to: z.string().optional().describe('message_id this message answers'),
+      summary: z.string().min(1).describe('Conclusion summary; truncated to the token cap'),
+      files: z.array(z.string()).max(100).optional().describe('Files involved in the conclusion'),
+      question: z.string().optional().describe('Question the recipient must answer'),
+      deliver: z.boolean().optional().describe('Auto-start a task for the recipient; default true'),
+      is_final: z.boolean().optional().describe('Marks that no further agent turn is expected')
+    }
+  }, async (args) => {
+    try {
+      return asText(messages.send(args));
+    } catch (error) {
+      return asError(error.message);
+    }
+  });
+
+  server.registerTool('list_messages', {
+    description: 'List persisted agent-to-agent messages and thread state. Filter by thread_id, task_id, '
+      + 'from, to, reply_to or status. Includes reply_to chains, summary token counts and waiting_for_user.',
+    inputSchema: {
+      thread_id: z.string().optional().describe('Conversation thread id'),
+      task_id: z.string().optional().describe('Task id; alone, lists that task\'s whole thread'),
+      from: z.enum(['claude', 'dsh', 'user']).optional(),
+      to: z.enum(['claude', 'dsh', 'user']).optional(),
+      reply_to: z.string().optional().describe('Only messages replying to this message_id'),
+      status: z.string().optional().describe('queued|delivered|answered|held|stored|failed'),
+      limit: z.number().int().min(1).max(500).optional()
+    }
+  }, async (filters) => asText(messages.list(filters)));
 
   server.registerTool('wait_for_task', {
     description: 'Long-poll until a task reaches a terminal state or the timeout expires (max 40s).',

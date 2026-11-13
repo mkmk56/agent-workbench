@@ -24,7 +24,7 @@ export class Scheduler {
     return new Date().toISOString();
   }
 
-  createTask({ agent, prompt, cwd, sessionId, model, timeoutMs }) {
+  createTask({ agent, prompt, cwd, sessionId, model, timeoutMs, threadId, originMessageId }) {
     const executor = EXECUTORS[agent];
     if (!executor) throw new Error(`unknown agent: ${agent}`);
     if (typeof prompt !== 'string' || prompt.length === 0) throw new Error('prompt must be a non-empty string');
@@ -75,7 +75,8 @@ export class Scheduler {
       model: model || null
     };
     this.store.insertTask(task);
-    this.store.appendLog(id, 'system', `queued agent=${agent} cwd=${dir}`);
+    this.store.setTaskThread(id, threadId || id, originMessageId || null);
+    this.store.appendLog(id, 'system', `queued agent=${agent} cwd=${dir} thread=${threadId || id}`);
     this.queue.push(id);
     this.pump();
     return { task_id: id, session_id: sessionIdFinal, status: ORCH_STATE.PENDING };
@@ -154,8 +155,17 @@ export class Scheduler {
       history: task.resume ? this.store.getSessionMessages(task.session_id, 20) : []
     };
 
+    // Agents need their own task id to call send_message; render placeholders
+    // at launch time so the stored prompt stays reusable.
+    const threadId = this.store.getThreadId(task.id);
+    const renderedPrompt = String(task.prompt)
+      .replaceAll('{{task_id}}', task.id)
+      .replaceAll('{{session_id}}', task.session_id)
+      .replaceAll('{{thread_id}}', threadId)
+      .replaceAll('{{agent}}', task.agent);
+
     try {
-      const started = EXECUTORS[task.agent].start({ ...task }, ctx);
+      const started = EXECUTORS[task.agent].start({ ...task, prompt: renderedPrompt, thread_id: threadId }, ctx);
       entry.cancel = started.cancel;
       this.store.updateTask(task.id, {
         state: ORCH_STATE.WORKING,
@@ -240,6 +250,11 @@ export class Scheduler {
     if (summary) this.store.appendSessionMessage(entry.sessionId, 'assistant', summary);
     this.store.appendLog(task.id, 'system', `finished state=${state} exit=${info?.code ?? 'n/a'}`);
     this.pump();
+    try {
+      this.messages?.onTaskFinished(task.id);
+    } catch (error) {
+      this.store.appendLog(task.id, 'system', `message routing failed: ${error.message}`);
+    }
   }
 
   cancel(taskId) {
@@ -288,6 +303,7 @@ export class Scheduler {
     try { if (task.files_modified_json) filesModified = JSON.parse(task.files_modified_json); } catch { /* ignore */ }
     const created = Date.parse(task.created_at);
     const updated = Date.parse(task.updated_at);
+    const thread = this.store.getThreadForTask(task.id);
     return {
       task_id: task.id,
       session_id: task.session_id,
@@ -303,7 +319,13 @@ export class Scheduler {
       elapsed_ms: Number.isFinite(created) && Number.isFinite(updated) ? Math.max(0, updated - created) : 0,
       tokens,
       files_modified: filesModified,
-      summary: task.summary
+      summary: task.summary,
+      thread_id: thread.thread_id,
+      thread_state: thread.state,
+      waiting_for_user: thread.state === 'WAITING_USER',
+      exchange_count: thread.exchange_count ?? 0,
+      exchange_limit: this.config.agentMessageLimit,
+      message_count: thread.message_count ?? 0
     };
   }
 
@@ -369,6 +391,12 @@ export class Scheduler {
     }
 
     const data = {
+      message_protocol: {
+        enabled: true,
+        exchange_limit: this.config.agentMessageLimit,
+        summary_max_tokens: this.config.agentSummaryMaxTokens,
+        auto_deliver: this.config.agentAutoDeliver
+      },
       agents: [
         {
           name: 'claude',

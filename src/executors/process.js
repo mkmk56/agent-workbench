@@ -21,10 +21,10 @@ export function spawnProcess({ command, prefixArgs = [], args, cwd, env, onLine,
     for (const line of parts) onLine(stream, line);
   };
 
+  // Executor processes inherit the server environment on purpose: the claude
+  // executor needs it to reach the local MCP endpoint, and agents may rely on
+  // WORKBENCH_* configuration. Do not strip MCP_* / WORKBENCH_* here.
   const childEnv = { ...process.env };
-  for (const key of Object.keys(childEnv)) {
-    if (key.startsWith('MCP_') || key.startsWith('WORKBENCH_')) delete childEnv[key];
-  }
   Object.assign(childEnv, env || {});
 
   const child = crossSpawn(command, [...prefixArgs, ...args], {

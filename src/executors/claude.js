@@ -1,6 +1,7 @@
+import { ensureClaudeMcpConfig } from '../mcp-config.js';
 import { spawnProcess, killTree } from './process.js';
 
-function buildArgs(task) {
+function buildArgs(task, config) {
   const args = [
     '-p', task.prompt,
     '--output-format', 'stream-json',
@@ -10,6 +11,7 @@ function buildArgs(task) {
   if (task.model) args.push('--model', task.model);
   if (task.resume) args.push('--resume', task.session_id);
   else args.push('--session-id', task.session_id);
+  args.push('--mcp-config', ensureClaudeMcpConfig(config));
   return args;
 }
 
@@ -17,7 +19,7 @@ export const claudeExecutor = {
   name: 'claude',
   resumeSupported: true,
   start(task, ctx) {
-    const args = buildArgs(task);
+    const args = buildArgs(task, ctx.config);
     const command = ctx.config.claudeEntry || ctx.config.claudeBin;
     const child = spawnProcess({
       command,

@@ -7,10 +7,14 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { config } from './config.js';
 import { Store } from './store.js';
 import { Scheduler } from './scheduler.js';
+import { MessageService } from './messages.js';
+import { ensureClaudeMcpConfig } from './mcp-config.js';
 import { registerTools } from './tools.js';
 
 const store = new Store(config.dbPath, config.dataDir);
 const scheduler = new Scheduler(store, config);
+const messages = new MessageService({ store, scheduler, config });
+scheduler.messages = messages;
 const startedAt = Date.now();
 mkdirSync(config.logDir, { recursive: true });
 const pidFile = join(config.logDir, 'server.pid');
@@ -45,7 +49,7 @@ function createMcpServer() {
     { name: 'agent-workbench', version: '0.1.0' },
     { capabilities: { logging: {} } }
   );
-  registerTools(server, { scheduler, store });
+  registerTools(server, { scheduler, store, messages });
   return server;
 }
 
@@ -145,6 +149,11 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const rpcMethods = (Array.isArray(body) ? body : [body])
+      .map((entry) => entry?.method)
+      .filter(Boolean);
+    if (rpcMethods.length > 0) console.log(`MCP ${rpcMethods.join(',')}`);
+
     const mcp = createMcpServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     try {
@@ -174,6 +183,13 @@ const server = http.createServer(async (req, res) => {
 
   sendJson(res, 405, { error: 'method not allowed' });
 });
+
+try {
+  const mcpConfigPath = ensureClaudeMcpConfig(config);
+  console.log(`claude mcp config: ${mcpConfigPath}`);
+} catch (error) {
+  console.error(`failed to write claude mcp config: ${error.message}`);
+}
 
 server.listen(config.port, config.bind, () => {
   writeFileSync(pidFile, String(process.pid), 'utf8');

@@ -66,6 +66,45 @@ export class Store {
         ts TEXT NOT NULL,
         PRIMARY KEY (session_id, seq)
       );
+      CREATE TABLE IF NOT EXISTS threads (
+        thread_id TEXT PRIMARY KEY,
+        root_task_id TEXT,
+        state TEXT NOT NULL DEFAULT 'ACTIVE',
+        exchange_count INTEGER NOT NULL DEFAULT 0,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        last_message_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS task_threads (
+        task_id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        origin_message_id TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_task_threads_thread ON task_threads(thread_id);
+      CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        from_agent TEXT NOT NULL,
+        to_agent TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        reply_to TEXT,
+        summary TEXT NOT NULL,
+        files_json TEXT,
+        question TEXT,
+        summary_tokens INTEGER NOT NULL DEFAULT 0,
+        summary_truncated INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL,
+        delivery_task_id TEXT,
+        error TEXT,
+        is_final INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_messages_task ON messages(task_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_reply_unique ON messages(reply_to) WHERE reply_to IS NOT NULL;
     `);
     this.taskSeq = new Map();
     this.sessionSeq = new Map();
@@ -176,6 +215,127 @@ export class Store {
       'SELECT role, text FROM session_messages WHERE session_id = ? ORDER BY seq DESC LIMIT ?'
     ).all(sessionId, n);
     return rows.reverse();
+  }
+
+  ensureThread(threadId, rootTaskId = threadId) {
+    const now = this._now();
+    this.db.prepare(
+      `INSERT OR IGNORE INTO threads
+        (thread_id, root_task_id, state, exchange_count, message_count, last_message_id, created_at, updated_at)
+       VALUES (?, ?, 'ACTIVE', 0, 0, NULL, ?, ?)`
+    ).run(threadId, rootTaskId, now, now);
+    return this.getThread(threadId);
+  }
+
+  getThread(threadId) {
+    return this.db.prepare('SELECT * FROM threads WHERE thread_id = ?').get(threadId) ?? null;
+  }
+
+  updateThread(threadId, patch) {
+    const allowed = ['state', 'exchange_count', 'message_count', 'last_message_id', 'root_task_id'];
+    const keys = Object.keys(patch).filter((k) => allowed.includes(k));
+    if (keys.length === 0) return;
+    const sets = keys.map((k) => `${k} = ?`).join(', ');
+    this.db.prepare(`UPDATE threads SET ${sets}, updated_at = ? WHERE thread_id = ?`).run(
+      ...keys.map((k) => patch[k] ?? null),
+      this._now(),
+      threadId
+    );
+  }
+
+  setTaskThread(taskId, threadId, originMessageId = null) {
+    this.ensureThread(threadId, threadId);
+    this.db.prepare(
+      `INSERT OR REPLACE INTO task_threads (task_id, thread_id, origin_message_id, created_at)
+       VALUES (?, ?, ?, ?)`
+    ).run(taskId, threadId, originMessageId, this._now());
+  }
+
+  getTaskThread(taskId) {
+    return this.db.prepare('SELECT * FROM task_threads WHERE task_id = ?').get(taskId) ?? null;
+  }
+
+  getThreadId(taskId) {
+    return this.getTaskThread(taskId)?.thread_id || taskId;
+  }
+
+  getThreadForTask(taskId) {
+    const link = this.getTaskThread(taskId);
+    if (!link) return { thread_id: taskId, state: 'ACTIVE', exchange_count: 0, message_count: 0 };
+    return this.getThread(link.thread_id)
+      || { thread_id: link.thread_id, state: 'ACTIVE', exchange_count: 0, message_count: 0 };
+  }
+
+  insertMessage(message) {
+    const columns = [
+      'id', 'thread_id', 'from_agent', 'to_agent', 'task_id', 'reply_to', 'summary', 'files_json',
+      'question', 'summary_tokens', 'summary_truncated', 'status', 'delivery_task_id', 'error',
+      'is_final', 'created_at', 'updated_at'
+    ];
+    this.db.prepare(
+      `INSERT INTO messages (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`
+    ).run(...columns.map((c) => message[c] ?? null));
+  }
+
+  updateMessage(id, patch) {
+    const allowed = ['status', 'delivery_task_id', 'error', 'is_final'];
+    const keys = Object.keys(patch).filter((k) => allowed.includes(k));
+    if (keys.length === 0) return;
+    const sets = keys.map((k) => `${k} = ?`).join(', ');
+    this.db.prepare(`UPDATE messages SET ${sets}, updated_at = ? WHERE id = ?`).run(
+      ...keys.map((k) => patch[k] ?? null),
+      this._now(),
+      id
+    );
+  }
+
+  getMessage(id) {
+    return this.db.prepare('SELECT * FROM messages WHERE id = ?').get(id) ?? null;
+  }
+
+  getReply(messageId) {
+    return this.db.prepare('SELECT * FROM messages WHERE reply_to = ?').get(messageId) ?? null;
+  }
+
+  listMessages({ threadId = null, taskId = null, from = null, to = null, replyTo = null, status = null, limit = 100 } = {}) {
+    const clauses = [];
+    const params = [];
+    if (threadId) { clauses.push('thread_id = ?'); params.push(threadId); }
+    if (taskId) { clauses.push('task_id = ?'); params.push(taskId); }
+    if (from) { clauses.push('from_agent = ?'); params.push(from); }
+    if (to) { clauses.push('to_agent = ?'); params.push(to); }
+    if (replyTo) { clauses.push('reply_to = ?'); params.push(replyTo); }
+    if (status) { clauses.push('status = ?'); params.push(status); }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const n = Math.max(1, Math.min(500, Number(limit) || 100));
+    return this.db.prepare(
+      `SELECT * FROM messages ${where} ORDER BY created_at ASC, id ASC LIMIT ?`
+    ).all(...params, n);
+  }
+
+  findActiveTaskForThreadAgent(threadId, agent) {
+    return this.db.prepare(
+      `SELECT t.id, t.session_id, t.state FROM tasks t
+       JOIN task_threads tt ON tt.task_id = t.id
+       WHERE tt.thread_id = ? AND t.agent = ?
+         AND t.state IN ('PENDING','STARTING','WORKING','WAITING','BLOCKED')
+       ORDER BY t.created_at DESC LIMIT 1`
+    ).get(threadId, agent) ?? null;
+  }
+
+  findThreadSession(threadId, agent) {
+    return this.db.prepare(
+      `SELECT t.session_id, t.id, t.created_at FROM tasks t
+       JOIN task_threads tt ON tt.task_id = t.id
+       WHERE tt.thread_id = ? AND t.agent = ?
+       ORDER BY t.created_at DESC LIMIT 1`
+    ).get(threadId, agent) ?? null;
+  }
+
+  taskReplyFrom(taskId, replyTo) {
+    return this.db.prepare(
+      'SELECT id, status FROM messages WHERE task_id = ? AND reply_to = ? ORDER BY created_at DESC LIMIT 1'
+    ).get(taskId, replyTo) ?? null;
   }
 
   close() {

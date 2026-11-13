@@ -28,13 +28,16 @@ function intEnv(name, fallback) {
   return Math.floor(n);
 }
 
+const port = intEnv('MCP_PORT', 8080);
+const dataDir = resolve(root, process.env.MCP_DATA_DIR || 'data');
+
 export const config = {
   root,
-  port: intEnv('MCP_PORT', 8080),
+  port,
   bind: '127.0.0.1',
   token: process.env.MCP_BEARER_TOKEN || '',
-  dataDir: resolve(root, 'data'),
-  dbPath: resolve(root, process.env.MCP_DB_PATH || 'data/workbench.db'),
+  dataDir,
+  dbPath: resolve(root, process.env.MCP_DB_PATH || join(process.env.MCP_DATA_DIR || 'data', 'workbench.db')),
   logDir: resolve(root, process.env.MCP_LOG_DIR || 'logs'),
   maxParallel: intEnv('MAX_PARALLEL_TASKS', 4),
   dshParallel: intEnv('WORKBENCH_DSH_MAX_PARALLEL_TASKS', 2),
@@ -46,7 +49,12 @@ export const config = {
   claudeEntry: existsSync(claudeEntryCandidate) ? claudeEntryCandidate : null,
   dshEntry: existsSync(dshEntryCandidate) ? dshEntryCandidate : null,
   nodeBin: process.execPath,
-  claudeEnv: loadClaudeEnv()
+  claudeEnv: loadClaudeEnv(),
+  mcpUrl: `http://127.0.0.1:${port}/mcp`,
+  claudeMcpConfigPath: resolve(dataDir, 'claude-mcp.json'),
+  agentMessageLimit: intEnv('AGENT_MESSAGE_LIMIT', 10),
+  agentSummaryMaxTokens: intEnv('AGENT_SUMMARY_MAX_TOKENS', 500),
+  agentAutoDeliver: process.env.AGENT_AUTO_DELIVER !== '0'
 };
 
 if (!config.token || config.token.length < 32) {
