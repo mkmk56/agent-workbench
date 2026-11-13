@@ -1,6 +1,6 @@
 # RESUME — agent-workbench 项目长期状态记忆
 
-> 最后更新：2026-11-13（阶段一 项目接管；含接管后续修正、token 鉴权排障、GUI 技术选型与 Electron spike 实测）
+> 最后更新：2026-11-13（阶段一 项目接管；含接管后续修正、token 鉴权排障、GUI 技术选型与 Electron spike 实测、dsh spike 文档复核修正）
 > 本文件用于跨会话恢复项目上下文。只记录已验证的事实；无法观测的数据（如额度消耗）明确标注，不编造数字或测试结果。
 > 事实来源：仓库代码与文档、git 记录、2026-11-13 的运行验证记录。
 
@@ -146,6 +146,7 @@ start-hidden.vbs     隐藏启动入口
 | [DONE] | GUI 决策文档审核修正 | 2026-11-13 dsh 独立只读审核提出 10 项问题（无高危），已逐项修正：加权总分改为 4.50 / 3.10 并附计算过程与敏感性分析；修正 Electron 安全默认值、Tauri attach/sidecar 同口径、体积比值、权限论证、`ELECTRON_RUN_AS_NODE`、Tauri Ed25519 更新密钥、官方文档链接、Cloudflare URL 口径。推荐结论不变 |
 | [DONE] | GUI 技术栈确认 | 2026-11-13 用户确认 Electron；决策文档 `docs/gui-decision.md` |
 | [DONE] | Electron GUI spike | 2026-11-13 完成，分支 `spike/electron` @ `ef09762`；五项全通过：引擎启停、`/health` 与任务日志、NSIS 打包（安装包 **119.18 MiB**、解包 386.13 MiB）、GitHub Releases 自动更新（0.0.1→0.0.2）、`ELECTRON_RUN_AS_NODE`（内置 Node 24.21.0 + `node:sqlite` 可用）。结果见 `docs/gui-spike-results.md` |
+| [DONE] | dsh spike 文档复核修正 | 2026-11-13 dsh 只读审核（任务 `faf4d74d-3bd6-4e8c-b5c8-1bf588ff3967`）指出 11 项文档问题，结论“Electron 可行”不变。已修正：下载耗时改为缓存命中如实表述、打包版 attach 需 `SPIKE_EXISTING_ENV`、blockmap 字节数、`tools/list` 补证据、`:8080` 只读口径、源码仅存于 spike 分支、Release 可追溯性与未测风险。README 修正提交 `82a4bfd` |
 | [TODO] | 稳定公网入口 | 将 Cloudflare quick Tunnel 换为命名 Tunnel，获得固定 URL |
 | [TODO] | 测试覆盖完善 | 在现有验收脚本基础上补齐自动化与回归覆盖 |
 | [TODO] | 文档整理 | 统一 README / TESTS / RESUME 的口径，处理已知文档差异（见 E） |
@@ -182,6 +183,7 @@ start-hidden.vbs     隐藏启动入口
 
 8. **[NEEDS_USER_DECISION] 自动更新测试 Release 仍在公开仓库**
    spike 为验证自动更新，向公开仓库发布了 Release/tag `v0.0.2`（安装包 + blockmap + `latest.yml`，约 119 MiB）。当前保留；删除会移除已安装 0.0.2 的后续更新源，需用户决定保留或清理。
+   复核补充：tag `v0.0.2` 指向 `581725b`，资产由未提交工作区构建（上传于 12:50 CST，spike 源码 13:00:55 CST 才提交为 `ef09762`）；该 Release `isDraft=false`、`isPrerelease=false`，是公开正常发布，任何指向该仓库/更新通道的客户端都能看到。
 
 9. **[TODO] electron-builder 发布流水线不完整**
    本机执行 `--publish always` 时返回 422（`Published releases must have a valid tag`），Release 虽创建且上传了安装包，但漏传 `latest.yml`/blockmap；本次用 `gh release upload --clobber` 手工补齐。正式发布需在 CI/脚本中校验资产完整性，并调查 422 的重复发布竞态。
@@ -191,6 +193,12 @@ start-hidden.vbs     隐藏启动入口
 
 11. **[RISK] 首次启动引擎耗时明显**
     打包版首次拉起引擎实测 **4,264 ms**（引擎资源 3,670 个文件，冷缓存/Defender 扫描），热启动 264–273 ms。正式产品需评估预启动、减少文件数或安装后预热。
+
+12. **[TODO] GUI spike 运行环境与生命周期覆盖不足**
+    - 默认 `:8080` 端口冲突未验证：spike 固定 `18080`，只对 `18080` 做占用预检；正式产品与现有常驻服务冲突如何处理未测。
+    - 孤儿引擎只验证“正常停止”：GUI 被强杀/崩溃时是否留下引擎、是否占用 `:8080` 未验证。
+    - 未在干净机器、无 Node、非管理员账户环境验证。
+    - 双实例并发未测；正式产品需要单实例锁。
 
 ---
 
@@ -241,11 +249,13 @@ start-hidden.vbs     隐藏启动入口
 本次接管新增 `RESUME.md` 与 `DAILY_LOG.md`，以一次提交推送到 `origin/main`。接管提交为 `db9999a`（`docs: add project takeover status and daily log`）；接管后续修正提交为 `2f04f2e`（`docs: correct takeover records and status details`）；GUI 决策修正提交为 `581725b`（`docs: address GUI decision review findings`）。
 
 2026-11-13 Electron spike：
-- spike 分支 `spike/electron` @ `ef09762`，已推送到 `origin/spike/electron`（经系统代理 `127.0.0.1:7897`）。
-- spike 验证代码全部位于 `spike/electron/`，`main` 分支上为未跟踪目录，**不进入主线**。
-- `main` 分支本次仅新增/修改文档：`docs/gui-spike-results.md`、`docs/gui-decision.md`、`RESUME.md`、`DAILY_LOG.md`。该提交 hash 以 `git log -1` 与任务汇报为准（本文件无法记录自身所在提交的 hash）。
-- 未修改 `src/`、`start-workbench.cmd` 等核心服务代码。
-- 实测数据与本机证据（`artifacts/`、`release/`）不提交，均为 gitignore。
+- `main` 分支：`394500e`（`docs: record Electron GUI spike results`）已推送；本次 dsh 复核修正的提交 hash 以 `git log -1` 与任务汇报为准（本文件无法记录自身所在提交的 hash）。
+- spike 分支 `spike/electron`：`ef09762`（原型）→ `82a4bfd`（README 引擎隔离口径修正），已推送到 `origin/spike/electron`（经系统代理 `127.0.0.1:7897`）。
+- **源码仅存于 `spike/electron` 分支提交**（`package.json`、`main.js`、`preload.cjs`、`renderer/`、`scripts/`）；`main` 工作区没有这些源文件，只有被忽略/未跟踪的 `spike/electron/artifacts/`、`release/`、`node_modules/`。
+- `spike/electron/.gitignore`（`node_modules/`、`release/`、`artifacts/`、`.tmp/`）只存在于 spike 分支；在 `main` 上这些目录是普通未跟踪项，**不进入主线**。
+- `main` 分支仅新增/修改文档：`docs/gui-spike-results.md`、`docs/gui-decision.md`、`RESUME.md`、`DAILY_LOG.md`；未修改 `src/`、`start-workbench.cmd` 等核心服务代码。
+- 实测数据与本机证据（`artifacts/`、`release/`）不提交。
+- 并发状态：`design/brand-icon` 分支 `62957d8`（`design: add brand icon assets, design system and brand guidelines`，含 `assets/branding/**`、`docs/BRAND_GUIDELINES.md`、`docs/DESIGN_SYSTEM.md`）已提交但**未合并 main**；本次修正期间本地主工作区被切到 `spike/electron`，并有未提交的品牌图标接入改动（`main.js`、`package.json`、`renderer/` 等），本次未触碰。
 
 ---
 
@@ -260,6 +270,6 @@ start-hidden.vbs     隐藏启动入口
   - GUI 选型调研：已完成，决策文档 `docs/gui-decision.md`，推荐 Electron
   - GUI 技术栈确认：用户已确认 Electron（2026-11-13）
   - Electron spike：全部 5 项通过，结果见 `docs/gui-spike-results.md`
-- **阶段三（正式 GUI 工程）**：[TODO] 尚未开始；范围、签名、发布流水线待定
+- **阶段三（正式 GUI 工程）**：[TODO] 尚未开始；范围、签名、发布流水线待定。品牌资产已在 `design/brand-icon` 分支 `62957d8` 准备（图标/logo/设计规范），未合并 `main`，不代表正式 GUI 工程已启动
 - **当前可用性结论**：8 个 MCP 工具可用，claude 与 dsh 均可执行任务；claude 支持原生续跑，dsh 依赖服务端历史拼接；Muse connector 已连通；首次真实派单已成功完成。
 - **下一次会话入口**：先读本文件与 `DAILY_LOG.md` 最新日期区块，再用 `agent_info` 复核执行器状态，然后按 F 节优先级推进。

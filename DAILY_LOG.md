@@ -392,3 +392,85 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 4. 优先处理工程化基线：`userData` 数据目录、`safeStorage`/DPAPI 存 token、单实例、最小 IPC/CSP。
 5. 建立 GitHub Actions 发布流水线与资产完整性校验；再评估差分更新与失败回滚。
 6. 继续遵守每日 10% 额度上限，按保守估算控制用量。
+
+## 2026-11-13（周五）· 补充：Electron spike 文档 dsh 复核修正
+
+### 今日目标
+
+- 处理 dsh 只读审核（任务 `faf4d74d-3bd6-4e8c-b5c8-1bf588ff3967`）对 Electron spike 文档提出的 11 项问题。
+- 总体结论保持：**Electron 可行，不需要改判**；只修正证据不足、口径不一致与遗漏风险。
+- 不回改历史区块，新增本区块说明修正结果与仓库状态。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%。
+- 额度消耗**无法直接观测**，按保守估算控制；本区块不记录虚构的百分比或精确余额。
+- 本次为文档修正 + 一次只读 `tools/list` 验证；未重新构建、未重新下载安装包、未派发新任务。
+
+### 逐项修正
+
+| # | 问题 | 修正结果 |
+|---|---|---|
+| 1 | 更新下载耗时无证据 | 删除“首次完整下载 6–10 s / 0→100%”。`update-result.json` 实际为缓存命中：检查完成 2,225 ms 后 213 ms 记录 `Update has already been downloaded ...pending...`，全程无 `download-progress`；完整下载未单独计时，如需该数字须清空 pending 后复测并落盘进度 |
+| 2 | 打包版 attach 依赖 `SPIKE_EXISTING_ENV` | §3.2/§3.4 明确：打包后 `devRoot=null`，必须设置 `SPIKE_EXISTING_ENV`，否则 `existing engine token not found`；`startup-smoke.json`、`postupdate-smoke.json` 即失败态证据；§6 复现命令补充该变量 |
+| 3 | blockmap 字节数不符 | 统一为 **132,822 B（0.0.1）/ 132,853 B（0.0.2）**，与本地 `release/` 及 GitHub 资产一致 |
+| 4 | “8 个工具全部可用”未验证 | 改为“注册 8 个工具；实测仅只读调用 `task_list` / `task_logs`”；新增隔离 `:18080` 引擎 `tools/list` 实测，8 个工具落盘 `artifacts/tools-list.json` |
+| 5 | “不触碰 :8080”与实测矛盾 | 统一为“**不写入、不改动 `:8080` 状态，仅做只读 MCP 调用**”；`smoke-result.json` 的 `tasks.source=existing`、`port=8080`、`count=5` 为证据。此前区块中的绝对表述以本区块为准；spike README 已同步修正（`82a4bfd`） |
+| 6 | spike 源码不在 main 工作区 | §6 增加 `git switch spike/electron`；§7 与 `RESUME.md` G 注明源码仅存于 spike 分支提交，main 工作区只有未跟踪构建产物；`.gitignore` 只在 spike 分支 |
+| 7 | Release 溯源问题 | §3.4/§4 增加“发布可追溯性”风险：tag `v0.0.2` → `581725b`，资产 12:50 CST 上传、spike 源码 13:00:55 CST 才提交；Release `draft=false`、`prerelease=false`，公开可见。正式流水线必须“tag → CI 构建 → 资产校验” |
+| 8 | 数字归属与偏差 | (a) 264 ms 改回打包版热启动；开发模式为 269/390 ms；(b) wall-clock 改为 1.46–2.31 s（1,455–2,311 ms）；(c) 版本证据改为 `postupdate-smoke.json` 的 `appVersion=0.0.2`；(d) token 拆成“自管引擎 `randomBytes(24)` 现场生成”与“attach 引擎从 `workbench.env`/`SPIKE_EXISTING_ENV` 读取” |
+| 9 | 证据清单不完整 | §7 补全为 11 份 JSON + 3 张 PNG，并逐条标注“通过/降级（attach token 缺失）” |
+| 10 | 遗漏风险 | §4 新增：默认 `:8080` 端口冲突未验证、孤儿引擎仅验证正常停止、未在干净机器/无 Node/非管理员环境验证、双实例并发未测 |
+| 11 | 文档与仓库状态漂移 | `RESUME.md` G/H 补记：`main` = `394500e`（本次修正提交另记）；`design/brand-icon` = `62957d8`（品牌资产与设计文档已提交，未合并 main）；主工作区在修正期间被切到 `spike/electron`，并有未提交的品牌图标接入改动，本次未触碰 |
+
+### 修正后的关键数字
+
+| 项目 | 修正后口径 |
+|---|---|
+| 引擎启动（开发模式） | 269 / 390 ms（2 次） |
+| 引擎启动（打包版热启动） | 264 / 273 ms（2 次） |
+| 引擎启动（打包版首次） | 4,264 ms |
+| 引擎停止 | 451–494 ms |
+| blockmap | 132,822 B（0.0.1）/ 132,853 B（0.0.2） |
+| wall-clock 冒烟周期 | 1,455–2,311 ms（1.46–2.31 s） |
+| 自动更新 | 检查 2,225 ms；本次命中缓存，完整下载未单独计时、无 `download-progress` |
+| 更新后版本证据 | `postupdate-smoke.json` 的 `appVersion=0.0.2` |
+| `tools/list` | 8 个工具，`:18080` 隔离引擎，`artifacts/tools-list.json` |
+
+### 验证与证据
+
+- `tools/list`：在隔离 `:18080` 引擎（`ELECTRON_RUN_AS_NODE=1`、独立 `data/spike/workbench.db`、`logs/spike`）实测 HTTP 200，返回 8 个工具：`agent_info`、`task_start`、`task_send`、`task_status`、`task_logs`、`task_cancel`、`task_list`、`wait_for_task`；已落盘 `spike/electron/artifacts/tools-list.json`（不入库）。
+- 该验证进程已停止，`18080` 已释放；`:8080` 正式引擎（PID 3980）未重启、未改动，仅此前 smoke 做过只读调用。
+- 文档数字逐项对照 artifacts：`startup-measure.json`（wall 2,282/2,291/2,311 ms）、`postupdate-startup.json`（1,481/1,455 ms）、`smoke-result.json`（dev 269 ms）、`final/smoke-result.json`（dev 390 ms）、`packaged/smoke-result-1/2.json`（264/273 ms）、`update-result.json`（check 2,225 ms、缓存命中）、`postupdate-smoke.json`（appVersion 0.0.2）。
+- 远程 tag 与 Release 经 `git ls-remote --tags`、`gh release view v0.0.2` 核对：tag 指向 `581725b`，资产 blockmap 132,853 B，`isDraft=false`、`isPrerelease=false`。
+- 未重新打包；安装包体积、解包体积沿用原实测。
+
+### GitHub 同步
+
+- 仓库：https://github.com/mkmk56/agent-workbench
+- `main`：修正前 `394500e`；本次文档修正提交与推送结果以 `git log -1`、`ls-remote` 及任务汇报为准。
+- `spike/electron`：`ef09762` → `82a4bfd`（README 口径修正），已推送 `origin/spike/electron`。
+- `design/brand-icon`：`62957d8`，已推送，未合并 `main`。
+- 推送经系统代理 `127.0.0.1:7897`；未在聊天、日志或代码中输出 token。
+
+### 遗留问题
+
+1. 测试 Release/tag `v0.0.2` 是否保留/删除仍待用户决定；且该 Release 不可追溯、非 prerelease。
+2. 默认 `:8080` 端口冲突、GUI 强杀后的孤儿引擎、干净机器/无 Node/非管理员环境、双实例并发均未验证。
+3. 安装包未签名；发布流水线仍不完整（422、`latest.yml` 漏传）。
+4. 首次启动引擎 4.26 s、数据目录位于安装目录、差分更新未单独测量。
+5. `design/brand-icon` 的品牌资产与 spike 工作区未提交的品牌图标接入改动尚未合并/收尾，需避免与正式 GUI 工程混淆。
+
+### 今日成果
+
+- 11 项复核问题全部修正，结论“Electron 可行”保持不变。
+- 新增 `tools/list` 实测证据，明确 8 个工具已注册、业务工具仅只读验证。
+- 文档数字、证据清单、Release 溯源与未测风险均已对齐 artifacts 与 GitHub 实际状态。
+
+### 下一次启动建议
+
+1. 先读 `RESUME.md` 与 `DAILY_LOG.md` 最新区块，注意 spike 源码只在 `spike/electron` 分支。
+2. 确认测试 Release 保留/删除、签名方案与正式 GUI MVP 范围。
+3. 正式工程先补单实例锁、端口冲突处理、崩溃后进程清理与 `userData` 数据目录。
+4. 发布改为“tag → CI 构建 → 资产完整性校验”，不得从工作区直接发布。
+5. 继续遵守每日 10% 额度上限，按保守估算控制用量。
