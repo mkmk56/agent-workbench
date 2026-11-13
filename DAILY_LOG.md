@@ -1036,3 +1036,58 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 - 临时探针配置 `data/mcp-probe/config.json` 为自建、含真实 token，位于 gitignored `data/`；未提交、未打印、未删除。
 - 运行时生成的 `data/claude-mcp.json`（或对应 `MCP_DATA_DIR` 下）同样含真实 token，代码以 mode `0600` 写入，不得提交或打印。
 - 额度无法直接观测，今日按 10% 上限保守控制，不声称精确达标。
+
+---
+
+## 2026-11-14（周六）· 补充：Agent HUD 第一期独立评审
+
+### 今日目标
+
+- 作为独立评审方（非实现方）核验 Agent HUD 第一期（引擎内 agent 互发消息）是否达到验收标准。
+- 逐项查代码与验证产物，不只看实现方总结；在隔离实例上独立复跑关键检查。
+- 只评审，不改 `src/` 与引擎实现文件；不碰 GUI、签名、审批；不碰生产 `:8080`。
+- 产出 `docs/AGENT_HUD_PHASE1_REVIEW.md` 并追加本区块。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%；额度消耗**无法直接观测**，本区块不记录虚构的百分比或余额，只做保守估算与控制。
+- 本次评审的独立复跑全部使用占位任务（直接写入 SQLite 的 COMPLETED 任务）+ 协议级消息，**未调用任何 agent LLM，未消耗 agent 额度**。
+- 评审会话自身在文件沙箱中运行，**无法以管道 stdio 启动子进程**（`spawn EPERM`），因此无法复跑真实 claude/dsh 执行器的自动投递；尝试提权被拒（无审批通道）。该限制已如实写入评审文件。
+
+### 实际执行内容
+
+1. 读 `RESUME.md` / `DAILY_LOG.md`，核对 `gui/v0.1` 分支、提交 `f121f0b`（引擎）与 `b06b01b`（文档）、远程 HEAD。
+2. 逐文件读实现：`src/messages.js`、`src/mcp-config.js`、`src/store.js`、`src/config.js`、`src/tools.js`、`src/scheduler.js`、`src/server.js`、`src/executors/{process,claude}.js`，并读 `scripts/verify-agent-messages.mjs`。
+3. 核对两份 `verify-result.json` 与历史任务日志/JSON，确认真实 claude↔dsh 往返、`reply_to` 链、10 条上限、持久化等断言与文件内容一致。
+4. 在隔离端口 `18095` 起独立引擎（独立 data/db/log、随机 token），复跑协议级结论往返 + 上限到 10；在 `18096` 复跑「最终报告发给 user」的默认路径探针。所有实例结束后关闭，`18091` 与生产 `:8080` 未触碰（`:8080` 仅做一次只读 `/health`，返回 200）。
+5. 用当前 `workbench.env` 的 token 扫描全部已跟踪文件与 `data/**/*.log`，核对是否新增泄露。
+6. 全盘核对文档口径、held-at-cap 决定是否入档、代理推送 recipe 与全局 git 配置。
+
+### 验证结果
+
+- **结论：有条件通过（CONDITIONAL PASS）**。核心协议、持久化、上限语义、MCP 接入、评审回路、推送均成立；有 2 个必须修问题。
+- 独立复跑 `data/review-phase1/run-20261113195031/review-result.json`，`ok: true`：
+  - 结论往返：`63d70853…`（claude→dsh，UUID v4）→ `5b57d9c2…`（dsh→claude，`reply_to` 正确）；原消息被标 `answered`；重复回复被拒（`already has a reply`）。
+  - 上限：10 条 agent 消息，第 10 条 `held`，`WAITING_USER`，`list_messages`/`task_status` 均 `waiting_for_user: true`；第 11 条被拒；user 报告不计数；用户消息重置为 0/`ACTIVE`，下一条计 1；截断 500 tokens / 2000 字符；重启前后 13/13 条、链完整。
+  - 生成的 MCP 配置：`type=http`、`url=http://127.0.0.1:18095/mcp`、Bearer 与本次随机 token 一致；**但 `mode_octal="666"`**。
+- **必须修 1（功能）**：`WAITING_USER` 下向 `user` 发最终报告、**不显式传 `deliver:false`** 时，消息被标 `failed`（`thread state is WAITING_USER`）。根因是 `src/messages.js:276-287` 的线程状态检查先于 `:288-291` 的收件人判断；历史回归用 `deliver:false` 绕过了该路径（`scripts/verify-agent-messages.mjs:415`）。探针证据：`data/review-phase1/user-report-20261113195114/probe-result.json`。
+- **必须修 2（安全/验收口径）**：`src/mcp-config.js:21` 的 `mode: 0o600` 在本机 Windows 上不生效，实测 `mode=666`，ACL 允许 `BUILTIN\Users` 读取，文件内是本机 MCP 的真实 Bearer token；`RESUME.md` I.2/I.5 的「mode 0600」表述与实际不符。生产路径 `data/claude-mcp.json` 当前尚不存在（生产未重启），结论来自隔离实例。
+- 非阻塞：`from:'user'` 可被任意调用方伪造从而重置上限（spec 中 GUI 有「以我身份发送」开关，引擎侧尚无约束）；真实 agent 往返证据产生于修复前版本（dsh 日志引用 `taskHasReplyFrom`，HEAD 已是 `taskReplyFrom`），未在 `f121f0b` 复跑；`process.js` 让执行器继承 `MCP_BEARER_TOKEN`；文档 `tools/call 56` 为真实流阶段快照（`server.log` 最终 78 次）；revision 任务为只读、未真实改代码；`estimateTokens` 对非 CJK 不是上界；历史 `data/c68b9d69…log` 的 token 属既有 E-4，非本次引入。
+
+### 安全核对
+
+- `data/`、`logs/` 仍被 `.gitignore` 覆盖；`data/mcp-probe/config.json` 与隔离实例生成的 `claude-mcp.json` 均未被跟踪、未提交、未打印。
+- 用当前 token 扫描已跟踪文件：**0 命中**；`data/**/*.log` 仅命中既有历史文件 `data/c68b9d69…log`（E-4）。
+- 未修改全局 git 配置；推送使用单条 `-c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897`；命令与文档中无 token。
+
+### GitHub 同步
+
+- 分支 `gui/v0.1`；远程 HEAD 核对为 `b06b01b0dee52fba7d32bb06095afd0b68143713`。
+- 本次新增 `docs/AGENT_HUD_PHASE1_REVIEW.md` 并追加本区块；本区块自身提交 hash 以 `git log -1` 与任务汇报为准。
+- 未修改 `src/`、`gui/`、`spike/`、签名与审批；未删除文件；未做破坏性 git 操作。
+
+### 未做 / 注意
+
+- 生产 `:8080` 仍跑旧代码，未重启、未写入；新工具待任务外重启后上线。
+- 未复跑真实 claude/dsh 执行器往返（沙箱禁止管道子进程）；真实流证据以既有产物交叉核对 + f121f0b 上的协议级复跑为准。
+- 额度无法直接观测，本次评审未调用 agent LLM，不声称精确达标。
