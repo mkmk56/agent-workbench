@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>任务列表 · Agent Workbench</title>
+  <link rel="stylesheet" href="mockups.css">
+</head>
+<body>
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="icon-tasks" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+    <symbol id="icon-dispatch" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+    <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+    <symbol id="icon-about" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></symbol>
+    <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></symbol>
+    <symbol id="icon-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="icon-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="icon-external" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+    <symbol id="icon-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+    <symbol id="icon-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+    <symbol id="icon-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="icon-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+    <symbol id="icon-terminal" viewBox="0 0 24 24"><path d="m4 17 6-6-6-6M12 19h8"/></symbol>
+    <symbol id="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="icon-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></symbol>
+    <symbol id="icon-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15 7l3 3"/></symbol>
+    <symbol id="icon-server" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><path d="M6 6.5h.01M6 17.5h.01"/></symbol>
+    <symbol id="icon-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/></symbol>
+    <symbol id="icon-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></symbol>
+    <symbol id="icon-arrow-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="icon-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+  </svg>
+
+  <div class="app">
+    <header class="topbar">
+      <a class="topbar__brand" href="index.html" aria-label="Agent Workbench 首页">
+        <img class="logo logo--light" src="assets/logo-primary.svg" alt="Agent Workbench">
+        <img class="logo logo--dark" src="assets/logo-inverse.svg" alt="Agent Workbench">
+      </a>
+      <span class="topbar__rule" aria-hidden="true"></span>
+      <nav class="breadcrumb" aria-label="面包屑">
+        <a href="tasks.html">工作台</a>
+        <span aria-hidden="true">/</span>
+        <span>任务</span>
+      </nav>
+      <div class="topbar__spacer"></div>
+      <div class="engine-status">
+        <span class="status status--running"><span class="status__dot"></span>引擎运行中</span>
+        <span class="mono dim">127.0.0.1:8080</span>
+      </div>
+      <button class="btn btn-ghost btn-icon" type="button" data-theme-toggle aria-label="切换到深色模式" title="切换主题">
+        <svg class="icon"><use href="#icon-moon"></use></svg>
+      </button>
+      <a class="btn btn-ghost btn-icon" href="settings.html" aria-label="设置" title="设置">
+        <svg class="icon"><use href="#icon-settings"></use></svg>
+      </a>
+      <span class="topbar__version">v0.1.2</span>
+    </header>
+
+    <aside class="sidenav" aria-label="主导航">
+      <div class="nav-section">工作台</div>
+      <a class="nav-item is-selected" href="tasks.html" aria-current="page">
+        <svg class="icon"><use href="#icon-tasks"></use></svg>
+        任务
+        <span class="nav-count">6</span>
+      </a>
+      <a class="nav-item" href="dispatch.html">
+        <svg class="icon"><use href="#icon-dispatch"></use></svg>
+        派发任务
+      </a>
+      <div class="nav-section">配置</div>
+      <a class="nav-item" href="settings.html">
+        <svg class="icon"><use href="#icon-settings"></use></svg>
+        设置
+      </a>
+      <a class="nav-item" href="about.html">
+        <svg class="icon"><use href="#icon-about"></use></svg>
+        关于
+      </a>
+      <div class="sidenav__footer">
+        <div class="engine-mini">
+          <div class="engine-mini__row">
+            <span class="status status--running"><span class="status__dot"></span>引擎运行中</span>
+            <span class="mono dim">3h 12m</span>
+          </div>
+          <div class="engine-mini__meta">claude 可用 · dsh 可用</div>
+          <a class="text-link" href="settings.html#engine">管理引擎</a>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="content">
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">任务</h1>
+            <p class="page-subtitle">6 个任务 · 1 个运行中 · 最后更新 14:32</p>
+          </div>
+          <div class="page-actions">
+            <button class="btn btn-secondary" type="button">
+              <svg class="icon"><use href="#icon-refresh"></use></svg>
+              刷新
+            </button>
+            <a class="btn btn-primary" href="dispatch.html">
+              <svg class="icon"><use href="#icon-plus"></use></svg>
+              派发任务
+            </a>
+          </div>
+        </div>
+
+        <div class="workspace">
+          <section class="panel" aria-label="任务列表">
+            <div class="panel__toolbar">
+              <div class="segmented" role="tablist" aria-label="按状态筛选">
+                <button class="is-active" type="button" role="tab" aria-selected="true">全部 <span class="count">6</span></button>
+                <button type="button" role="tab" aria-selected="false">运行中 <span class="count">1</span></button>
+                <button type="button" role="tab" aria-selected="false">成功 <span class="count">3</span></button>
+                <button type="button" role="tab" aria-selected="false">失败 <span class="count">1</span></button>
+                <button type="button" role="tab" aria-selected="false">已取消 <span class="count">1</span></button>
+              </div>
+              <div class="toolbar__spacer"></div>
+              <label class="search">
+                <svg class="icon"><use href="#icon-search"></use></svg>
+                <input class="input" type="search" placeholder="搜索任务、ID 或执行器" aria-label="搜索任务">
+              </label>
+              <button class="btn btn-secondary btn-sm" type="button">
+                执行器：全部
+                <svg class="icon"><use href="#icon-chevron-down"></use></svg>
+              </button>
+            </div>
+
+            <div class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th scope="col" style="width: 38%">任务</th>
+                    <th scope="col" style="width: 14%">执行器</th>
+                    <th scope="col" style="width: 13%">状态</th>
+                    <th scope="col" style="width: 10%">用时</th>
+                    <th scope="col" style="width: 17%">更新时间</th>
+                    <th scope="col" style="width: 8%"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="is-selected">
+                    <td>
+                      <a class="task-link" href="task-detail.html">修复登录回调超时</a>
+                      <div class="task-meta"><span>#T-1042</span><span>abcfc940</span></div>
+                    </td>
+                    <td><span class="executor"><svg class="icon"><use href="#icon-terminal"></use></svg>claude</span></td>
+                    <td><span class="status status--running"><span class="status__dot"></span>运行中</span></td>
+                    <td class="num">02:14</td>
+                    <td><span class="muted">刚刚</span><div class="cell-sub">14:30:02</div></td>
+                    <td class="cell-actions">
+                      <a class="btn btn-ghost btn-icon btn-sm" href="task-detail.html" aria-label="打开任务详情">
+                        <svg class="icon"><use href="#icon-chevron-right"></use></svg>
+                      </a>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <a class="task-link" href="task-detail.html">补充 OAuth 回调单元测试</a>
+                      <div class="task-meta"><span>#T-1041</span><span>7d1e2f90</span></div>
+                    </td>
+                    <td><span class="executor"><svg class="icon"><use href="#icon-terminal"></use></svg>claude</span></td>
+                    <td><span class="status status--success"><span class="status__dot"></span>成功</span></td>
+                    <td class="num">01:48</td>
+                    <td><span class="muted">6 分钟前</span><div class="cell-sub">14:26:11</div></td>
+                    <td class="cell-actions">
+                      <a class="btn btn-ghost btn-icon btn-sm" href="task-detail.html" aria-label="打开任务详情">
+                        <svg class="icon"><use href="#icon-chevron-right"></use></svg>
+                      </a>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <a class="task-link" href="task-detail.html">排查 dsh 执行器退出码 1</a>
+                      <div class="task-meta"><span>#T-1040</span><span>c93a0b12</span></div>
+                    </td>
+                    <td><span class="executor"><svg class="icon"><use href="#icon-terminal"></use></svg>dsh</span></td>
+                    <td><span class="status status--error"><span class="status__dot"></span>失败</span></td>
+                    <td class="num">00:42</td>
+                    <td><span class="muted">18 分钟前</span><div class="cell-sub">14:14:27</div></td>
+                    <td class="cell-actions">
+                      <a class="btn btn-ghost btn-icon btn-sm" href="task-detail.html" aria-label="打开任务详情">
+                        <svg class="icon"><use href="#icon-chevron-right"></use></svg>
+                      </a>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <a class="task-link" href="task-detail.html">整理 MCP 工具错误码文档</a>
+                      <div class="task-meta"><span>#T-1039</span><span>2f8a6c41</span></div>
+                    </td>
+                    <td><span class="executor"><svg class="icon"><use href="#icon-terminal"></use></svg>dsh</span></td>
+                    <td><span class="status status--success"><span class="status__dot"></span>成功</span></td>
+                    <td class="num">03:05</td>
+                    <td><span class="muted">1 小时前</span><div class="cell-sub">13:12:40</div></td>
+                    <td class="cell-actions">
+                      <a class="btn btn-ghost btn-icon btn-sm" href="task-detail.html" aria-label="打开任务详情">
+                        <svg class="icon"><use href="#icon-chevron-right"></use></svg>
+                      </a>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <a class="task-link" href="task-detail.html">重构日志轮转逻辑</a>
+                      <div class="task-meta"><span>#T-1038</span><span>91bd7e20</span></div>
+                    </td>
+                    <td><span class="executor"><svg class="icon"><use href="#icon-terminal"></use></svg>claude</span></td>
+                    <td><span class="status status--neutral"><span class="status__dot"></span>已取消</span></td>
+                    <td class="num">12:31</td>
+                    <td><span class="muted">今天 11:48</span><div class="cell-sub">11:48:06</div></td>
+                    <td class="cell-actions">
+                      <a class="btn btn-ghost btn-icon btn-sm" href="task-detail.html" aria-label="打开任务详情">
+                        <svg class="icon"><use href="#icon-chevron-right"></use></svg>
+                      </a>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <a class="task-link" href="task-detail.html">检查 NSIS 升级后的数据目录</a>
+                      <div class="task-meta"><span>#T-1037</span><span>4ce21a88</span></div>
+                    </td>
+                    <td><span class="executor"><svg class="icon"><use href="#icon-terminal"></use></svg>claude</span></td>
+                    <td><span class="status status--neutral"><span class="status__dot"></span>排队中</span></td>
+                    <td class="num">—</td>
+                    <td><span class="muted">今天 11:40</span><div class="cell-sub">11:40:19</div></td>
+                    <td class="cell-actions">
+                      <a class="btn btn-ghost btn-icon btn-sm" href="task-detail.html" aria-label="打开任务详情">
+                        <svg class="icon"><use href="#icon-chevron-right"></use></svg>
+                      </a>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="panel__footer">
+              <span>显示 1–6 / 6 个任务</span>
+              <span>自动刷新 · 5s</span>
+            </div>
+          </section>
+
+          <aside class="rail" aria-label="引擎与执行器状态">
+            <section class="rail-card">
+              <div class="rail-card__head">
+                <h2 class="rail-card__title">引擎</h2>
+                <span class="status status--running"><span class="status__dot"></span>运行中</span>
+              </div>
+              <div class="rail-card__body">
+                <dl class="kv">
+                  <dt>地址</dt>
+                  <dd class="mono">127.0.0.1:8080</dd>
+                  <dt>运行时长</dt>
+                  <dd class="num">3 小时 12 分</dd>
+                  <dt>启动耗时</dt>
+                  <dd class="num">390 ms</dd>
+                  <dt>健康检查</dt>
+                  <dd><span class="status status--success"><span class="status__dot"></span>正常</span></dd>
+                </dl>
+                <div class="rail-actions">
+                  <a class="btn btn-secondary btn-sm btn-block" href="settings.html#engine">管理引擎</a>
+                </div>
+              </div>
+            </section>
+
+            <section class="rail-card">
+              <div class="rail-card__head">
+                <h2 class="rail-card__title">执行器</h2>
+                <span class="dim small">2 个可用</span>
+              </div>
+              <div class="rail-card__body">
+                <div class="agent-row">
+                  <div>
+                    <div class="agent-name"><span class="status status--success"><span class="status__dot"></span>claude</span></div>
+                    <div class="agent-meta">模型由执行器配置</div>
+                  </div>
+                  <span class="badge badge--neutral">默认</span>
+                </div>
+                <div class="agent-row">
+                  <div>
+                    <div class="agent-name"><span class="status status--success"><span class="status__dot"></span>dsh</span></div>
+                    <div class="agent-meta">模型由执行器配置</div>
+                  </div>
+                </div>
+                <p class="rail-note">状态每 5 秒刷新；执行器不可用时，派发页会禁用对应选项。</p>
+              </div>
+            </section>
+
+            <section class="rail-card">
+              <div class="rail-card__head">
+                <h2 class="rail-card__title">最近失败</h2>
+                <a class="text-link" href="tasks.html">全部</a>
+              </div>
+              <div class="rail-card__body">
+                <a class="recent-failure" href="task-detail.html">
+                  <div class="recent-failure__title">排查 dsh 执行器退出码 1</div>
+                  <div class="recent-failure__meta">
+                    <span class="status status--error"><span class="status__dot"></span>失败</span>
+                    <span class="dim small">18 分钟前</span>
+                  </div>
+                </a>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="mockups.js"></script>
+</body>
+</html>

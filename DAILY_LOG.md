@@ -743,3 +743,116 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 3. 优先落地工程基线：`userData` 数据目录、`safeStorage`/DPAPI 存 token、单实例、最小 IPC/CSP。
 4. 保持 Windows x64 优先；v0.1 暂不签名，SmartScreen 首次安装点“仍要运行”。
 5. 继续遵守每日 10% 额度上限，按保守估算控制用量。
+
+---
+
+## 2026-11-13（周五）· 补充：安装 gstack（Claude Code 技能包）
+
+### 今日目标
+
+- 按 gstack README 为本机 Claude Code 安装 gstack，验证技能注册，并评估 dsh 兼容性。
+- 不改 `src/`、`spike/electron`、`design/brand-icon`；不改 `RESUME.md`。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%。
+- 额度无法直接观测，按保守估算控制；未在聊天、日志或代码中输出 token。
+
+### 安装内容
+
+- 安装位置：`C:\Users\yikai\.claude\skills\gstack`（1.99.2.0，稳定通道）。
+- 技能注册位置：`C:\Users\yikai\.claude\skills\`，共 63 个条目；`setup --status` 显示 claude/full/global/current，114 个 section 链接全部可解析。
+- 依赖：Node.js 22.20.0 已有；Bun 未安装，按官方 winget 包安装 Bun 1.4.4（满足 1.4.2+）。
+- 克隆与依赖下载经系统代理 `127.0.0.1:7897`；未改全局 Git 配置。
+- `setup` 首次默认运行在 Chromium 下载处耗时过长；Playwright 1.65 下载器不读取代理环境变量。停止后改用 `./setup --no-browser` 重跑，退出码 0。浏览器技能暂不可用，需要 Chromium；后续可再跑 `cd ~/.claude/skills/gstack && ./setup`（或先配置可用的 Playwright 下载源）补齐。
+- 全局 `C:\Users\yikai\.claude\CLAUDE.md` 已新增 `## gstack` 章节，内容为 README 指定的一行：使用 `/browse` 浏览网页，禁用 `mcp__claude-in-chrome__*`。项目根目录原本没有 `CLAUDE.md`，本次未新建项目级文件。
+
+### 测试与验证
+
+- `./setup --status`：install current；114 个 section 链接全部可解析。
+- `bin/gstack-doctor`：11 ok、1 warn、3 not configured、0 fail；4/4 编译二进制可启动（find-browse、design、pdf、gstack-global-discover）；browse bundle 已构建。
+- 未配置项：Codex CLI（未安装）、artifacts sync（未启用）、`/cso` 原生 helper（缺少 VS 2022 MSVC 工具链，按设计降级为不可用）。
+- 真实注册冒烟：新启动的 Claude Code 2.1.270 headless 会话能列出 gstack 技能，并为“README 增加一行安装说明”选择 `/autoplan`。
+- `CLAUDE.md` 加载冒烟：headless 会话按全局指令回答网页浏览应使用 `/browse`，并明确不使用 `mcp__claude-in-chrome__*`。
+- 当前正在运行的 Claude Code 会话在安装前已加载技能清单，需重启后才能在本会话中看到 gstack 技能。
+
+### dsh 兼容性评估
+
+- 结论：不能用，至少没有官方支持。
+- 依据：gstack 的 host 列表不含 dsh；dsh 的 skill 文件系统只扫描 `~/.dsh/skills`、项目 `.dsh/skills`、`.agents/skills` 和显式 `customSkillDirs`，不扫描 `~/.claude/skills`；gstack 的安装目录与 hook/编译工具/斜杠命令契约均按 Claude Code 设计。
+- 理论上可把 `customSkillDirs` 指向 `~/.claude/skills` 让 dsh 发现部分 `SKILL.md`，但这是未验证、非官方路径，gstack 的 hooks、gates、编译工具与命令语义不保证工作，不建议作为可用方案。
+
+### 未做事项
+
+- 未安装 Chromium，因此 `/browse`、`/qa`、`/design-review` 等浏览器技能暂不可用。
+- 未配置 Codex CLI、artifacts sync、`/cso` 原生工具链。
+- Astryx 未安装：它是 React 设计系统依赖，等正式 GUI 工程启动时再接入。
+- 本次未提交、未推送；`RESUME.md` 未改。
+- 工作区另有并发出现的 `design/ui-redesign-astrxy/`（15:22），本次未触碰。
+
+### 今日成果
+
+- gstack 已安装并通过注册冒烟测试，全局浏览规则已生效。
+- 明确了 dsh 不能直接使用 gstack，避免后续误配。
+
+---
+
+## 2026-11-13（周五）· 补充：UI 重设计提案（Astryx）
+
+### 今日目标
+
+- 针对用户对 `spike/electron` 原型界面的不满，按 Astryx 组件体系 + 现有品牌规范重做 UI 设计提案。
+- 先出设计方案与 5 个关键屏高保真静态 mockup，等用户确认方向后再建正式 GUI 工程。
+- 不改 `src/`、`spike/electron`，不改 `RESUME.md` F 节。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%。
+- 额度无法直接观测，按保守估算控制；未在聊天、日志或代码中输出 token。
+
+### 产出
+
+- 分支：`design/ui-redesign-astrxy`（从 `main` 切出，本地留存，未推送）。
+- 设计文档：`docs/UI_REDESIGN_ASTRYX.md`。
+- 静态高保真稿：`design/ui-redesign-astrxy/mockups/`。
+  - `index.html`（设计索引 / 色板 / 约束）
+  - `tasks.html`（任务列表）
+  - `task-detail.html`（任务详情 + 实时日志）
+  - `dispatch.html`（派发新任务）
+  - `settings.html`（设置）
+  - `about.html`（关于）
+- 预览说明：`design/ui-redesign-astrxy/README.md`；品牌 SVG 为 `design/brand-icon` @ `62957d8` 的预览副本。
+
+### 设计要点
+
+- 结论：Astryx 作为组件层，品牌作为身份层；不采用 Astryx 默认蓝色主题。
+- 默认浅色 Paper/Ink + Signal Orange；深色为可选主题；橙色只用于主操作、选中、运行中与焦点。
+- 信息架构改为 AppShell：顶栏 + 左侧导航 + 任务列表/详情/派发/设置/关于；引擎与执行器状态放顶栏、右栏和设置，不单独做仪表盘。
+- 日志改为结构化的时间 / 流类型 / 内容 / 行号，支持筛选、搜索、自动滚动、复制；正式工程用虚拟列表。
+- 对照 spike 的问题：深海军蓝/电光蓝、五张卡片堆叠、999px 胶囊、7/10px 随手圆角、11px 全大写标签、原始 ISO 时间/枚举/JSON 日志、无派发/设置/空态/错误态。
+- Astryx 适配风险：Beta API 变动、运行时主题注入与严格 CSP、组件内联样式、默认字体/蓝色/胶囊需覆盖、无现成日志查看器；建议锁定 0.7.15、适配层封装、静态主题 CSS、CSP 回归。
+
+### 测试与验证
+
+- 用本机 Chrome headless 在 1440 宽度下渲染 5 个页面，检查浅色与深色（任务列表、设置）布局。
+- 静态校验：所有本地 `src`/`href` 资源存在；所有 `#icon-*` symbol 均在内联 sprite 中定义；设置页锚点可解析。
+- 设计稿无外部字体、无 CDN、无网络请求；直接双击 `index.html` 可打开。
+- 未跑代码测试；本轮未改代码。额度无法直接观测，按保守估算控制。
+
+### GitHub 同步
+
+- 未推送：GitHub token 已失效，按用户要求把产出留在本地分支，等 token 恢复后再推。
+- 本次不修改 `RESUME.md` F 节；`DAILY_LOG.md` 仅追加本区块，不回改历史。
+- 提交 hash 以 `git log -1` 与任务汇报为准。
+
+### 未做事项
+
+- 未建正式 GUI 工程，未接 IPC，未实现日志虚拟列表、CSP 回归、打包与更新验证。
+- 未合并 `design/brand-icon`；正式工程启动时应合并/复制 `assets/branding/`，不要重画图标或字标。
+- 未推送分支，未创建 PR。
+
+### 今日成果
+
+- 完成 Astryx 适配评估、token 映射、逐屏布局说明与 spike 对照。
+- 完成 5 个关键屏的静态高保真稿，浅色/深色可切换，可直接在浏览器查看。
+- 设计方向待用户确认后再进入正式 GUI 工程。

@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>任务详情 · Agent Workbench</title>
+  <link rel="stylesheet" href="mockups.css">
+</head>
+<body>
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="icon-tasks" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+    <symbol id="icon-dispatch" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+    <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+    <symbol id="icon-about" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></symbol>
+    <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></symbol>
+    <symbol id="icon-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="icon-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="icon-external" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+    <symbol id="icon-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+    <symbol id="icon-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+    <symbol id="icon-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="icon-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+    <symbol id="icon-terminal" viewBox="0 0 24 24"><path d="m4 17 6-6-6-6M12 19h8"/></symbol>
+    <symbol id="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="icon-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></symbol>
+    <symbol id="icon-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15 7l3 3"/></symbol>
+    <symbol id="icon-server" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><path d="M6 6.5h.01M6 17.5h.01"/></symbol>
+    <symbol id="icon-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/></symbol>
+    <symbol id="icon-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></symbol>
+    <symbol id="icon-arrow-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="icon-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+  </svg>
+
+  <div class="app">
+    <header class="topbar">
+      <a class="topbar__brand" href="index.html" aria-label="Agent Workbench 首页">
+        <img class="logo logo--light" src="assets/logo-primary.svg" alt="Agent Workbench">
+        <img class="logo logo--dark" src="assets/logo-inverse.svg" alt="Agent Workbench">
+      </a>
+      <span class="topbar__rule" aria-hidden="true"></span>
+      <nav class="breadcrumb" aria-label="面包屑">
+        <a href="tasks.html">任务</a>
+        <span aria-hidden="true">/</span>
+        <span class="mono">#T-1042</span>
+      </nav>
+      <div class="topbar__spacer"></div>
+      <div class="engine-status">
+        <span class="status status--running"><span class="status__dot"></span>引擎运行中</span>
+        <span class="mono dim">127.0.0.1:8080</span>
+      </div>
+      <button class="btn btn-ghost btn-icon" type="button" data-theme-toggle aria-label="切换到深色模式" title="切换主题">
+        <svg class="icon"><use href="#icon-moon"></use></svg>
+      </button>
+      <a class="btn btn-ghost btn-icon" href="settings.html" aria-label="设置" title="设置">
+        <svg class="icon"><use href="#icon-settings"></use></svg>
+      </a>
+      <span class="topbar__version">v0.1.2</span>
+    </header>
+
+    <aside class="sidenav" aria-label="主导航">
+      <div class="nav-section">工作台</div>
+      <a class="nav-item is-selected" href="tasks.html" aria-current="page">
+        <svg class="icon"><use href="#icon-tasks"></use></svg>
+        任务
+        <span class="nav-count">6</span>
+      </a>
+      <a class="nav-item" href="dispatch.html">
+        <svg class="icon"><use href="#icon-dispatch"></use></svg>
+        派发任务
+      </a>
+      <div class="nav-section">配置</div>
+      <a class="nav-item" href="settings.html">
+        <svg class="icon"><use href="#icon-settings"></use></svg>
+        设置
+      </a>
+      <a class="nav-item" href="about.html">
+        <svg class="icon"><use href="#icon-about"></use></svg>
+        关于
+      </a>
+      <div class="sidenav__footer">
+        <div class="engine-mini">
+          <div class="engine-mini__row">
+            <span class="status status--running"><span class="status__dot"></span>引擎运行中</span>
+            <span class="mono dim">3h 12m</span>
+          </div>
+          <div class="engine-mini__meta">claude 可用 · dsh 可用</div>
+          <a class="text-link" href="settings.html#engine">管理引擎</a>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="content">
+        <div class="page-head">
+          <div>
+            <div class="detail-title-row">
+              <h1 class="detail-title">修复登录回调超时</h1>
+              <span class="badge badge--running"><span class="dot"></span>运行中</span>
+            </div>
+            <p class="page-subtitle">执行器 <span class="mono">claude</span> · 开始于 14:30:02 · 已用时 2 分 14 秒</p>
+          </div>
+          <div class="page-actions">
+            <button class="btn btn-secondary" type="button">发送跟进</button>
+            <button class="btn btn-danger btn-sm" type="button" title="取消前会二次确认">取消任务</button>
+          </div>
+        </div>
+
+        <div class="detail">
+          <div class="detail-main">
+            <div class="banner banner--warning" role="status">
+              <svg class="icon banner__icon"><use href="#icon-alert"></use></svg>
+              <div class="banner__body">
+                <div class="banner__title">执行器返回了未识别的模型标识</div>
+                <div class="banner__desc">日志中出现 deepseek-v4.1-flash。任务会继续运行，但模型信息可能不准确；请检查执行器配置。</div>
+              </div>
+              <div class="banner__actions">
+                <a class="btn btn-secondary btn-sm" href="settings.html#engine">查看配置</a>
+              </div>
+            </div>
+
+            <section class="log-panel" aria-label="任务实时日志">
+              <div class="log-toolbar">
+                <div class="segmented segmented--sm" role="tablist" aria-label="日志筛选">
+                  <button class="is-active" type="button" role="tab" aria-selected="true">全部</button>
+                  <button type="button" role="tab" aria-selected="false">输出</button>
+                  <button type="button" role="tab" aria-selected="false">错误</button>
+                  <button type="button" role="tab" aria-selected="false">系统</button>
+                </div>
+                <div class="toolbar__spacer"></div>
+                <label class="search search--sm">
+                  <svg class="icon"><use href="#icon-search"></use></svg>
+                  <input class="input" type="search" placeholder="搜索日志" aria-label="搜索日志">
+                </label>
+                <div class="switch-row">
+                  <span>自动滚动</span>
+                  <button class="switch is-on" type="button" role="switch" aria-checked="true" aria-label="自动滚动"></button>
+                </div>
+                <button class="btn btn-ghost btn-icon btn-sm" type="button" aria-label="复制日志" title="复制日志">
+                  <svg class="icon"><use href="#icon-copy"></use></svg>
+                </button>
+              </div>
+
+              <div class="log-stream" role="log" aria-label="任务日志流">
+                <div class="log-row log-row--system">
+                  <span class="log-row__ln">001</span>
+                  <span class="log-row__time">14:30:02.118</span>
+                  <span class="log-row__stream">系统</span>
+                  <span class="log-row__msg">任务已排队 · 执行器 <span class="code-inline">claude</span> · 超时 30m</span>
+                </div>
+                <div class="log-row log-row--system">
+                  <span class="log-row__ln">002</span>
+                  <span class="log-row__time">14:30:02.160</span>
+                  <span class="log-row__stream">系统</span>
+                  <span class="log-row__msg">工作目录 <span class="code-inline">D:\Claude\agent-workbench</span></span>
+                </div>
+                <div class="log-row log-row--system">
+                  <span class="log-row__ln">003</span>
+                  <span class="log-row__time">14:30:02.311</span>
+                  <span class="log-row__stream">系统</span>
+                  <span class="log-row__msg">启动执行器进程 pid=36912</span>
+                </div>
+                <div class="log-row log-row--out">
+                  <span class="log-row__ln">004</span>
+                  <span class="log-row__time">14:30:04.092</span>
+                  <span class="log-row__stream">输出</span>
+                  <span class="log-row__msg">正在读取 <span class="code-inline">src/server.js</span> 与认证回调相关文件…</span>
+                </div>
+                <div class="log-row log-row--out">
+                  <span class="log-row__ln">005</span>
+                  <span class="log-row__time">14:30:05.640</span>
+                  <span class="log-row__stream">输出</span>
+                  <span class="log-row__msg">已定位回调处理逻辑：<span class="code-inline">src/server.js:412</span></span>
+                </div>
+                <div class="log-row log-row--out">
+                  <span class="log-row__ln">006</span>
+                  <span class="log-row__time">14:30:08.220</span>
+                  <span class="log-row__stream">输出</span>
+                  <span class="log-row__msg">应用补丁：为回调增加 5s 超时与一次重试</span>
+                </div>
+                <div class="log-row log-row--warn">
+                  <span class="log-row__ln">007</span>
+                  <span class="log-row__time">14:30:09.004</span>
+                  <span class="log-row__stream">警告</span>
+                  <span class="log-row__msg">执行器返回未知模型标识 <span class="code-inline">deepseek-v4.1-flash</span></span>
+                </div>
+                <div class="log-row log-row--system">
+                  <span class="log-row__ln">008</span>
+                  <span class="log-row__time">14:30:11.008</span>
+                  <span class="log-row__stream">系统</span>
+                  <span class="log-row__msg">重试 1/2 · 等待 2s</span>
+                </div>
+                <div class="log-row log-row--out">
+                  <span class="log-row__ln">009</span>
+                  <span class="log-row__time">14:30:13.540</span>
+                  <span class="log-row__stream">输出</span>
+                  <span class="log-row__msg">运行测试：<span class="code-inline">npm test -- auth</span></span>
+                </div>
+                <div class="log-row log-row--out">
+                  <span class="log-row__ln">010</span>
+                  <span class="log-row__time">14:30:15.322</span>
+                  <span class="log-row__stream">输出</span>
+                  <span class="log-row__msg">12 passing (1.8s)</span>
+                </div>
+                <div class="log-row log-row--system">
+                  <span class="log-row__ln">011</span>
+                  <span class="log-row__time">14:32:16.004</span>
+                  <span class="log-row__stream">系统</span>
+                  <span class="log-row__msg">任务仍在运行 · 已用时 2 分 14 秒</span>
+                </div>
+                <div class="log-row log-row--out">
+                  <span class="log-row__ln">012</span>
+                  <span class="log-row__time">14:32:18.771</span>
+                  <span class="log-row__stream">输出</span>
+                  <span class="log-row__msg">正在汇总剩余失败用例：<span class="code-inline">test/auth/callback.test.js:88</span> — expected 200, received 504</span>
+                </div>
+              </div>
+
+              <div class="composer">
+                <div class="composer__row">
+                  <textarea class="textarea" placeholder="向运行中的任务发送跟进消息…" aria-label="跟进消息"></textarea>
+                  <button class="btn btn-primary" type="button">
+                    <svg class="icon"><use href="#icon-send"></use></svg>
+                    发送
+                  </button>
+                </div>
+                <div class="composer__hint">
+                  <span><span class="kbd">Enter</span> 发送 · <span class="kbd">Shift</span> + <span class="kbd">Enter</span> 换行</span>
+                  <span>消息会追加到当前任务上下文</span>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <aside class="rail" aria-label="任务元数据">
+            <section class="rail-card">
+              <div class="rail-card__head">
+                <h2 class="rail-card__title">任务信息</h2>
+                <button class="btn btn-ghost btn-icon btn-sm" type="button" aria-label="复制任务 ID" title="复制任务 ID">
+                  <svg class="icon"><use href="#icon-copy"></use></svg>
+                </button>
+              </div>
+              <div class="rail-card__body">
+                <dl class="meta-list">
+                  <div class="meta-row"><dt>任务 ID</dt><dd class="mono">#T-1042</dd></div>
+                  <div class="meta-row"><dt>原始 ID</dt><dd class="mono">abcfc940</dd></div>
+                  <div class="meta-row"><dt>执行器</dt><dd class="mono">claude</dd></div>
+                  <div class="meta-row"><dt>模型</dt><dd>由执行器配置</dd></div>
+                  <div class="meta-row"><dt>工作目录</dt><dd class="mono">D:\Claude\agent-workbench</dd></div>
+                  <div class="meta-row"><dt>派发时间</dt><dd>今天 14:30:02</dd></div>
+                  <div class="meta-row"><dt>超时</dt><dd>30 分钟</dd></div>
+                  <div class="meta-row"><dt>最后活动</dt><dd>3 秒前</dd></div>
+                </dl>
+                <div class="progress-block">
+                  <div class="progress-label"><span>已用时</span><span class="num">2:14 / 30:00</span></div>
+                  <div class="progress"><div class="progress__fill" style="width: 7.4%"></div></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="rail-card">
+              <div class="rail-card__head">
+                <h2 class="rail-card__title">执行器</h2>
+                <span class="status status--success"><span class="status__dot"></span>可用</span>
+              </div>
+              <div class="rail-card__body">
+                <div class="setting-inline">
+                  <span class="agent-name">claude</span>
+                  <span class="mono dim">PID 36912</span>
+                </div>
+                <dl class="meta-list" style="margin-top: 10px">
+                  <div class="meta-row"><dt>心跳</dt><dd>2 秒前</dd></div>
+                  <div class="meta-row"><dt>模型</dt><dd>由执行器配置</dd></div>
+                  <div class="meta-row"><dt>当前任务</dt><dd>1</dd></div>
+                </dl>
+              </div>
+            </section>
+
+            <section class="rail-card">
+              <div class="rail-card__head">
+                <h2 class="rail-card__title">操作</h2>
+              </div>
+              <div class="rail-card__body">
+                <button class="btn btn-secondary btn-sm btn-block" type="button">
+                  <svg class="icon"><use href="#icon-copy"></use></svg>
+                  复制任务 ID
+                </button>
+                <button class="btn btn-ghost btn-sm btn-block" type="button" style="margin-top: 4px">
+                  <svg class="icon"><use href="#icon-database"></use></svg>
+                  打开数据目录
+                </button>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="mockups.js"></script>
+</body>
+</html>

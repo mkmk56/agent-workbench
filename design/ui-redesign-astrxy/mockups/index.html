@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UI 重设计 Mockups · Agent Workbench</title>
+  <link rel="stylesheet" href="mockups.css">
+</head>
+<body>
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="icon-tasks" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+    <symbol id="icon-dispatch" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+    <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+    <symbol id="icon-about" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></symbol>
+    <symbol id="icon-terminal" viewBox="0 0 24 24"><path d="m4 17 6-6-6-6M12 19h8"/></symbol>
+    <symbol id="icon-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="icon-external" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+    <symbol id="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="icon-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></symbol>
+  </svg>
+
+  <div class="index">
+    <div class="index__top">
+      <a href="index.html" aria-label="Agent Workbench UI mockups 首页">
+        <img class="logo logo--light index__logo" src="assets/logo-primary.svg" alt="Agent Workbench">
+        <img class="logo logo--dark index__logo" src="assets/logo-inverse.svg" alt="Agent Workbench">
+      </a>
+      <button class="btn btn-secondary btn-sm" type="button" data-theme-toggle aria-label="切换到深色模式" title="切换主题">
+        <svg class="icon"><use href="#icon-moon"></use></svg>
+        切换主题
+      </button>
+    </div>
+
+    <div class="index__eyebrow">UI 重设计 · Astryx</div>
+    <h1 class="index__title">Agent Workbench 界面重设计</h1>
+    <p class="index__lede">
+      用 Astryx 的组件结构（AppShell、Section、Table、Badge、Field、Banner）重做任务控制台，
+      保留现有品牌的墨 / 纸 / 信号橙与 Converge 图标。以下为 5 个关键屏的高保真静态稿。
+    </p>
+    <div class="index__meta">
+      <span class="badge badge--neutral">静态 HTML</span>
+      <span class="badge badge--neutral">5 个关键屏</span>
+      <span class="badge badge--neutral">浅色 / 深色</span>
+      <span class="badge badge--neutral">1440 × 900</span>
+      <span class="badge badge--neutral">无外部请求</span>
+    </div>
+
+    <div class="index__grid">
+      <a class="screen-card" href="tasks.html">
+        <div class="screen-card__top">
+          <span class="screen-card__title">任务列表</span>
+          <svg class="icon icon--20 dim"><use href="#icon-tasks"></use></svg>
+        </div>
+        <p class="screen-card__desc">密集任务表、状态筛选、搜索与执行器筛选；右侧只保留引擎和执行器状态，不做统计仪表盘。</p>
+        <div class="screen-card__path">tasks.html</div>
+      </a>
+
+      <a class="screen-card" href="task-detail.html">
+        <div class="screen-card__top">
+          <span class="screen-card__title">任务详情 + 实时日志</span>
+          <svg class="icon icon--20 dim"><use href="#icon-terminal"></use></svg>
+        </div>
+        <p class="screen-card__desc">结构化日志流、行号 / 时间 / 流类型、筛选与搜索、自动滚动、跟进 composer 与任务元数据。</p>
+        <div class="screen-card__path">task-detail.html</div>
+      </a>
+
+      <a class="screen-card" href="dispatch.html">
+        <div class="screen-card__top">
+          <span class="screen-card__title">派发新任务</span>
+          <svg class="icon icon--20 dim"><use href="#icon-dispatch"></use></svg>
+        </div>
+        <p class="screen-card__desc">执行器选择、Prompt、超时与工作目录；右侧派发预览只保留一个主操作。</p>
+        <div class="screen-card__path">dispatch.html</div>
+      </a>
+
+      <a class="screen-card" href="settings.html">
+        <div class="screen-card__top">
+          <span class="screen-card__title">设置</span>
+          <svg class="icon icon--20 dim"><use href="#icon-settings"></use></svg>
+        </div>
+        <p class="screen-card__desc">凭据加密状态、本地端口、启动方式、代理、更新通道与数据目录；底部固定保存栏。</p>
+        <div class="screen-card__path">settings.html</div>
+      </a>
+
+      <a class="screen-card screen-card--wide" href="about.html">
+        <div class="screen-card__top">
+          <span class="screen-card__title">关于</span>
+          <svg class="icon icon--20 dim"><use href="#icon-about"></use></svg>
+        </div>
+        <p class="screen-card__desc">Converge 图标、产品定位、版本与构建信息、自动更新、许可与第三方说明。</p>
+        <div class="screen-card__path">about.html</div>
+      </a>
+    </div>
+
+    <section class="index__section">
+      <h2>品牌色</h2>
+      <p>Astryx 负责组件结构与状态；品牌负责色板与识别。橙色只用于主操作、选中、运行中和焦点，整体面积控制在 10% 以内。</p>
+      <div class="swatches">
+        <div class="swatch"><span class="swatch__color" style="background: #1e2126"></span><span>Ink<br><span class="swatch__code">#1E2126</span></span></div>
+        <div class="swatch"><span class="swatch__color" style="background: #f5f3ee"></span><span>Paper<br><span class="swatch__code">#F5F3EE</span></span></div>
+        <div class="swatch"><span class="swatch__color" style="background: #e85d26"></span><span>Signal Orange<br><span class="swatch__code">#E85D26</span></span></div>
+        <div class="swatch"><span class="swatch__color" style="background: #8a8f98"></span><span>Gray<br><span class="swatch__code">#8A8F98</span></span></div>
+        <div class="swatch"><span class="swatch__color" style="background: #2e7d5b"></span><span>Success<br><span class="swatch__code">#2E7D5B</span></span></div>
+        <div class="swatch"><span class="swatch__color" style="background: #d97706"></span><span>Warning<br><span class="swatch__code">#D97706</span></span></div>
+        <div class="swatch"><span class="swatch__color" style="background: #c0392b"></span><span>Error<br><span class="swatch__code">#C0392B</span></span></div>
+      </div>
+    </section>
+
+    <section class="index__section">
+      <h2>设计约束</h2>
+      <ul>
+        <li>信息密度优先：表格行高 44px，日志 13px 等宽；页面不使用大卡片堆叠，也不用统计仪表盘填充空间。</li>
+        <li>状态必须同时有颜色、圆点和文本；不使用纯颜色表达成功 / 失败 / 运行中。</li>
+        <li>控件高度 32px（小号 28px），圆角只用 4 / 8 / 12px；不使用胶囊按钮、胶囊标签。</li>
+        <li>禁止紫蓝渐变、辉光、玻璃拟态、机器人 / 大脑图形、emoji 图标与无意义装饰。</li>
+        <li>字体只使用系统 Segoe UI Variable Text / Microsoft YaHei UI；代码使用 Cascadia Code；不加载外部字体。</li>
+        <li>焦点可见：2px 信号橙描边，偏移 2px；深色模式改用浅橙。</li>
+      </ul>
+    </section>
+
+    <section class="index__section">
+      <h2>Astryx 组件对应</h2>
+      <ul>
+        <li>AppShell / TopNav / SideNav → 顶栏、左侧导航、主内容区。</li>
+        <li>Section、Table、Badge、StatusDot、Button、Field、Selector、Banner、ProgressBar、MetadataList → 各屏对应区域。</li>
+        <li>Astryx 没有现成日志查看器；任务详情中的日志流按 Astryx token 自定义，正式工程使用虚拟列表。</li>
+        <li>组件默认值需覆盖：Badge 圆角 4px、橙色按钮文字用 Ink、字体改为系统字体、蓝色信息色映射为中性灰。</li>
+      </ul>
+    </section>
+
+    <section class="index__section">
+      <h2>资源与打开方式</h2>
+      <p>
+        直接双击 <span class="mono">index.html</span> 即可查看；无需构建，不加载外部资源。主题切换会写入 localStorage。
+        品牌 SVG 是从 <span class="mono">design/brand-icon</span> @ <span class="mono">62957d8</span> 复制的预览副本；
+        正式 GUI 工程应合并或复制 <span class="mono">assets/branding/</span>，不要重画图标或字标。
+      </p>
+      <p style="margin-top: 8px">
+        设计说明见 <span class="mono">docs/UI_REDESIGN_ASTRYX.md</span>；本目录只用于设计确认，不代表正式 GUI 工程结构。
+      </p>
+    </section>
+  </div>
+
+  <script src="mockups.js"></script>
+</body>
+</html>
