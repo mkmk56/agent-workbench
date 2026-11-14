@@ -1263,3 +1263,83 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 - 未升级 Node；未往 workbuddy 前缀重装 claude；未删 `claude.exe.old.*`；未改 GUI、`spike/`、签名与审批；未改 `docs/AGENT_HUD_PHASE1_REVIEW.md`；未删除任何文件。
 - `scheduler.agentInfo()` 仍用 `claudeBin`/`dshBin`（PATH 解析）做版本与登录探测，本次未调整。
 - 额度无法直接观测，本次按 10% 上限保守控制，不声称精确达标。
+
+---
+
+## 2026-11-14（周六）· 补充：Agent HUD 第二期——引擎聊天式审批（默认关）
+
+### 今日目标
+
+- 只做第二期引擎机制：合并代码、删文件、装依赖三类关键操作前，agent 在聊天里问用户；用户三选一（允许一次 / 这个会话内允许 / 拒绝）；等待期间线程 `WAITING_USER`；回复后自动恢复或停下；默认关闭，关闭时行为与第一期完全一致。
+- 不做 GUI、侧栏、纸飞机、结论卡片界面、设置页、审批卡片/弹窗、签名；不碰 `spike/`、`docs/AGENT_HUD_PHASE1_REVIEW.md`；不删文件。
+- 用隔离实例验证，不写生产 `:8080`；更新 `RESUME.md`（只追加）与 `DAILY_LOG.md`（只追加），提交并推送。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%；额度消耗**无法直接观测**，本区块不记录虚构百分比或余额。
+- 本次实现与验证**未调用任何 claude/dsh LLM**：审批回归全部使用直接写入 SQLite 的占位任务 + MCP 协议调用；第一期回归使用 `VERIFY_SKIP_AGENTS=1`。因此本次没有 agent token 消耗可记录。
+
+### 输入与口径
+
+- 用户指定的计划文件 `~/workspace/goals/multi-agent-workbench-on-home-pc/files/agent-hud-schedule/agent-hud-schedule.md` 在本机不存在（已搜索 `C:\`、`D:\` 及 home 目录）；本期按用户任务中的逐项要求与 `D:\Claude\muse-hud-requirements.md` §4.4 实施。
+- 已确认的决定：审批走聊天提问，不弹审批卡片；默认关闭，保持全自动。
+
+### 实现
+
+- 新增 `src/approvals.js`：三类关键操作清单 `APPROVAL_CATEGORIES`、审批卡片构造、聊天回复解析、`ApprovalService`（request/respond/list/recover/onTaskFinished）。
+- 新增 MCP 工具：`request_approval`、`respond_approval`、`list_approvals`；工具总数 10 → 13。
+- `src/config.js`：新增 `AGENT_APPROVAL_GATE`（默认关）、`APPROVAL_TIMEOUT_MS`（默认 600000）。
+- `src/store.js`：新增 `approvals`、`approval_grants` 表与条件更新/查询方法；未改 `messages` 表结构。
+- `src/messages.js`：导出 `normalizeFiles`；`send()` 接受内部预生成 `message_id`（用于卡片前缀），agent 工具调用不可设置该字段。
+- `src/scheduler.js`：门开时注入审批提示词契约；`task_status` 暴露 `approval_gate` / `approval`；任务结束时清理 pending 审批。
+- `src/executors/claude.js`：门开时设置 `MCP_TOOL_TIMEOUT`，避免审批阻塞先被客户端超时打断。
+- `src/server.js`：装配 `ApprovalService`，启动时把无法继续等待的 pending 审批标记 `abandoned`。
+- 文档：新增 `docs/AGENT_HUD_APPROVAL.md`；`README.md` 补 13 个工具、审批门与配置；`workbench.env.example` 补两个配置项。
+
+### 审批门清单（摘要）
+
+| 类别 | 需要审批 | 不需要审批（边界示例） |
+|---|---|---|
+| `merge` | `git merge/rebase/cherry-pick`、`git push`（含 force/tags）、会产生 merge/rebase 的 `git pull`、`gh pr merge` | `fetch`、`pull --ff-only`、`status/diff/log`、`add/commit`、建/切分支、`stash push/pop`、已 push 后开 PR、单提交 `revert` |
+| `delete` | `rm/del/Remove-Item`、`git rm`、`git clean -fd`、`git reset --hard`、`checkout --`/`restore`、`stash drop/clear`、删分支/标签、`push --delete`、整文件截断/覆盖、`DROP/TRUNCATE`、无 WHERE 的 `DELETE` | `node_modules/`、`dist/`、`build/`、`out/`、`coverage/`、`.cache/`、`tmp/`、`temp/`、系统临时目录；任务自建临时文件；编辑器正常修改；`stash push/pop`、带 WHERE 的普通行删除 |
+| `dependencies` | 各类包管理器安装/移除/升级；修改依赖声明或 lockfile | `npm ci`/`--frozen-lockfile`、`test`/`run`/`npx`、`ls`/`outdated`/`list`、读取 manifest、改非依赖字段 |
+
+### 提问与回复流程
+
+1. agent 调 `request_approval(agent, task_id, category, action, files, reason, command?, task?)`；门关时立即 `allowed:true, decision:"disabled"`，不写消息、不等待。
+2. 门开且无 session 授权时，写一条 `from=agent, to=user, status=stored` 的消息；`summary` 前缀为 `[Agent HUD · 来自 <agent> · <task> <message-id>]`，正文含类别、想做什么、命令、涉及文件、为什么、三选一；线程置 `WAITING_USER`；工具调用阻塞等待。
+3. 用户可调 `respond_approval(approval_id|task_id, decision=once|session|deny)`，或直接 `send_message` 回复审批消息（`reply_to` 指向提问）。中文/英文关键字与 `{"decision":...}` 均可解析。
+4. `once` 只覆盖本次；`session` 写入 `approval_grants`（`thread_id + category`），同线程后续同类不再问；`deny` 返回 `allowed:false, stop:true`；超时按拒绝处理。
+5. 用户回复按第一期语义恢复线程 `ACTIVE` 并重置 `exchange_count`；任务取消/结束或引擎重启时 pending 审批标记 `abandoned` 并释放线程。
+6. 无法识别的聊天回复不猜测，线程保持 `WAITING_USER`；可用 `respond_approval` 显式回答，且不会重复写入 `reply_to`。
+
+### 验证
+
+- **审批门回归**：`node scripts/verify-approval-gate.mjs` → `ok: true`，结果 `data/approval-verify-20261114054507/verify-result.json`，`errors: []`。
+  - 门 OFF（18101）：6 ms 返回 `disabled`；无消息、线程 `ACTIVE`、`waiting_for_user:false`；`respond_approval` 报 gate disabled。
+  - 门 ON（18102，`APPROVAL_TIMEOUT_MS=5000`）：`once` 提问 `stored`/`WAITING_USER`/`exchange_count:0`，回复后 `allowed:true` 并恢复；`deny` 返回 `stop:true` 且不产生授权；`session` 后同类别 3 ms 内直接放行，不同类别仍问；聊天回复「这个会话内允许」解析为 session；歧义回复保持 pending，`respond_approval(deny)` 可显式解析；超时 5,138 ms 返回 `timeout, stop:true`；审批后 agent→agent 计数从 1 开始；重启后 session 授权保留；pending 审批重启后 `abandoned` 且线程 `ACTIVE`。
+- **第一期回归**：两次 `VERIFY_SKIP_AGENTS=1 node scripts/verify-agent-messages.mjs` 均 `ok: true`：
+  - 门 OFF：端口 18105，`data/agent-hud-verify-20261114054525/verify-result.json`。
+  - 门 ON：端口 18106，`data/agent-hud-verify-20261114054528/verify-result.json`。
+  - 覆盖 `reply_to` 往返、10 条上限、第 10 条 `held`、第 11 条拒绝、`WAITING_USER`、B1 user 报告 `stored`、500 token 截断、重启前后 13/13 条持久化。
+- 静态检查：`node --check` 覆盖全部改动源文件与验证脚本；未做真实 claude↔用户审批往返（为控制额度），已在文档中如实标注。
+
+### 错误与修正（实现/验证过程）
+
+- 用户对审批消息的歧义聊天回复会被第一期的 `from:user` 逻辑把线程重置为 `ACTIVE`；已在审批轮询中重新置回 `WAITING_USER`，避免 `waiting_for_user` 误报。
+- `respond_approval` 原先遇到已有歧义回复会直接报错；已改为用显式 decision 解析该回复，且不重复写第二条 `reply_to`。
+- `send_message` 工具原先把整个 `args` 透传给 `messages.send`，理论上可传入内部 `message_id`；已改为只透传 schema 字段。
+
+### Git 同步
+
+- 分支 `gui/v0.1`；代码提交 `e7b05f4`（`feat(engine): add chat approval gate for critical operations`，12 个文件，1902 insertions / 10 deletions）。
+- 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未改全局 git 配置；命令、文档与日志中无 token。
+- `RESUME.md` 与 `DAILY_LOG.md` 的文档提交随后推送；本区块自身提交 hash 以 `git log -1`、`git ls-remote` 与任务汇报为准。
+
+### 未做 / 注意
+
+- 生产 `:8080` 未重启，新工具与门逻辑尚未在生产入口上线；生产引擎由当前任务的服务进程持有，任务内重启会杀死自身。
+- 未做 GUI、侧栏、纸飞机、结论卡片界面、设置页、审批卡片/弹窗、签名；未改 `docs/AGENT_HUD_PHASE1_REVIEW.md`；未碰 `spike/`；未删除文件。
+- `docs/AGENT_HUD_SPEC.md` 与 `spike/` 保持未跟踪，未提交。
+- 审批是 agent 遵守提示词与工具结果的闸门，不是 OS 沙箱；dsh 无 MCP 客户端，不能发起审批；阻塞式工具调用依赖客户端超时，已尽力提高 `MCP_TOOL_TIMEOUT`。以上限制已写入 `docs/AGENT_HUD_APPROVAL.md` 与 `RESUME.md` L.7。
+- 额度无法直接观测，本次未调用 agent LLM，不声称精确达标。

@@ -220,17 +220,18 @@ session 授权以 `thread_id + category` 为键：
   - 拒绝：同类别再次提问 → `respond_approval(deny)` → `allowed:false, stop:true`，证明 deny 不产生 session 授权。
   - 会话内允许：`respond_approval(session)` 后，同线程同类别下一次 `request_approval` 在 3 ms 内直接 `allowed:true, asked:false, decision:"session"`，`grant_source` 指向创建授权的审批；不同类别仍会提问。
   - 聊天自由回复：用户用 `send_message` 回复“这个会话内允许” → 解析为 session，后续同类操作不再问。
-  - 超时：5,172 ms 后返回 `allowed:false, decision:"timeout", stop:true`，线程释放为 `ACTIVE`，审批记录为 `timed_out`。
+  - 歧义回复：用户回复“晚点再说” → 不猜测，线程保持 `WAITING_USER`；随后 `respond_approval(deny)` 用显式 decision 解析该回复，且不重复写第二条 `reply_to`。
+  - 超时：5,138 ms 后返回 `allowed:false, decision:"timeout", stop:true`，线程释放为 `ACTIVE`，审批记录为 `timed_out`。
   - 上限：审批问答后 agent→agent 消息的 `exchange_count` 从 1 开始，10 条上限语义未变。
   - 持久化：引擎重启后 session 授权仍生效（`request_approval` 直接 `allowed:true, asked:false`）。
   - 恢复：pending 审批在引擎重启后标记 `abandoned`，线程从 `WAITING_USER` 恢复 `ACTIVE`。
 
-结果文件：`data/approval-verify-20261114054320/verify-result.json`，`ok: true`，`errors: []`。
+结果文件：`data/approval-verify-20261114054507/verify-result.json`，`ok: true`，`errors: []`。
 
 ### 9.2 第一期回归（仍然通过）
 
-- 门 OFF：`VERIFY_SKIP_AGENTS=1 VERIFY_PORT=18103 node scripts/verify-agent-messages.mjs` → `ok: true`；`data/agent-hud-verify-20261114054339/verify-result.json`。
-- 门 ON：`AGENT_APPROVAL_GATE=1 VERIFY_SKIP_AGENTS=1 VERIFY_PORT=18104 node scripts/verify-agent-messages.mjs` → `ok: true`；`data/agent-hud-verify-20261114054344/verify-result.json`。
+- 门 OFF：`VERIFY_SKIP_AGENTS=1 VERIFY_PORT=18105 node scripts/verify-agent-messages.mjs` → `ok: true`；`data/agent-hud-verify-20261114054525/verify-result.json`。
+- 门 ON：`AGENT_APPROVAL_GATE=1 VERIFY_SKIP_AGENTS=1 VERIFY_PORT=18106 node scripts/verify-agent-messages.mjs` → `ok: true`；`data/agent-hud-verify-20261114054528/verify-result.json`。
 - 两次均覆盖：结论往返、`reply_to` 唯一回复、10 条上限、第 10 条 `held`、第 11 条拒绝、`WAITING_USER`、user 报告默认 `deliver` 下 `stored`（B1）、summary 500 token 截断、重启前后 13/13 条持久化。
 
 ### 9.3 未做
