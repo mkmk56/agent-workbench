@@ -1839,3 +1839,38 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 ### 额度
 
 - 额度消耗无法直接观测，不记录虚构百分比；本次未调用 claude/dsh LLM，仅执行 typecheck 与本地隔离脚本。
+
+## 2026-11-14（周六）· 补充：独立复核 16c7892 对 R1/R2 的修复
+
+### 目标
+
+- 独立复核提交 `16c7892` 是否修好 `docs/AGENT_HUD_PHASE45_REVERIFY.md` 的必须修 R1（「还原」用 `void` 丢弃 HUD 写盘结果）与非阻塞 R2（「保存更改」无条件称已保存），并确认 `8c86178` 的 M2 修复未被破坏。只复核与测试，不改实现代码。
+
+### 逐项结果
+
+- **R1 [已修]**：`gui/src/pages/SettingsPage.tsx:151-171` `restoreDefaults()` 用 `await Promise.all([hud.setPaperPlanes(true), hud.setContextWindowTokens(128_000)])`（`:156-159`），`const saved = planes && tokens`（`:160`），仅 `if (saved)` 提示“已还原界面状态与 HUD 配置”（`:162-163`），否则 `tone:'error'`「HUD 配置未还原 / 写入 hud.json 失败，未能还原的配置项保持原值」（`:164-169`）。函数体内已无 `void hud.set*`；按钮 `:1173` 的 `void restoreDefaults()` 丢弃的是已被内部处理的函数返回值。残留 `void updates.setChannel('stable')`（`:155`）不是 HUD 写盘：`gui/electron/update.ts:253-264` 只改内存、无文件写入。
+- **R2 [已修]**：`lastHudSave`（`:74`）在 `:116`/`:141`/`:161` 三处更新；「保存更改」`:1179-1199` 按 `'saved'`/`'failed'`/`null` 三态分别提示成功、失败、「暂无待保存的 HUD 配置」。
+- **M2 未破坏**：`git diff 8c86178 HEAD -- gui/src/lib/hud.ts` 为空；`hud.ts:269-299` 两个 setter 仍返回 `Promise<boolean>`，`catch` 只 `return false` 不 `publishConfig`。
+
+### 测试与验证
+
+- `cd gui && npm run typecheck`：**EXIT=0**（两套 tsconfig）。
+- 隔离验证写盘失败分支：`data/reverify-r1r2/verify-hud-save-failure.mjs`（gitignored，**EXIT=0**）用 TypeScript 编译器 API 在进程内转译**真实** `gui/src/lib/hud.ts`（react/engine/labels 以 stub 替代，无 esbuild、无子进程），7 项断言全过：reject → `false` 且共享配置仍为默认（未 `publishConfig`）；`Promise.all` 混合结果 `[false, true]`（正是 `restoreDefaults` 消费形状）；成功 → `true` 且发布新值。
+- `cd gui && npm run build`：`theme:build` ✅、`build:main` ✅、`build:renderer` ❌ `Error: spawn EPERM`（esbuild service，`main.js:2272`），与既往一致，未提权、未绕过。
+- 实现方脚本 `data/reverify-r1/verify-hud-save-failure.mjs` 依赖 esbuild，本会话复现得 `spawn EPERM`（不依赖其产物，改用无子进程路径重验）。
+- 未启动 Electron、未碰生产 `:8080`；未做真实 GUI 内点击制造写盘失败的端到端验证（受“不改环境”约束）。
+
+### 结论
+
+- **PASS**：R1/R2 均已修，M2 未被破坏，typecheck EXIT=0，失败分支隔离实测通过；无新增必须修项。非阻塞：`void updates.setChannel`（未处理 rejection 且通道不持久化）、浏览器预览下 setter 返回 `true` 但无落盘、`build:renderer` 沙箱仍不可复现、缺真实 GUI 点击验证。
+- 详见新增 `docs/AGENT_HUD_PHASE45_REVERIFY_R2.md`。
+
+### Git 同步
+
+- 分支 `gui/v0.1`；提交内容：`docs/AGENT_HUD_PHASE45_REVERIFY_R2.md` 新增、`DAILY_LOG.md` 仅追加本区块。
+- **推送未完成（如实记录）**：单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push origin gui/v0.1` 返回 EXIT=128，根因是本机沙箱禁止 msys 子进程创建信号管道（`sh.exe: *** fatal error - couldn't create signal pipe, Win32 error 5`），credential helper 经 `sh -c` 启动失败 → `error: failed to execute prompt script (exit code 66)` → `could not read Username for 'https://github.com'`；直接运行 `sh.exe -c "echo hi"` 同样 `Win32 error 5`。按工具策略请求一次沙箱提权被拒（`requires approval, but no approval channel is available`）。
+- 未改全局 git 配置；未在任何命令、文档或日志中写入 token；未做其它绕过。推送需在有审批通道/完整权限的环境重跑上面那条命令。
+
+### 额度
+
+- 额度消耗无法直接观测；本次为单 agent 会话，只执行 typecheck、一次 build、一次隔离探针与文件读写，未记录虚构百分比。
