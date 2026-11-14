@@ -662,3 +662,78 @@ dsh：
 
 - 评审 N1–N5、N7–N8 未处理；未改 `docs/AGENT_HUD_PHASE2_REVIEW.md`、`docs/AGENT_HUD_PHASE1_REVIEW.md`、`docs/AGENT_HUD_APPROVAL.md`。
 - 未做真实 claude↔用户审批往返；未重启生产 `:8080`；未改 GUI、`spike/`、签名；未删除文件。
+
+---
+
+## O Agent HUD 第三期：左侧胶囊侧栏 + 纸飞机动画（2026-11-14）
+
+> 本节为追加记录，不改写上文历史。本期只改 GUI（`gui/`）；未改引擎消息与审批逻辑（第一、二期已上线），未碰 `spike/`、签名与两份评审文件，未删除文件。
+
+### O.1 范围与状态
+
+- **代码状态**：[DONE] GUI 已构建并在生产引擎 `127.0.0.1:8080` 上完成真实数据验证。
+- **分支**：`gui/v0.1`；提交与推送见 O.6，hash 以 `git log -1` 与任务汇报为准。
+- **视觉依据**：`docs/DESIGN_SYSTEM.md`、`docs/BRAND_GUIDELINES.md`；并在品牌规范 §6 追加“常驻 HUD 浮层例外”，明确墨色胶囊、环形进度与纸飞机的允许边界，仍禁止发光、渐变、玻璃拟态、emoji 与仅靠颜色表达。
+- **数据原则**：只用真实引擎数据（`agent_info` / `task_list` / `list_messages`）；缺数据时显示“—/暂无”，不生成假状态。
+
+### O.2 改动文件
+
+| 文件 | 类型 | 内容 |
+|---|---|---|
+| `gui/src/components/AgentHud.tsx` | 新增 | 墨色胶囊、三个槽位、状态环、状态角标、未读/排队角标、悬停详情卡、点击跳转 |
+| `gui/src/components/PaperPlaneLayer.tsx` | 新增 | Canvas 纸飞机：二次贝塞尔弧线、虚线尾迹、机头朝切线、最多 3 架、180ms 间隔排队、落地环闪、reduced-motion 降级 |
+| `gui/src/lib/hud.ts` | 新增 | 真实数据聚合与四态推导、未读计数、新消息转纸飞机事件、共享 HUD 配置 store |
+| `gui/src/styles/hud.css` | 新增 | HUD/环/角标/悬停卡/Canvas 样式与 reduced-motion 规则 |
+| `gui/src/components/AppFrame.tsx`、`gui/src/styles/brand.css`、`gui/src/main.tsx` | 修改 | 布局加入 72px HUD 列并挂载 HUD/动画层 |
+| `gui/src/types.ts`、`gui/src/lib/engine.ts` | 修改 | 消息列表/消息类型/HUD 配置类型 |
+| `gui/electron/engine.ts`、`gui/electron/main.ts`、`gui/electron/preload.ts` | 修改 | 新增 `engine:message-list`、`hud:get-config`、`hud:set-config`；配置持久化到 `userData/hud.json` |
+| `docs/BRAND_GUIDELINES.md` | 修改 | §6.1 HUD 浮层例外 |
+| `docs/hud-phase3/**` | 新增 | 8 张真实截图 + 证据说明 README |
+| `RESUME.md`、`DAILY_LOG.md` | 追加 | 本记录 |
+
+### O.3 侧栏实现
+
+- **槽位**：Muse（`Cloud`）、claude（`Sparkles`）、dsh（`Terminal`）；身份只用图形形状区分，颜色只表示状态。
+- **四态推导（全部真实数据）**：
+  - `出错`：引擎离线、执行器 `available=false`、存在 `BLOCKED/STALE` 活跃任务，或该执行器最近一条任务在 15 分钟内 `FAILED`；
+  - `等你输入`：存在 `WAITING` 活跃任务；
+  - `干活中`：存在 `PENDING/STARTING/WORKING` 活跃任务；
+  - `空闲`：以上都不成立。
+  - Muse 无直接 API：按“存在 `WAITING_USER` 线程 → 等你输入；有活跃任务 → 干活中；否则空闲”间接推导，悬停卡文字明确说明。
+- **进度环**：2px；工作中为信号橙不定式弧（1.4s 旋转）、等你输入为琥珀弧、出错为错误色满环、空闲只留灰底环；同时用角标图形（Hourglass / TriangleAlert）和悬停卡文字“空闲/干活中/等你输入/出错”三重编码。
+- **悬停详情**：名称、状态、当前任务或最近任务、模型、活跃任务数、本轮用时、未读数、排队数、单击提示；焦点可见时同样显示。
+- **未读**：按 `list_messages` 的新消息计数；发给该 agent 的消息计到该槽位，发给 `user` 的消息计到 Muse；点击槽位清零。
+- **跳转**：点击 claude/dsh 跳到其活跃或最近任务详情；Muse 跳到任务列表。
+- **排队**：纸飞机排队期间，发送方槽位左下角显示 `Mail` 角标。
+
+### O.4 纸飞机实现
+
+- Canvas 覆盖层 `pointer-events: none`，固定全窗口；只在有飞行或尾迹时执行 `requestAnimationFrame`。
+- 轨迹为二次贝塞尔，控制点取中点沿垂直方向向窗口内侧偏移 25% 距离；机头取轨迹切线角；尾迹为 4/6 虚线、`#8A8F98`、透明度 0.45，落地后 400ms 淡出。
+- 同时最多 3 架，超出排队；相邻起飞间隔 180ms；落地目标环闪一次（400ms 描边淡出，不发光）。
+- `prefers-reduced-motion: reduce` 或配置关闭时不飞行，只保留状态变化/环闪。
+- 配置：`%APPDATA%\agent-workbench\hud.json` 的 `paperPlanes`，默认 `true`；主进程 IPC 读写，第五期设置页直接暴露。
+
+### O.5 验证证据（真实数据，非模拟）
+
+- `npm run typecheck`、`npm run build` 通过。
+- 构建后的 Electron 连接生产引擎 `127.0.0.1:8080`；用 CDP 驱动悬停与截图。截图与说明：`docs/hud-phase3/README.md`。
+  - 空闲：`02-state-idle.png`；干活中：`03-state-working.png`；等你输入：`04-state-waiting.png`；出错：`05-state-error.png`。
+  - 未读/排队/纸飞机：`06-planes-outbound.png`（dsh 未读 20、Mail 排队角标、纸飞机+尾迹）、`07-planes-return.png`（claude 未读 5、反向飞行、落地环闪）。
+  - 跳转：`08-click-jump.png`，点击 dsh 后到 `#/tasks/bc86976f-8ce1-4f47-ad77-f767bd95cb00`，未读清零。
+- 真实数据来源：任务 `a5d3198f…`（WORKING）、`bc86976f…`（dsh，1000ms 超时 FAILED，tokens 0/0）、两个 10 条消息的 `WAITING_USER` 线程、5 条 dsh→claude 消息；消息 ID 见 `docs/hud-phase3/README.md`。
+- 配置 IPC 实测：`true → false → true`，`hud.json` 落盘为 `{"paperPlanes": true}`。
+- 额度：本期实现与截图未调用 claude/dsh LLM；用于制造“出错”状态的 dsh 任务是 1000ms 超时，引擎记录 tokens 0/0。dsh 独立评审另计；额度无法直接观测，不记录虚构百分比。
+
+### O.6 提交与推送
+
+- 分支 `gui/v0.1`；提交内容为上述 GUI 源码、品牌文档、截图与两份追加文档。
+- 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未改全局 git 配置；命令、文档与日志中无 token。
+- 提交 hash 与远程 HEAD 以 `git log -1`、`git ls-remote` 及任务汇报为准。
+
+### O.7 已知限制与明确未做
+
+- `list_messages` 按 `created_at ASC` 返回前 N 条；GUI 取 500 条并保留最后 300 条，历史超过 500 条后新消息可能不在窗口内。本期不改引擎消息逻辑。
+- 未读状态只在渲染进程内保存，重载/重启后从当前消息重建基线。
+- 验证用真实消息保留在生产 SQLite 中；未删除数据。
+- 未改 `src/`、`spike/`、签名、`docs/AGENT_HUD_PHASE1_REVIEW.md`、`docs/AGENT_HUD_PHASE2_REVIEW.md`；未删除文件。

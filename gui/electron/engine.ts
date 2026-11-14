@@ -524,6 +524,13 @@ export class EngineManager {
     return this.callTool('task_list', { limit });
   }
 
+  async listMessages(limit = 500): Promise<{
+    thread: Record<string, unknown> | null;
+    messages: Array<Record<string, unknown>>;
+  }> {
+    return this.callTool('list_messages', { limit });
+  }
+
   async taskStatus(taskId: string): Promise<Record<string, unknown>> {
     return this.callTool('task_status', { task_id: taskId });
   }

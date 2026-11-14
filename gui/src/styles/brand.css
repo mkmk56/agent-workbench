@@ -59,6 +59,7 @@
     "SFMono-Regular", monospace;
 
   --topbar-height: 52px;
+  --hud-width: 72px;
   --nav-width: 232px;
   --content-max: 1600px;
 }
@@ -257,7 +258,7 @@ html[data-theme="dark"] :focus-visible {
  * ------------------------------------------------------------- */
 .app {
   display: grid;
-  grid-template-columns: var(--nav-width) minmax(0, 1fr);
+  grid-template-columns: var(--hud-width) var(--nav-width) minmax(0, 1fr);
   grid-template-rows: var(--topbar-height) minmax(0, 1fr);
   min-height: 100vh;
 }

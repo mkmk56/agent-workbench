@@ -13,6 +13,7 @@ const workbench = {
   stopEngine: () => ipcRenderer.invoke('engine:stop'),
   getAgentInfo: () => ipcRenderer.invoke('engine:agent-info'),
   listTasks: (limit?: number) => ipcRenderer.invoke('engine:task-list', limit),
+  listMessages: (limit?: number) => ipcRenderer.invoke('engine:message-list', limit),
   getTaskStatus: (taskId: string) => ipcRenderer.invoke('engine:task-status', taskId),
   getTaskLogs: (input: { taskId: string; cursor?: number; limit?: number }) =>
     ipcRenderer.invoke('engine:task-logs', input),
@@ -25,6 +26,9 @@ const workbench = {
   sendTask: (taskId: string, prompt: string) =>
     ipcRenderer.invoke('engine:task-send', taskId, prompt),
   cancelTask: (taskId: string) => ipcRenderer.invoke('engine:task-cancel', taskId),
+  getHudConfig: () => ipcRenderer.invoke('hud:get-config'),
+  setHudConfig: (patch: { paperPlanes?: boolean }) =>
+    ipcRenderer.invoke('hud:set-config', patch),
   getUpdateState: (): Promise<UpdateState> => ipcRenderer.invoke('update:state'),
   checkForUpdates: (): Promise<UpdateState> => ipcRenderer.invoke('update:check'),
   downloadUpdate: (): Promise<UpdateState> => ipcRenderer.invoke('update:download'),

@@ -5,6 +5,7 @@ import '@astryxdesign/core/astryx.css';
 import './theme/brand.generated.css';
 import './styles/brand.css';
 import './styles/astryx-overrides.css';
+import './styles/hud.css';
 import { App } from './App';
 
 const root = document.getElementById('root');

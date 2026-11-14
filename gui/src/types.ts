@@ -68,6 +68,61 @@ export interface EngineAgent {
 
 export interface AgentInfo {
   agents: EngineAgent[];
+  message_protocol?: {
+    enabled: boolean;
+    exchange_limit: number;
+    summary_max_tokens: number;
+    auto_deliver: boolean;
+  } | null;
+  approval_gate?: {
+    enabled: boolean;
+    categories?: string[];
+    options?: string[];
+    timeout_ms?: number;
+  } | null;
+}
+
+export type MessageParticipant = Executor | 'user';
+
+export interface EngineMessage {
+  message_id: string;
+  thread_id: string;
+  from: MessageParticipant;
+  to: MessageParticipant;
+  task_id: string;
+  reply_to: string | null;
+  summary: string;
+  files: string[];
+  question: string | null;
+  summary_tokens: number;
+  summary_truncated: boolean;
+  status: string;
+  delivery_task_id: string | null;
+  is_final: boolean;
+  error: string | null;
+  created_at: string;
+  thread_state: string;
+  exchange_count: number;
+  exchange_limit: number;
+  waiting_for_user: boolean;
+}
+
+export interface EngineMessageList {
+  thread: {
+    thread_id: string;
+    root_task_id: string;
+    state: string;
+    exchange_count: number;
+    exchange_limit: number;
+    message_count: number;
+    last_message_id: string | null;
+    waiting_for_user: boolean;
+  } | null;
+  messages: EngineMessage[];
+}
+
+export interface HudConfig {
+  paperPlanes: boolean;
 }
 
 export interface EngineTaskSummary {
@@ -216,6 +271,9 @@ export interface WorkbenchApi {
   stopEngine: () => Promise<EngineResult<EngineStatus>>;
   getAgentInfo: () => Promise<EngineResult<AgentInfo>>;
   listTasks: (limit?: number) => Promise<EngineResult<TaskListPayload>>;
+  listMessages: (limit?: number) => Promise<EngineResult<EngineMessageList>>;
+  getHudConfig: () => Promise<HudConfig>;
+  setHudConfig: (patch: Partial<HudConfig>) => Promise<HudConfig>;
   getTaskStatus: (taskId: string) => Promise<EngineResult<EngineTaskStatus>>;
   getTaskLogs: (input: TaskLogsInput) => Promise<EngineResult<EngineTaskLogs>>;
   startTask: (input: TaskStartInput) => Promise<EngineResult<EngineTaskStartResult>>;

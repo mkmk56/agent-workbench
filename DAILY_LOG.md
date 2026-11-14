@@ -1525,3 +1525,79 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 - 未改 GUI、`spike/`、签名；未删除文件。
 - `docs/AGENT_HUD_SPEC.md` 与 `spike/` 仍为未跟踪，未提交。
 - 额度无法直接观测，本次未调用 agent LLM，不声称精确达标。
+
+---
+
+## 2026-11-14（周六）· 补充：Agent HUD 第三期（左侧胶囊侧栏 + 纸飞机动画）
+
+### 今日目标
+
+- 在现有 Electron GUI 中实现 Agent HUD 第三期：左侧墨色胶囊侧栏、三个角色槽位（Muse / claude / dsh）、四态进度环、悬停详情、未读与点击跳转。
+- 实现纸飞机动画：agent 之间传话时沿弧线飞行、虚线尾迹、机头朝切线、最多 3 架、超出排队、落地环闪；动画开关落到配置，默认开，第五期设置页再暴露。
+- 只改 GUI；不改引擎消息与审批逻辑（第一、二期已上线），不碰 `spike/`、签名与两份评审文件，不删除文件。
+- 用真实引擎数据验证并截图；更新 `RESUME.md`（只追加）与 `DAILY_LOG.md`（只追加）；提交并推送。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%；额度消耗**无法直接观测**，本区块不记录虚构百分比。
+- 本期实现与截图未调用 claude/dsh LLM；为制造真实“出错”状态的 dsh 任务设为 1000ms 超时，`task_status` 记录 tokens 输入 0 / 输出 0，`elapsed_ms` 1068，状态 FAILED。dsh 独立评审另计。
+
+### 实际改动
+
+| 文件 | 改动 |
+|---|---|
+| `gui/src/components/AgentHud.tsx` | 新增：墨色胶囊、Muse/Claude/dsh 三槽位、2px 状态环、状态角标（Hourglass/TriangleAlert）、未读数、Mail 排队角标、悬停详情卡、点击跳转 |
+| `gui/src/components/PaperPlaneLayer.tsx` | 新增：Canvas 覆盖层；二次贝塞尔弧线、4/6 虚线尾迹、切线朝向、`MAX_ACTIVE=3`、180ms 起飞间隔、落地环闪、reduced-motion 降级 |
+| `gui/src/lib/hud.ts` | 新增：真实数据聚合（agent_info / task_list / list_messages）、四态推导、未读计数、新消息转飞行事件、共享 HUD 配置 store |
+| `gui/src/styles/hud.css` | 新增：HUD、环、角标、悬停卡、Canvas、reduced-motion 与窄屏隐藏 |
+| `gui/src/components/AppFrame.tsx`、`gui/src/styles/brand.css`、`gui/src/main.tsx` | 布局增加 72px HUD 列并挂载 HUD/动画层 |
+| `gui/src/types.ts`、`gui/src/lib/engine.ts` | 新增消息列表、消息、HUD 配置类型 |
+| `gui/electron/engine.ts`、`gui/electron/main.ts`、`gui/electron/preload.ts` | 新增 `engine:message-list`、`hud:get-config`、`hud:set-config`；`userData/hud.json` 持久化，默认 `paperPlanes:true` |
+| `docs/BRAND_GUIDELINES.md` | §6.1 常驻 HUD 浮层例外：允许墨色胶囊/环/纸飞机，仍禁止发光、渐变、玻璃拟态、emoji 与仅靠颜色表达 |
+| `docs/hud-phase3/**` | 8 张真实截图 + README（数据来源、消息 ID、限制） |
+| `RESUME.md`、`DAILY_LOG.md` | 只追加 O 节 / 本区块 |
+
+### 四态推导（真实数据，不造假）
+
+- **出错**：引擎离线、执行器不可用、存在 `BLOCKED/STALE` 活跃任务，或最近一条任务在 15 分钟内 `FAILED`。
+- **等你输入**：存在 `WAITING` 活跃任务；Muse 另外依据 `list_messages` 的 `waiting_for_user`。
+- **干活中**：存在 `PENDING/STARTING/WORKING` 活跃任务；Muse 按引擎任务活动间接感知，悬停卡写明“间接感知”。
+- **空闲**：以上都不成立。
+- 状态同时用环颜色、角标图形与悬停卡文字表达；身份只用 `Cloud` / `Sparkles` / `Terminal` 三种形状，不用颜色区分角色。
+
+### 验证与截图（构建后 Electron + 生产引擎）
+
+- `npm run typecheck`、`npm run build` 通过。
+- 构建后的 Electron 连接生产 `127.0.0.1:8080`；以 `--remote-debugging-port=9222` 启动，用 CDP 悬停与截图。
+- 截图（已提交，`docs/hud-phase3/README.md` 有完整说明）：
+  - `01-sidebar-light.png`：整窗浅色主题与 HUD。
+  - `02-state-idle.png`：dsh 空闲；其上一次失败已超过 15 分钟窗口。
+  - `03-state-working.png`：Claude 干活中，任务 `a5d3198f-a301-43e1-80b2-3c099182b224`（本会话，WORKING）。
+  - `04-state-waiting.png`：Muse 等你输入；两个真实线程达到 10 条上限进入 `WAITING_USER`。
+  - `05-state-error.png`：dsh 出错；真实任务 `bc86976f-8ce1-4f47-ad77-f767bd95cb00` 在 15:30:44 `timeout after 1000 ms` 失败。
+  - `06-planes-outbound.png`：10 条真实 claude→dsh 消息（`deliver:false`）触发纸飞机；dsh 未读 20、Mail 排队角标、虚线尾迹可见。
+  - `07-planes-return.png`：5 条真实 dsh→claude 消息触发反向飞行；claude 未读 5、落地环闪可见。
+  - `08-click-jump.png`：点击 dsh 后跳转 `#/tasks/bc86976f-8ce1-4f47-ad77-f767bd95cb00`，未读清零。
+- 真实消息 ID：
+  - `a5d3198f…` 线程：`c4d01e77-291b-4bdd-a60b-496403f1d13e` … `4a75df02-0908-4001-b5fb-1a3b3911fefc`（10/10 `held`）。
+  - `a78cd852…` 线程：`41c0a0ed-4a6c-41ab-b63c-963d29cf8f1b` … `bce3eaef-d984-42ea-ba9b-a711d394227d`（10/10 `held`）。
+  - `bc86976f…` 线程：`8fd2a86b-87e0-4a0f-8c31-c5b4ebd7aeb6` … `885b62fc-616c-4bdf-a6af-28b985c32d1a`（dsh→claude，5 条）。
+- 配置 IPC 实测：`getHudConfig()` → `{paperPlanes:true}`；`setHudConfig({paperPlanes:false})` → `false`；再设回 `true` 后 `%APPDATA%\agent-workbench\hud.json` 为 `{"paperPlanes": true}`。
+
+### 已知限制
+
+- `list_messages` 按 `created_at ASC` 返回前 N 条；GUI 取 500 条并保留最后 300 条，历史超过 500 条后新消息可能不在窗口内，需引擎侧增加 `since`/倒序参数（本期不改引擎消息逻辑）。
+- 未读只在渲染进程内保存，重载/重启 GUI 后从当前消息重建基线。
+- Muse 无直接 API，状态为间接推导，悬停卡已注明。
+- 验证用真实消息保留在生产 SQLite 中；未删除数据。
+- 额度无法直接观测；本期未调用 agent LLM，未记录虚构百分比。
+
+### Git 同步
+
+- 分支 `gui/v0.1`；提交包含 GUI 源码、品牌文档、截图与两份追加文档。
+- 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未改全局 git 配置；命令、文档与日志中无 token。
+- 提交 hash 与远程 HEAD 以 `git log -1`、`git ls-remote` 及任务汇报为准。
+
+### 下一步
+
+- 按用户要求继续第四期、第五期；中间 dsh 照常独立评审。

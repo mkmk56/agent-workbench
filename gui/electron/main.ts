@@ -30,8 +30,44 @@ app.setPath('userData', path.join(app.getPath('appData'), 'agent-workbench'));
 const DATA_DIR = app.getPath('userData');
 const CREDENTIALS_DIR = path.join(DATA_DIR, 'credentials');
 const TOKEN_FILE = path.join(CREDENTIALS_DIR, 'token.enc');
+const HUD_CONFIG_FILE = path.join(DATA_DIR, 'hud.json');
 
 type Result = { ok: boolean; error?: string };
+
+interface HudConfig {
+  paperPlanes: boolean;
+}
+
+const DEFAULT_HUD_CONFIG: HudConfig = { paperPlanes: true };
+
+function readHudConfig(): HudConfig {
+  try {
+    const raw = JSON.parse(fs.readFileSync(HUD_CONFIG_FILE, 'utf8')) as Record<string, unknown>;
+    return {
+      paperPlanes:
+        typeof raw.paperPlanes === 'boolean'
+          ? raw.paperPlanes
+          : DEFAULT_HUD_CONFIG.paperPlanes,
+    };
+  } catch {
+    return { ...DEFAULT_HUD_CONFIG };
+  }
+}
+
+function writeHudConfig(patch: unknown): HudConfig {
+  const current = readHudConfig();
+  const value = patch != null && typeof patch === 'object' && !Array.isArray(patch)
+    ? (patch as Record<string, unknown>)
+    : {};
+  if (typeof value.paperPlanes === 'boolean') {
+    current.paperPlanes = value.paperPlanes;
+  }
+  ensureDataDir();
+  const tempFile = `${HUD_CONFIG_FILE}.${process.pid}.tmp`;
+  fs.writeFileSync(tempFile, `${JSON.stringify(current, null, 2)}\n`, 'utf8');
+  fs.renameSync(tempFile, HUD_CONFIG_FILE);
+  return current;
+}
 
 let mainWindow: BrowserWindow | null = null;
 let updateManager: UpdateManager | null = null;
@@ -286,6 +322,9 @@ function registerIpc(): void {
     return updateManager?.setChannel(channel) ?? currentUpdateState();
   });
 
+  handle('hud:get-config', () => readHudConfig());
+  handle('hud:set-config', (patch) => writeHudConfig(patch));
+
   handle('engine:status', () => engineResult(() => engine.status()));
   handle('engine:start', () => engineResult(() => engine.start()));
   handle('engine:stop', () => engineResult(() => engine.stop()));
@@ -294,6 +333,11 @@ function registerIpc(): void {
   handle('engine:task-list', (limit) => {
     const resolved = optionalInteger(limit, 1, 500, 200);
     return engineResult(() => engine.listTasks(resolved));
+  });
+
+  handle('engine:message-list', (limit) => {
+    const resolved = optionalInteger(limit, 1, 500, 500);
+    return engineResult(() => engine.listMessages(resolved));
   });
 
   handle('engine:task-status', (taskId) =>

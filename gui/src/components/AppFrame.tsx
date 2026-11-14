@@ -14,6 +14,7 @@ import { navigate } from '../lib/router';
 import type { AppTheme } from '../lib/theme';
 import type { AppInfo, Route } from '../types';
 import { AppIconButton, AppStatus } from '../ui/astryx';
+import { AgentHud } from './AgentHud';
 
 function breadcrumbFor(route: Route): ReactNode {
   switch (route.name) {
@@ -130,6 +131,8 @@ export function AppFrame({
         />
         <span className="topbar__version">v{appInfo.version}</span>
       </header>
+
+      <AgentHud engine={status} />
 
       <aside className="sidenav" aria-label="主导航">
         <div className="nav-section">工作台</div>
