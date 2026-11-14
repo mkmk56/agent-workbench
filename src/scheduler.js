@@ -158,11 +158,19 @@ export class Scheduler {
     // Agents need their own task id to call send_message; render placeholders
     // at launch time so the stored prompt stays reusable.
     const threadId = this.store.getThreadId(task.id);
-    const renderedPrompt = String(task.prompt)
+    const gateBlock = this.approvals?.promptBlock(task) || '';
+    const combinedPrompt = gateBlock
+      ? `${gateBlock}\n\n---\n\n${String(task.prompt)}`
+      : String(task.prompt);
+    const renderedPrompt = combinedPrompt
       .replaceAll('{{task_id}}', task.id)
       .replaceAll('{{session_id}}', task.session_id)
       .replaceAll('{{thread_id}}', threadId)
       .replaceAll('{{agent}}', task.agent);
+    if (gateBlock) {
+      this.store.appendLog(task.id, 'system',
+        `approval gate enabled; request_approval contract injected (agent=${task.agent})`);
+    }
 
     try {
       const started = EXECUTORS[task.agent].start({ ...task, prompt: renderedPrompt, thread_id: threadId }, ctx);
@@ -255,6 +263,11 @@ export class Scheduler {
     } catch (error) {
       this.store.appendLog(task.id, 'system', `message routing failed: ${error.message}`);
     }
+    try {
+      this.approvals?.onTaskFinished(task.id);
+    } catch (error) {
+      this.store.appendLog(task.id, 'system', `approval cleanup failed: ${error.message}`);
+    }
   }
 
   cancel(taskId) {
@@ -304,6 +317,7 @@ export class Scheduler {
     const created = Date.parse(task.created_at);
     const updated = Date.parse(task.updated_at);
     const thread = this.store.getThreadForTask(task.id);
+    const approval = this.approvals?.describeForTask(task.id) ?? null;
     return {
       task_id: task.id,
       session_id: task.session_id,
@@ -325,7 +339,11 @@ export class Scheduler {
       waiting_for_user: thread.state === 'WAITING_USER',
       exchange_count: thread.exchange_count ?? 0,
       exchange_limit: this.config.agentMessageLimit,
-      message_count: thread.message_count ?? 0
+      message_count: thread.message_count ?? 0,
+      approval_gate: {
+        enabled: Boolean(this.config.agentApprovalGate)
+      },
+      approval
     };
   }
 
@@ -396,6 +414,12 @@ export class Scheduler {
         exchange_limit: this.config.agentMessageLimit,
         summary_max_tokens: this.config.agentSummaryMaxTokens,
         auto_deliver: this.config.agentAutoDeliver
+      },
+      approval_gate: this.approvals?.info() ?? {
+        enabled: Boolean(this.config.agentApprovalGate),
+        categories: ['merge', 'delete', 'dependencies'],
+        options: ['once', 'session', 'deny'],
+        timeout_ms: this.config.approvalTimeoutMs
       },
       agents: [
         {

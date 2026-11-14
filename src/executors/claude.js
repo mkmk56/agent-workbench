@@ -28,10 +28,18 @@ export const claudeExecutor = {
       throw new Error('claude executable not found; set WORKBENCH_CLAUDE_ENTRY or add claude to PATH');
     }
     const args = buildArgs(task, ctx.config);
+    const env = { ...ctx.config.claudeEnv };
+    if (ctx.config.agentApprovalGate) {
+      // request_approval blocks until the user answers. Raise the MCP tool
+      // timeout above the approval timeout so the client does not abort first.
+      // This env name is Claude Code's; if a version ignores it the tool call
+      // simply follows the client default.
+      env.MCP_TOOL_TIMEOUT = String(Math.max(120000, ctx.config.approvalTimeoutMs + 60000));
+    }
     const child = spawnProcess({
       command: resolved.command,
       args,
-      env: ctx.config.claudeEnv,
+      env,
       cwd: task.cwd || ctx.config.root,
       onLine: (stream, line) => {
         ctx.log(stream, line);

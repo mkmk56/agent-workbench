@@ -37,7 +37,7 @@ export function truncateSummary(text, maxTokens) {
   return { text: out, tokens: estimateTokens(out), truncated: true };
 }
 
-function normalizeFiles(files) {
+export function normalizeFiles(files) {
   if (files === undefined || files === null) return [];
   if (!Array.isArray(files)) throw new Error('files must be an array of file paths');
   if (files.length > 100) throw new Error('files may contain at most 100 entries');
@@ -224,7 +224,12 @@ export class MessageService {
     const isFinal = Boolean(input.is_final ?? input.final);
 
     const atLimit = agentMessage && agentCountBefore + 1 >= limit;
-    const id = randomUUID();
+    // Approval requests need the message id in the card prefix before the row
+    // is written, so internal callers may supply it. Agent-facing send_message
+    // does not expose this field; the server keeps generating UUIDs there.
+    const id = typeof input.message_id === 'string' && input.message_id
+      ? input.message_id
+      : randomUUID();
     const now = new Date().toISOString();
 
     this.store.insertMessage({

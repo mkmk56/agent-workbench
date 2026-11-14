@@ -32,6 +32,12 @@ function intEnv(name, fallback) {
   return Math.floor(n);
 }
 
+function boolEnv(name, fallback = false) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  return ['1', 'true', 'on', 'yes', 'enabled'].includes(String(raw).trim().toLowerCase());
+}
+
 const port = intEnv('MCP_PORT', 8080);
 const dataDir = resolve(root, process.env.MCP_DATA_DIR || 'data');
 
@@ -56,7 +62,11 @@ export const config = {
   claudeMcpConfigPath: resolve(dataDir, 'claude-mcp.json'),
   agentMessageLimit: intEnv('AGENT_MESSAGE_LIMIT', 10),
   agentSummaryMaxTokens: intEnv('AGENT_SUMMARY_MAX_TOKENS', 500),
-  agentAutoDeliver: process.env.AGENT_AUTO_DELIVER !== '0'
+  agentAutoDeliver: process.env.AGENT_AUTO_DELIVER !== '0',
+  // Chat-based approval gate for merge / delete / dependency operations.
+  // Off by default: the workbench keeps its fully automatic behaviour.
+  agentApprovalGate: boolEnv('AGENT_APPROVAL_GATE', false),
+  approvalTimeoutMs: intEnv('APPROVAL_TIMEOUT_MS', 10 * 60 * 1000)
 };
 
 // ---------------------------------------------------------------------------

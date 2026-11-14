@@ -105,6 +105,35 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_messages_task ON messages(task_id);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_reply_unique ON messages(reply_to) WHERE reply_to IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS approvals (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        category TEXT NOT NULL,
+        action TEXT NOT NULL,
+        command TEXT,
+        files_json TEXT,
+        reason TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        response_message_id TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        decision TEXT,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        responded_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_approvals_thread ON approvals(thread_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_approvals_task ON approvals(task_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
+      CREATE TABLE IF NOT EXISTS approval_grants (
+        thread_id TEXT NOT NULL,
+        category TEXT NOT NULL,
+        source_approval_id TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (thread_id, category)
+      );
     `);
     this.taskSeq = new Map();
     this.sessionSeq = new Map();
@@ -336,6 +365,118 @@ export class Store {
     return this.db.prepare(
       'SELECT id, status FROM messages WHERE task_id = ? AND reply_to = ? ORDER BY created_at DESC LIMIT 1'
     ).get(taskId, replyTo) ?? null;
+  }
+
+  // ------------------------------------------------------------------ approvals
+  insertApproval(approval) {
+    const columns = [
+      'id', 'thread_id', 'task_id', 'agent', 'category', 'action', 'command', 'files_json',
+      'reason', 'message_id', 'response_message_id', 'status', 'decision', 'error',
+      'created_at', 'updated_at', 'responded_at'
+    ];
+    this.db.prepare(
+      `INSERT INTO approvals (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`
+    ).run(...columns.map((c) => approval[c] ?? null));
+  }
+
+  getApproval(id) {
+    return this.db.prepare('SELECT * FROM approvals WHERE id = ?').get(id) ?? null;
+  }
+
+  // Conditional update: only the first resolver moves a pending approval, so a
+  // reply arriving through both respond_approval and the chat poller cannot
+  // apply two different decisions.
+  finalizeApproval(id, patch) {
+    const allowed = ['status', 'decision', 'response_message_id', 'error', 'responded_at'];
+    const keys = Object.keys(patch).filter((k) => allowed.includes(k));
+    if (keys.length === 0) return 0;
+    const sets = keys.map((k) => `${k} = ?`).join(', ');
+    const info = this.db.prepare(
+      `UPDATE approvals SET ${sets}, updated_at = ? WHERE id = ? AND status = 'pending'`
+    ).run(...keys.map((k) => patch[k] ?? null), this._now(), id);
+    return Number(info.changes ?? 0);
+  }
+
+  findPendingApprovalForTask(taskId) {
+    return this.db.prepare(
+      'SELECT * FROM approvals WHERE task_id = ? AND status = \'pending\' ORDER BY created_at DESC LIMIT 1'
+    ).get(taskId) ?? null;
+  }
+
+  findPendingApprovalForThread(threadId) {
+    return this.db.prepare(
+      'SELECT * FROM approvals WHERE thread_id = ? AND status = \'pending\' ORDER BY created_at DESC LIMIT 1'
+    ).get(threadId) ?? null;
+  }
+
+  countPendingApprovalsForThread(threadId) {
+    const row = this.db.prepare(
+      'SELECT COUNT(*) AS n FROM approvals WHERE thread_id = ? AND status = \'pending\''
+    ).get(threadId);
+    return Number(row?.n ?? 0);
+  }
+
+  getLastApprovalForTask(taskId) {
+    return this.db.prepare(
+      'SELECT * FROM approvals WHERE task_id = ? ORDER BY created_at DESC LIMIT 1'
+    ).get(taskId) ?? null;
+  }
+
+  listApprovals({ threadId = null, taskId = null, status = null, limit = 100 } = {}) {
+    const clauses = [];
+    const params = [];
+    if (threadId) { clauses.push('thread_id = ?'); params.push(threadId); }
+    if (taskId) { clauses.push('task_id = ?'); params.push(taskId); }
+    if (status) { clauses.push('status = ?'); params.push(status); }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const n = Math.max(1, Math.min(500, Number(limit) || 100));
+    return this.db.prepare(
+      `SELECT * FROM approvals ${where} ORDER BY created_at ASC, id ASC LIMIT ?`
+    ).all(...params, n);
+  }
+
+  addApprovalGrant(threadId, category, sourceApprovalId) {
+    this.db.prepare(
+      `INSERT INTO approval_grants (thread_id, category, source_approval_id, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(thread_id, category) DO UPDATE SET
+         source_approval_id = excluded.source_approval_id,
+         created_at = excluded.created_at`
+    ).run(threadId, category, sourceApprovalId ?? null, this._now());
+  }
+
+  getApprovalGrant(threadId, category) {
+    return this.db.prepare(
+      'SELECT * FROM approval_grants WHERE thread_id = ? AND category = ?'
+    ).get(threadId, category) ?? null;
+  }
+
+  listApprovalGrants(threadId) {
+    return this.db.prepare(
+      'SELECT * FROM approval_grants WHERE thread_id = ? ORDER BY created_at ASC'
+    ).all(threadId);
+  }
+
+  expirePendingApprovalsForTask(taskId, status = 'abandoned') {
+    const rows = this.db.prepare(
+      'SELECT * FROM approvals WHERE task_id = ? AND status = \'pending\''
+    ).all(taskId);
+    if (rows.length === 0) return [];
+    const now = this._now();
+    this.db.prepare(
+      'UPDATE approvals SET status = ?, updated_at = ?, responded_at = ? WHERE task_id = ? AND status = \'pending\''
+    ).run(status, now, now, taskId);
+    return rows;
+  }
+
+  expireAllPendingApprovals(status = 'abandoned') {
+    const rows = this.db.prepare('SELECT * FROM approvals WHERE status = \'pending\'').all();
+    if (rows.length === 0) return [];
+    const now = this._now();
+    this.db.prepare(
+      'UPDATE approvals SET status = ?, updated_at = ?, responded_at = ? WHERE status = \'pending\''
+    ).run(status, now, now);
+    return rows;
   }
 
   close() {

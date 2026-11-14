@@ -8,13 +8,19 @@ import { config } from './config.js';
 import { Store } from './store.js';
 import { Scheduler } from './scheduler.js';
 import { MessageService } from './messages.js';
+import { ApprovalService } from './approvals.js';
 import { ensureClaudeMcpConfig } from './mcp-config.js';
 import { registerTools } from './tools.js';
 
 const store = new Store(config.dbPath, config.dataDir);
 const scheduler = new Scheduler(store, config);
 const messages = new MessageService({ store, scheduler, config });
+const approvals = new ApprovalService({ store, config, messages, scheduler });
 scheduler.messages = messages;
+scheduler.approvals = approvals;
+// A running tool call cannot survive a restart; release any thread that was
+// parked in WAITING_USER by a pending approval.
+approvals.recover();
 const startedAt = Date.now();
 mkdirSync(config.logDir, { recursive: true });
 const pidFile = join(config.logDir, 'server.pid');
@@ -49,7 +55,7 @@ function createMcpServer() {
     { name: 'agent-workbench', version: '0.1.0' },
     { capabilities: { logging: {} } }
   );
-  registerTools(server, { scheduler, store, messages });
+  registerTools(server, { scheduler, store, messages, approvals });
   return server;
 }
 

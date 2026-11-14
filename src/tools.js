@@ -9,7 +9,7 @@ const asError = (message) => ({
   isError: true
 });
 
-export function registerTools(server, { scheduler, store, messages }) {
+export function registerTools(server, { scheduler, store, messages, approvals }) {
   server.registerTool('agent_info', {
     description: 'List available executors (claude, dsh) with version, capabilities and resume support.'
   }, async () => asText(scheduler.agentInfo()));
@@ -147,9 +147,13 @@ export function registerTools(server, { scheduler, store, messages }) {
       deliver: z.boolean().optional().describe('Auto-start a task for the recipient; default true'),
       is_final: z.boolean().optional().describe('Marks that no further agent turn is expected')
     }
-  }, async (args) => {
+  }, async ({ from, to, task_id, reply_to, summary, files, question, deliver, is_final }) => {
     try {
-      return asText(messages.send(args));
+      // Pass only schema fields: the internal message_id used by the approval
+      // service must not be settable from an agent-facing call.
+      return asText(messages.send({
+        from, to, task_id, reply_to, summary, files, question, deliver, is_final
+      }));
     } catch (error) {
       return asError(error.message);
     }
@@ -168,6 +172,63 @@ export function registerTools(server, { scheduler, store, messages }) {
       limit: z.number().int().min(1).max(500).optional()
     }
   }, async (filters) => asText(messages.list(filters)));
+
+  server.registerTool('request_approval', {
+    description: 'Ask the user, in chat, before a critical operation. Only active when AGENT_APPROVAL_GATE=1; '
+      + 'when the gate is off it returns allowed immediately and sends nothing, so the workbench stays fully '
+      + 'automatic. Categories: merge (merge/rebase/cherry-pick/push), delete (delete files/discard work), '
+      + 'dependencies (install/remove/upgrade packages or change manifests/lockfiles). The question is written '
+      + 'through the phase-1 message protocol as "[Agent HUD · 来自 <agent> · <task> <message-id>] <body>" and '
+      + 'the thread enters WAITING_USER. This call blocks until the user answers (once / session / deny) or '
+      + 'APPROVAL_TIMEOUT_MS expires; a timeout is treated as deny.',
+    inputSchema: {
+      agent: z.enum(['claude', 'dsh']).describe('Agent asking; must match the task owner'),
+      task_id: z.string().min(1).describe('Task asking for approval; {{task_id}} is rendered into agent prompts'),
+      category: z.enum(['merge', 'delete', 'dependencies']).describe('Critical-operation category'),
+      action: z.string().min(1).describe('Who wants to do what, in one or two sentences'),
+      files: z.array(z.string()).max(100).optional().describe('Every file or directory affected'),
+      reason: z.string().min(1).describe('Why the operation is needed'),
+      command: z.string().max(4000).optional().describe('Exact command(s) when known'),
+      task: z.string().max(200).optional().describe('Short task label for the card prefix; defaults to the prompt first line')
+    }
+  }, async (args) => {
+    try {
+      return asText(await approvals.request(args));
+    } catch (error) {
+      return asError(error.message);
+    }
+  });
+
+  server.registerTool('respond_approval', {
+    description: 'Answer a pending critical-operation approval as the user. decision=once allows exactly this '
+      + 'request; session also allows later operations of the same category in this thread; deny stops the '
+      + 'operation. This writes a user reply into the same chat thread (reply_to the approval question) and '
+      + 'resumes or stops the blocked agent call. Requires AGENT_APPROVAL_GATE=1.',
+    inputSchema: {
+      approval_id: z.string().optional().describe('Approval id; from list_approvals or the card'),
+      task_id: z.string().optional().describe('Task with a pending approval, when approval_id is omitted'),
+      decision: z.enum(['once', 'session', 'deny']).describe('once | session | deny'),
+      reason: z.string().max(4000).optional().describe('Optional reason stored in the user reply')
+    }
+  }, async (args) => {
+    try {
+      return asText(approvals.respond(args));
+    } catch (error) {
+      return asError(error.message);
+    }
+  });
+
+  server.registerTool('list_approvals', {
+    description: 'List persisted approval requests and their decisions. Filter by thread_id, task_id or status '
+      + '(pending|allowed|denied|timed_out|abandoned). Includes the message_id of the chat question and the '
+      + 'full file list.',
+    inputSchema: {
+      thread_id: z.string().optional().describe('Conversation thread id'),
+      task_id: z.string().optional().describe('Task id'),
+      status: z.string().optional().describe('pending|allowed|denied|timed_out|abandoned'),
+      limit: z.number().int().min(1).max(500).optional()
+    }
+  }, async (filters) => asText(approvals.list(filters)));
 
   server.registerTool('wait_for_task', {
     description: 'Long-poll until a task reaches a terminal state or the timeout expires (max 40s).',

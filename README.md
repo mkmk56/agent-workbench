@@ -36,6 +36,8 @@ On this machine the npm global prefix is `D:\workbuddy-tools\node\global`; execu
 | `RATE_LIMIT_PER_MIN` | `600` | Per-client requests per minute on `/mcp` |
 | `WORKBENCH_CLAUDE_BIN` | `claude` | Claude Code executable |
 | `WORKBENCH_DSH_BIN` | `dsh` | DeepSeek Harness executable |
+| `AGENT_APPROVAL_GATE` | `0` | Chat approval gate for merge / delete / dependency operations; off keeps fully automatic behaviour |
+| `APPROVAL_TIMEOUT_MS` | `600000` | Approval wait timeout; an unanswered request is treated as deny |
 
 ## MCP tools
 
@@ -46,7 +48,18 @@ On this machine the npm global prefix is `D:\workbuddy-tools\node\global`; execu
 - `task_logs` — incremental logs with a cursor
 - `task_cancel` — cancel and clean up the process tree
 - `task_list` — recent tasks
+- `send_message` — conclusion-only agent-to-agent message with `reply_to` threading
+- `list_messages` — persisted messages and thread state
+- `request_approval` — ask the user in chat before a critical operation (only active when the gate is on)
+- `respond_approval` — answer a pending approval: `once` / `session` / `deny`
+- `list_approvals` — persisted approval requests and decisions
 - `wait_for_task` — long poll, max 40 seconds
+
+## Critical-operation approval gate (default off)
+
+Set `AGENT_APPROVAL_GATE=1` to require a chat approval before three categories of operation: merging/integrating/publishing code, deleting files or discarding existing work, and installing/removing/upgrading dependencies or changing dependency manifests/lockfiles. The agent calls `request_approval`; the engine writes a normal thread message in the form `[Agent HUD · 来自 <agent> · <task> <message-id>] <body>`, sets the thread to `WAITING_USER`, and blocks until the user answers `once`, `session` or `deny` (or `APPROVAL_TIMEOUT_MS` expires, which counts as deny). `once` covers that request; `session` also covers later operations of the same category in the thread. Users can answer with `respond_approval` or by replying to the question in chat.
+
+The catalog and boundaries live in `src/approvals.js` and `docs/AGENT_HUD_APPROVAL.md`. This is an agent-honored gate, not an OS sandbox: the engine cannot inspect commands inside an executor process. `claude` has the local MCP client; `dsh` does not, so its prompt tells it not to perform these operations. With the gate off, `request_approval` returns immediately, sends nothing and the workbench behaves exactly as before.
 
 ## Executors
 
