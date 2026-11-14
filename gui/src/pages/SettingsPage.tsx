@@ -71,6 +71,7 @@ export function SettingsPage() {
     title: string;
     text?: string;
   } | null>(null);
+  const [lastHudSave, setLastHudSave] = useState<'saved' | 'failed' | null>(null);
 
   const [autoStart, setAutoStart] = useState(DEFAULT_STATE.autoStart);
   const [proxy, setProxy] = useState(DEFAULT_STATE.proxy);
@@ -112,6 +113,7 @@ export function SettingsPage() {
 
   const togglePaperPlanes = async (value: boolean) => {
     const saved = await hud.setPaperPlanes(value);
+    setLastHudSave(saved ? 'saved' : 'failed');
     setNotice({
       tone: saved ? 'success' : 'error',
       title: saved
@@ -136,6 +138,7 @@ export function SettingsPage() {
       return;
     }
     const saved = await hud.setContextWindowTokens(tokens);
+    setLastHudSave(saved ? 'saved' : 'failed');
     setNotice({
       tone: saved ? 'success' : 'error',
       title: saved ? '上下文参考值已保存' : '上下文参考值未保存',
@@ -143,6 +146,28 @@ export function SettingsPage() {
         ? `会话流按 ${tokens.toLocaleString()} tokens 参考上限显示占用条。`
         : '写入 hud.json 失败，原参考值保持不变。请检查数据目录权限。',
     });
+  };
+
+  const restoreDefaults = async () => {
+    setAutoStart(DEFAULT_STATE.autoStart);
+    setProxy(DEFAULT_STATE.proxy);
+    setAutoUpdate(DEFAULT_STATE.autoUpdate);
+    void updates.setChannel('stable');
+    const [planes, tokens] = await Promise.all([
+      hud.setPaperPlanes(true),
+      hud.setContextWindowTokens(128_000),
+    ]);
+    const saved = planes && tokens;
+    setLastHudSave(saved ? 'saved' : 'failed');
+    if (saved) {
+      setNotice({ tone: 'info', title: '已还原界面状态与 HUD 配置' });
+    } else {
+      setNotice({
+        tone: 'error',
+        title: 'HUD 配置未还原',
+        text: '写入 hud.json 失败，未能还原的配置项保持原值。请检查数据目录权限。',
+      });
+    }
   };
 
   const saveToken = async () => {
@@ -1145,25 +1170,33 @@ export function SettingsPage() {
                 label="还原"
                 tone="ghost"
                 onClick={() => {
-                  setAutoStart(DEFAULT_STATE.autoStart);
-                  setProxy(DEFAULT_STATE.proxy);
-                  setAutoUpdate(DEFAULT_STATE.autoUpdate);
-                  void updates.setChannel('stable');
-                  void hud.setPaperPlanes(true);
-                  void hud.setContextWindowTokens(128_000);
-                  setNotice({ tone: 'info', title: '已还原界面状态与 HUD 配置' });
+                  void restoreDefaults();
                 }}
               />
               <AppButton
                 label="保存更改"
                 tone="primary"
-                onClick={() =>
-                  setNotice({
-                    tone: 'info',
-                    title: 'HUD 设置已即时保存',
-                    text: '纸飞机动画与上下文参考值在修改时写入主进程；其余非凭据配置仍在既有范围内。',
-                  })
-                }
+                onClick={() => {
+                  if (lastHudSave === 'saved') {
+                    setNotice({
+                      tone: 'success',
+                      title: 'HUD 设置已即时保存',
+                      text: '最近一次写入 userData/hud.json 成功，纸飞机动画与上下文参考值已生效。',
+                    });
+                  } else if (lastHudSave === 'failed') {
+                    setNotice({
+                      tone: 'error',
+                      title: 'HUD 设置未保存',
+                      text: '最近一次写入 hud.json 失败，原配置保持不变。请检查数据目录权限。',
+                    });
+                  } else {
+                    setNotice({
+                      tone: 'info',
+                      title: '暂无待保存的 HUD 配置',
+                      text: '纸飞机动画与上下文参考值在修改时立即写入主进程；本次尚未修改 HUD 配置。',
+                    });
+                  }
+                }}
               />
             </div>
           </div>

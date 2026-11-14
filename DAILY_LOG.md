@@ -1799,3 +1799,43 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 - 分支 `gui/v0.1`；新增 `docs/AGENT_HUD_PHASE45_REVERIFY.md`，`DAILY_LOG.md` 仅追加本区块。
 - 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未改全局 git 配置；命令、文档与日志中无 token。
 - 提交 hash 以 `git log -1`、`git ls-remote` 与任务汇报为准。
+
+## 2026-11-14（周六）· 补充：复评 R1「还原」写盘失败误报修正与保存提示
+
+### 今日目标
+
+- 修正 `docs/AGENT_HUD_PHASE45_REVERIFY.md` 的必须修 R1：设置页「还原」按钮用 `void` 丢弃 HUD 写盘结果，失败时仍提示“已还原…HUD 配置”（M2 同类残留）。
+- 顺带处理非阻塞 R2：「保存更改」按钮无条件提示“HUD 设置已即时保存”，改为按最近一次实际保存结果显示。
+- 只改 GUI 设置页；不改复核报告与其他评审文档、不碰 `spike/`、签名、引擎与生产 `:8080`；不删除文件。
+
+### 代码改动
+
+| 文件:行号 | 改动 |
+|---|---|
+| `gui/src/pages/SettingsPage.tsx:74` | 新增 `lastHudSave: 'saved' \| 'failed' \| null`，记录最近一次 HUD 写盘结果。 |
+| `gui/src/pages/SettingsPage.tsx:114-116`、`:140-141` | 纸飞机开关与上下文参考值保存后同步更新 `lastHudSave`（沿用 M2 已有的 `Promise<boolean>` 返回值）。 |
+| `gui/src/pages/SettingsPage.tsx:151-171` | 新增 `restoreDefaults()`：`await Promise.all([hud.setPaperPlanes(true), hud.setContextWindowTokens(128_000)])`；两项均成功才提示“已还原界面状态与 HUD 配置”；任一失败（或都失败）提示 `tone:'error'`、“HUD 配置未还原 / 写入 hud.json 失败，未能还原的配置项保持原值”。不再用 `void` 丢弃 HUD 写盘结果。 |
+| `gui/src/pages/SettingsPage.tsx:1170-1201` | 「还原」按钮改为调用 `void restoreDefaults()`；「保存更改」按 `lastHudSave` 分别提示成功、失败（“最近一次写入 hud.json 失败，原配置保持不变”）或“暂无待保存的 HUD 配置”，不再无条件声称已保存。 |
+
+- 未修改 `gui/src/lib/hud.ts`：其 `setPaperPlanes` / `setContextWindowTokens`（`hud.ts:269-299`）已在 `8c86178` 返回 `Promise<boolean>` 且失败不 `publishConfig`，本次直接消费该返回值。
+- 主进程 `handle()`（`gui/electron/main.ts:181-188`）不吞异常，`writeHudConfig()`（`:69-89`）写盘失败直接 throw → IPC reject → `hud.ts` catch → `false` → 设置页错误提示，链路与 M2 相同。
+
+### 验证
+
+- `cd gui && npm run typecheck`：**EXIT=0**（两套 tsconfig 均通过）。
+- 隔离验证写盘失败分支（`data/reverify-r1/verify-hud-save-failure.mjs`，gitignored）：用 esbuild 打包真实 `gui/src/lib/hud.ts`（React 以 stub 替代），模拟 `window.workbench.setHudConfig` reject，**EXIT=0**：
+  - `setPaperPlanes(false)` 返回 `false`；`setContextWindowTokens(256000)` 返回 `false`；
+  - 失败后共享配置仍为默认 `{paperPlanes:true, contextWindowTokens:128000}`，证明未 `publishConfig`；
+  - 成功路径返回 `true` 且共享配置更新为 `{paperPlanes:false, …}`。
+- 未启动 Electron、未连接或重启生产 `:8080`、未调用 claude/dsh LLM；验证只读本机源码与临时脚本。
+- 未做真实 GUI 内制造 `hud.json` 写盘失败的点击验证（需要改动 `userData` 权限或注入故障；本次以真实 `hud.ts` 代码路径的隔离执行 + 源码链路核查为准）。
+
+### Git 同步
+
+- 分支 `gui/v0.1`；提交内容：`gui/src/pages/SettingsPage.tsx` 与 `DAILY_LOG.md` 本追加区块。
+- 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未改全局 git 配置；命令、文档与日志中无 token。
+- 提交 hash 以 `git log -1`、`git ls-remote` 与任务汇报为准。
+
+### 额度
+
+- 额度消耗无法直接观测，不记录虚构百分比；本次未调用 claude/dsh LLM，仅执行 typecheck 与本地隔离脚本。
