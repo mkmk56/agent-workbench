@@ -737,3 +737,50 @@ dsh：
 - 未读状态只在渲染进程内保存，重载/重启后从当前消息重建基线。
 - 验证用真实消息保留在生产 SQLite 中；未删除数据。
 - 未改 `src/`、`spike/`、签名、`docs/AGENT_HUD_PHASE1_REVIEW.md`、`docs/AGENT_HUD_PHASE2_REVIEW.md`；未删除文件。
+
+---
+
+## P Agent HUD 第三期补充：品牌身份图标、居中修正与评审必须修项（2026-11-14）
+
+> 本节为追加记录，不改写上文历史。GUI 侧新增/修改；引擎消息与审批逻辑仍未被修改（`src/` 无改动），未碰 `spike/`、签名与 `docs/AGENT_HUD_PHASE1_REVIEW.md`、`docs/AGENT_HUD_PHASE2_REVIEW.md`，未删除文件。
+
+### P.1 品牌身份图标（用户 2026-11-14 补充要求）
+
+- 用户提供的三张临时链接图片已下载到 `gui/src/assets/sidebar/source/`：Muse 波浪 M、Claude 星形、dsh 鲸鱼；原件入库，不依赖临时链接长期有效。
+- 实际显示的是 `gui/src/assets/sidebar/{muse,claude,dsh}-mark.png`：仅提取源图中央的中性白色标志，去掉源图自带的彩色进度弧、角标、彩色徽章与深色底板；背景透明，紧贴外接框裁剪并留 1px 透明边。处理说明见 `gui/src/assets/sidebar/README.md`。
+- 源图的弧线与角标**没有**在 UI 中重复绘制；状态仍由侧栏自己的 2px 环、状态角标（Play / Hourglass / TriangleAlert / Circle）与悬停卡文字表达；身份只由图形形状区分。
+
+### P.2 居中修正
+
+- 原胶囊宽 `56px`、padding `8px`，内容盒仅 `40px`，而槽位是 `44px`，槽位会溢出并造成视觉偏心。现胶囊宽改为 `60px = 44px 槽位 + 2 × 8px padding`。
+- `.hud` 使用 `align-items: center`；槽位 `flex: none`；按钮 `display: grid; place-items: center`；图标为 `24×24` 盒子 + `object-fit: contain; object-position: center`，没有目测偏移或 magic number。
+- CDP 实测三个槽位图标中心相对按钮中心 `dx = 0, dy = 0`，槽位距胶囊左边 `8px`，胶囊宽 `60px`。
+- 证据：`docs/hud-phase3/09-identity-icons-light.png`（浅色，含 Muse 悬停卡）、`docs/hud-phase3/10-identity-icons-dark.png`（深色；深色下胶囊提升到 `--surface` 并加强描边）。深色例外已补入 `docs/BRAND_GUIDELINES.md` §6.1。
+
+### P.3 第三期独立评审必须修项修正
+
+- 评审报告：`docs/AGENT_HUD_PHASE3_REVIEW.md`（dsh 任务 `e8e6a880-02b0-4637-8e53-16d98393c781`，结论 CONDITIONAL PASS，3 个必须修）。
+- **M1 已修**：`list_messages` 按 `created_at ASC` 返回最旧 500 条；超过 500 条后未读与纸飞机**确定性停止更新且重启不能恢复**。现在 `useHudData` 检测饱和并在 Muse 悬停卡显示警告，`ConversationPanel` 在会话消息达到 500 条时显示饱和提示；`docs/hud-phase3/README.md` 等措辞已改为“确定性降级”。根治仍需引擎侧 `since`/倒序参数，本期不改引擎消息逻辑。
+- **M2 已修**：引擎 `starting` / 尚未拿到状态时显示“连接中”，`agent_info` 读取失败显示“状态未知”，只有引擎真实离线、`agent_info` 成功返回且执行器 `available:false`、或存在 `BLOCKED/STALE`/15 分钟内 `FAILED` 时才显示红色“出错”。
+- **M3 更正**：`RESUME.md` O.2 与 `DAILY_LOG.md` 第三期区块曾把 `gui/src/lib/engine.ts` 列为第三期修改，但提交 `b3b10f6` 实际**没有**该文件；该文件是在后续第四期（`useTaskMessages`、审批 IPC 包装）中才修改的。以本节为准，不回改历史区块。
+- 同时处理非阻塞项：N4（0ms timer 纳入卸载清理）、N5（悬停卡 `aria-describedby`）、N6（working/idle 增加状态角标）、N7（深色主题胶囊与截图）、N11（配置写入失败不产生未处理拒绝）、N13（reduced-motion 保留无位移淡出）；N1/N2/N3/N8/N9/N10/N12 已在文档如实记录，未做数据层重构。
+
+### P.4 第四期会话流与第五期设置/审批界面（同工作树，已落地）
+
+- **第四期**：`TaskDetailPage` 改为左侧结论卡片流 + 右侧原始日志；卡片来源限定为 `task_status`、`task_logs` 的 system/warn 行与 `list_messages`，包含派发、执行器启动命令、超时/退出、文件改动、agent 消息（文件、问题、`reply_to`、`WAITING_USER`）、完成/失败/取消与运行中；顶部上下文占用条使用设置页可配置的参考上限（默认 128k，≥80% 警告、≥95% 错误）。证据：`docs/hud-phase4/`。
+- **第五期**：设置页新增「Agent HUD」分区，暴露纸飞机开关与上下文参考上限（写入 `userData/hud.json`，立即生效）；引擎协作参数（互发消息、来回上限、摘要上限、自动投递、审批门）只读展示，并明确“修改需重启引擎”。任务详情页在 `approval.pending` 非空时显示三选一审批卡片，调用新增的只读包装 IPC `engine:respond-approval`。证据：`docs/hud-phase5/`。
+- 未修改引擎消息/审批逻辑；新增 IPC 只是对既有 `list_messages` / `respond_approval` 工具的只读/显式包装。审批卡片**未**在生产环境做真实 pending 审批端到端验证（审批门默认关闭），已在 `docs/hud-phase5/README.md` 如实标注。
+
+### P.5 验证
+
+- `cd gui && npm run typecheck`、`npm run build` 通过。
+- 图标与居中：CDP 几何实测 `dx=dy=0`（三个槽位）；浅色/深色截图见 P.2。
+- 第四期：生产任务 `bc86976f…`（FAILED，timeout 1000ms）与 `a78cd852…`（COMPLETED，结果摘要、10 条消息/`WAITING_USER`）的真实卡片与日志截图；带文件与问题的真实消息卡片截图。
+- 第五期：设置页真实生产数据截图；审批门关闭、协作参数只读展示。
+- 额度：本次图标/居中与第四期截图未调用 claude/dsh LLM；dsh 评审任务 `e8e6a880…` 执行约 436 秒，`task_status` 的 tokens 记录为 0/0（dsh 未上报 token），实际额度消耗无法直接观测，不记录虚构百分比。
+
+### P.6 提交与推送
+
+- 分支 `gui/v0.1`；提交包含品牌图标资产与提取图、HUD 居中/评审修正、第四期会话流、第五期设置/审批界面、证据截图与本节记录。
+- 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未改全局 git 配置；命令、文档与日志中无 token。
+- 提交 hash 与远程 HEAD 以 `git log -1`、`git ls-remote` 及任务汇报为准。

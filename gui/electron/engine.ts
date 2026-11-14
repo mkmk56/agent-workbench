@@ -524,11 +524,15 @@ export class EngineManager {
     return this.callTool('task_list', { limit });
   }
 
-  async listMessages(limit = 500): Promise<{
+  async listMessages(input: { limit?: number; taskId?: string } = {}): Promise<{
     thread: Record<string, unknown> | null;
     messages: Array<Record<string, unknown>>;
   }> {
-    return this.callTool('list_messages', { limit });
+    const args: Record<string, unknown> = { limit: input.limit ?? 500 };
+    if (input.taskId != null) {
+      args.task_id = input.taskId;
+    }
+    return this.callTool('list_messages', args);
   }
 
   async taskStatus(taskId: string): Promise<Record<string, unknown>> {
@@ -558,6 +562,25 @@ export class EngineManager {
 
   async cancelTask(taskId: string): Promise<Record<string, unknown>> {
     return this.callTool('task_cancel', { task_id: taskId });
+  }
+
+  async respondApproval(input: {
+    taskId?: string;
+    approvalId?: string;
+    decision: 'once' | 'session' | 'deny';
+    reason?: string;
+  }): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = { decision: input.decision };
+    if (input.approvalId != null) {
+      args.approval_id = input.approvalId;
+    }
+    if (input.taskId != null) {
+      args.task_id = input.taskId;
+    }
+    if (input.reason != null && input.reason.length > 0) {
+      args.reason = input.reason;
+    }
+    return this.callTool('respond_approval', args);
   }
 }
 

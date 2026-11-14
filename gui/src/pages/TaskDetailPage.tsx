@@ -1,7 +1,16 @@
 import { AlertTriangle, ArrowLeft, Copy, Database, RefreshCw, Send } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { InlineCode, Notice, RailCard } from '../components/Layout';
-import { cancelTask, sendTask, useAgentInfo, useEngineStatus, useTaskDetail } from '../lib/engine';
+import { ConversationPanel } from '../components/ConversationPanel';
+import {
+  cancelTask,
+  respondApproval,
+  sendTask,
+  useAgentInfo,
+  useEngineStatus,
+  useTaskDetail,
+  useTaskMessages,
+} from '../lib/engine';
 import { setFlash, takeFlash } from '../lib/flash';
 import {
   ENGINE_STATE_LABELS,
@@ -52,6 +61,7 @@ function renderLogMessage(message: string) {
 
 export function TaskDetailPage({ id }: { id: string }) {
   const detail = useTaskDetail(id);
+  const taskMessages = useTaskMessages(id);
   const engine = useEngineStatus(5_000);
   const agentState = useAgentInfo(30_000);
   const [logFilter, setLogFilter] = useState<LogFilter>('all');
@@ -60,6 +70,7 @@ export function TaskDetailPage({ id }: { id: string }) {
   const [followup, setFollowup] = useState('');
   const [cancelOpen, setCancelOpen] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
+  const [approvalBusy, setApprovalBusy] = useState(false);
   const [flash] = useState<string | null>(() => takeFlash());
   const [notice, setNotice] = useState<{
     tone: 'info' | 'success' | 'warning' | 'error';
@@ -67,6 +78,7 @@ export function TaskDetailPage({ id }: { id: string }) {
     text?: string;
   } | null>(flash ? { tone: 'success', title: flash } : null);
   const logRef = useRef<HTMLDivElement>(null);
+  const logPanelRef = useRef<HTMLElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
 
   const task = detail.status;
@@ -143,6 +155,26 @@ export function TaskDetailPage({ id }: { id: string }) {
   const terminal =
     task.state === 'COMPLETED' || task.state === 'FAILED' || task.state === 'CANCELLED';
   const title = taskDisplayTitle(task.task_id, task.summary);
+
+  const handleApproval = async (decision: 'once' | 'session' | 'deny') => {
+    setApprovalBusy(true);
+    try {
+      const result = await respondApproval({ taskId: task.task_id, decision });
+      if (!result.ok) {
+        setNotice({ tone: 'error', title: '审批未提交', text: result.error });
+        return;
+      }
+      const allowed = result.data.allowed !== false;
+      setNotice({
+        tone: allowed ? 'success' : 'warning',
+        title: allowed ? '已允许该操作' : '已拒绝该操作',
+        text: `引擎返回 decision=${String(result.data.decision ?? decision)}。`,
+      });
+      await detail.refresh();
+    } finally {
+      setApprovalBusy(false);
+    }
+  };
 
   const copyLogs = async () => {
     const text = filteredLogs
@@ -255,7 +287,7 @@ export function TaskDetailPage({ id }: { id: string }) {
         </div>
       </div>
 
-      <div className="detail">
+      <div className="detail detail--conversation">
         <div className="detail-main">
           {detail.error != null && (
             <div className="banner banner--warning" role="status">
@@ -284,7 +316,26 @@ export function TaskDetailPage({ id }: { id: string }) {
             </div>
           )}
 
-          <section className="log-panel" aria-label="任务实时日志">
+          <div className="detail-split">
+            <ConversationPanel
+              task={task}
+              logs={detail.logs}
+              messages={taskMessages.messages}
+              messagesError={taskMessages.error}
+              messagesSaturated={taskMessages.saturated}
+              onNotice={setNotice}
+              onJumpToLog={() =>
+                logPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+              }
+              onRespondApproval={(decision) => void handleApproval(decision)}
+              approvalBusy={approvalBusy}
+            />
+
+            <section
+              className="log-panel"
+              ref={logPanelRef}
+              aria-label="任务实时日志"
+            >
             <div className="log-toolbar">
               <AppSegmented
                 label="日志筛选"
@@ -371,9 +422,10 @@ export function TaskDetailPage({ id }: { id: string }) {
               </div>
             )}
           </section>
+          </div>
         </div>
 
-        <aside className="rail" aria-label="任务元数据">
+        <aside className="rail rail--conversation" aria-label="任务元数据">
           <RailCard
             title="任务信息"
             meta={

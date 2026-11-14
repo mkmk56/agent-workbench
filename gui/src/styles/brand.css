@@ -1719,6 +1719,16 @@ html[data-theme="dark"] .log-row {
   gap: 12px;
 }
 
+.context-input .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.context-input__apply {
+  flex: none;
+  white-space: nowrap;
+}
+
 .secret {
   display: flex;
   align-items: center;

@@ -1601,3 +1601,69 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 ### 下一步
 
 - 按用户要求继续第四期、第五期；中间 dsh 照常独立评审。
+
+---
+
+## 2026-11-14（周六）· 补充：Agent HUD 第三期品牌图标/居中修正 + 评审必须修项 + 第四/五期落地
+
+### 今日目标
+
+- 并入用户 2026-11-14 的两点补充：三个槽位改用用户提供的 Muse/Claude/dsh 品牌身份图；修复图标与槽位的居中对齐。
+- 处理第三期 dsh 独立评审的 3 个必须修项（M1–M3）与部分非阻塞项。
+- 继续完成第四期会话流/结论卡片与第五期设置/审批界面；验证、提交、推送。
+- 只改 GUI；不改引擎消息与审批逻辑（`src/` 无改动），不碰 `spike/`、签名、第一/二期评审文件；不删除文件。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%；额度消耗**无法直接观测**，不记录虚构百分比。
+- 图标、居中、第四期截图未调用 claude/dsh LLM；第三期 dsh 评审任务 `e8e6a880-02b0-4637-8e53-16d98393c781` 执行约 436 秒，`task_status` 记录 tokens 0/0（dsh 未上报 token），实际消耗不可观测。
+
+### 品牌身份图标与居中
+
+| 项 | 结果 |
+|---|---|
+| 源图 | 用户提供的三张临时链接图已下载到 `gui/src/assets/sidebar/source/`（Muse 波浪 M、Claude 星形、dsh 鲸鱼），原件入库 |
+| 实际图标 | `gui/src/assets/sidebar/{muse,claude,dsh}-mark.png`：只保留中央中性白色标志，去掉源图彩色弧/角标/徽章/深色底板，透明背景，紧贴外接框裁剪 +1px 透明边 |
+| 不重复绘制 | 源图弧线与角标仅作状态示意；状态仍由 UI 自己的 2px 环 + 状态角标（Play/Hourglass/TriangleAlert/Circle）+ 悬停卡文字表达 |
+| 居中修正 | 胶囊宽度由 56px 改为 60px（44px 槽位 + 2×8px padding，原内容盒仅 40px 导致 44px 槽位溢出）；`.hud` `align-items:center`；按钮 `display:grid; place-items:center`；图标 24×24 + `object-fit:contain` |
+| 几何实测 | CDP：三个槽位图标中心相对按钮中心 `dx=0, dy=0`；槽位距胶囊左边 8px，胶囊宽 60px |
+| 截图 | `docs/hud-phase3/09-identity-icons-light.png`、`10-identity-icons-dark.png` |
+
+### 第三期评审必须修项
+
+- **M1**：消息总数超过 500 条后，`list_messages`（ASC，最旧 500 条）导致未读/纸飞机确定性停止更新且重启不能恢复。HUD 现在检测饱和并在 Muse 悬停卡显示警告；结论流显示饱和提示；文档改为“确定性降级”。根治需引擎侧 `since`/倒序参数，本期不改引擎。
+- **M2**：`starting`/状态未就绪显示“连接中”，`agent_info` 读取失败显示“状态未知”，只有真实离线、`available:false` 或 `BLOCKED/STALE`/15 分钟内 `FAILED` 才显示“出错”。
+- **M3**：更正第三期记录——提交 `b3b10f6` 未修改 `gui/src/lib/engine.ts`；该文件在第四期才因 `useTaskMessages`/审批 IPC 包装而修改。以 `RESUME.md` P 节为准，不改历史区块。
+- 非阻塞：N4 0ms timer 清理、N5 `aria-describedby`、N6 working/idle 状态角标、N7 深色主题胶囊/截图、N11 配置写入失败不产生未处理拒绝、N13 reduced-motion 无位移淡出；N1/N2/N3/N8/N9/N10/N12 已在文档记录，未做数据层重构。
+
+### 第四期：会话流与结论卡片
+
+- `TaskDetailPage` 改为左右两栏：左 `ConversationPanel`（派发、执行器命令、超时/退出、文件改动、agent 消息、完成/失败/取消、运行中），右原始日志；元数据栏移到下方。
+- 上下文占用条：输入 tokens / 可配置参考上限（默认 128k），≥80% 警告、≥95% 错误；明确标注“参考值，引擎未返回真实上限”。
+- 卡片只从 `task_status`、`task_logs` 的 system/warn 行与 `list_messages({task_id})` 派生；不把 stdout 任意 JSON 误判为错误；没有结构化“读文件/合并代码”事件时不伪造卡片。
+- 证据：`docs/hud-phase4/`（失败任务结论流、完成结果卡、带文件与问题的真实消息卡）。
+
+### 第五期：设置页与审批界面
+
+- 设置页新增「Agent HUD」：纸飞机开关、上下文参考上限（写入 `userData/hud.json`，立即生效）；引擎协作参数（互发消息、来回上限 10、摘要 500 tokens、自动投递、审批门）只读展示，标注“修改需重启引擎”。
+- 任务详情页在 `approval.pending` 非空时显示三选一审批卡片，调用 `engine:respond-approval`（只读包装既有 `respond_approval` 工具）。
+- 证据：`docs/hud-phase5/01-settings-hud.png`；审批卡片未做真实 pending 端到端验证（生产审批门默认关闭），已如实记录。
+
+### 验证
+
+- `cd gui && npm run typecheck`、`npm run build` 通过。
+- 图标/居中：CDP 几何实测 `dx=dy=0`；浅色/深色截图。
+- 第四期：生产任务 `bc86976f…`（FAILED，timeout 1000ms）与 `a78cd852…`（COMPLETED、10 条消息/`WAITING_USER`）真实卡片与日志截图；带文件与问题的真实消息卡截图。
+- 第五期：设置页真实生产数据截图；审批门关闭、协作参数只读。
+- 未改 `src/`、`spike/`、签名、第一/二期评审文件；未删除文件。
+
+### Git 同步
+
+- 分支 `gui/v0.1`；提交包含品牌图标资产、HUD 居中/评审修正、第四期会话流、第五期设置/审批界面、证据截图与 `RESUME.md` / `DAILY_LOG.md` 追加。
+- 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未改全局 git 配置；命令、文档与日志中无 token。
+- 提交 hash 与远程 HEAD 以 `git log -1`、`git ls-remote` 及任务汇报为准。
+
+### 已知限制
+
+- `list_messages` 的 500 条 ASC 窗口限制仍在；未读不跨重启；第四期的“读文件/合并代码”卡片因引擎无结构化事件而未做；审批卡片未在生产环境做真实 pending 验证；HUD 在 ≤900px 时隐藏，纸飞机坐标不可用。
+- 额度无法直接观测，不记录虚构百分比。

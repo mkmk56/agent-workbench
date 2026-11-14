@@ -92,6 +92,7 @@ function agentSlot(
   engine: EngineStatus | null,
   agents: AgentInfo['agents'],
   agentsLoaded: boolean,
+  agentsError: string | null,
   tasks: EngineTaskSummary[],
   unread: number,
   queued: number,
@@ -99,17 +100,26 @@ function agentSlot(
   const meta = agents.find((agent) => agent.name === id) ?? null;
   const active = activeTasks(tasks, id).sort(byCreatedAt);
   const latest = latestTask(tasks, id);
+  const engineStarting = engine?.state === 'starting';
 
   let state: HudState = 'idle';
   let statusText = STATE_TEXT.idle;
   let detail = latest
     ? `最近任务：${taskDisplayTitle(latest.task_id, latest.summary)}（${latest.state}）`
-    : '暂无任务。';
+    : '最近 200 条任务中无该执行器的记录。';
 
-  if (engine != null && !engine.healthy) {
+  if (engine == null || engineStarting) {
+    // Not ready yet is not the same as broken: keep the slot neutral until the
+    // engine reports a real error or an executor is actually unavailable.
+    statusText = '连接中';
+    detail = engineStarting ? '引擎正在启动，状态尚未确定。' : '正在读取引擎状态…';
+  } else if (!engine.healthy) {
     state = 'error';
     statusText = STATE_TEXT.error;
     detail = '引擎离线，无法读取执行器状态。';
+  } else if (agentsLoaded && agentsError != null) {
+    statusText = '状态未知';
+    detail = `执行器状态读取失败：${agentsError}`;
   } else if (agentsLoaded && (meta == null || !meta.available)) {
     state = 'error';
     statusText = STATE_TEXT.error;
@@ -166,16 +176,25 @@ function museSlot(
   const active = tasks.filter((task) => ACTIVE_STATES.has(task.state)).sort(byCreatedAt);
   const waiting = messages.some((message) => message.waiting_for_user);
   let state: HudState = 'idle';
+  let statusText = STATE_TEXT.idle;
   let detail = '暂无进行中的任务。';
 
-  if (engine != null && !engine.healthy) {
+  if (engine == null || engine.state === 'starting') {
+    statusText = '连接中';
+    detail = engine?.state === 'starting'
+      ? '引擎正在启动，编排器状态尚未确定。'
+      : '正在读取引擎状态…';
+  } else if (!engine.healthy) {
     state = 'error';
+    statusText = STATE_TEXT.error;
     detail = '引擎离线，云端编排器无法派单。';
   } else if (waiting) {
     state = 'waiting';
+    statusText = STATE_TEXT.waiting;
     detail = '有会话在等你回复（线程处于 WAITING_USER）。';
   } else if (active.length > 0) {
     state = 'working';
+    statusText = STATE_TEXT.working;
     detail = `${active.length} 个任务正在执行（通过引擎任务活动间接感知）。`;
   }
 
@@ -183,7 +202,7 @@ function museSlot(
     id: 'muse',
     name: 'Muse',
     state,
-    statusText: STATE_TEXT[state],
+    statusText,
     detail,
     model: '云端编排器',
     activeCount: active.length,
@@ -199,7 +218,7 @@ function museSlot(
 // Shared HUD settings store. The settings page (phase 5) and the HUD can both
 // call setPaperPlanes and see the change immediately; the value is persisted by
 // the main process in userData/hud.json.
-let sharedConfig: HudConfig = { paperPlanes: true };
+let sharedConfig: HudConfig = { paperPlanes: true, contextWindowTokens: 128_000 };
 let configLoaded = false;
 let configLoading: Promise<void> | null = null;
 const configListeners = new Set<(next: HudConfig) => void>();
@@ -233,6 +252,7 @@ function loadConfigOnce(): void {
 export function useHudConfig(): {
   config: HudConfig;
   setPaperPlanes: (enabled: boolean) => Promise<void>;
+  setContextWindowTokens: (tokens: number) => Promise<void>;
 } {
   const [config, setConfig] = useState<HudConfig>(sharedConfig);
 
@@ -251,12 +271,31 @@ export function useHudConfig(): {
       publishConfig({ ...sharedConfig, paperPlanes: enabled });
       return;
     }
-    const next = await window.workbench.setHudConfig({ paperPlanes: enabled });
-    configLoaded = true;
-    publishConfig(next);
+    try {
+      const next = await window.workbench.setHudConfig({ paperPlanes: enabled });
+      configLoaded = true;
+      publishConfig(next);
+    } catch {
+      // Keep the previous value; phase 5's settings page can surface the
+      // failure if it wants to. Avoid an unhandled rejection here.
+    }
   }, []);
 
-  return { config, setPaperPlanes };
+  const setContextWindowTokens = useCallback(async (tokens: number) => {
+    if (!window.workbench) {
+      publishConfig({ ...sharedConfig, contextWindowTokens: tokens });
+      return;
+    }
+    try {
+      const next = await window.workbench.setHudConfig({ contextWindowTokens: tokens });
+      configLoaded = true;
+      publishConfig(next);
+    } catch {
+      // Keep the previous value; the settings page reports validation errors.
+    }
+  }, []);
+
+  return { config, setPaperPlanes, setContextWindowTokens };
 }
 
 /**
@@ -276,11 +315,13 @@ export function useHudData(
   flights: HudFlight[];
   markRead: (id: HudAgentId) => void;
   messagesError: string | null;
+  messagesSaturated: boolean;
 } {
   const agentState = useAgentInfo(30_000);
   const taskState = useTaskList(200, 4_000);
   const [messages, setMessages] = useState<EngineMessage[]>([]);
   const [messagesError, setMessagesError] = useState<string | null>(null);
+  const [messagesSaturated, setMessagesSaturated] = useState(false);
   const [unread, setUnread] = useState<Record<HudAgentId, number>>({
     muse: 0,
     claude: 0,
@@ -299,7 +340,7 @@ export function useHudData(
       }
       inFlight.current = true;
       try {
-        const result = await window.workbench.listMessages(MESSAGE_LIMIT);
+        const result = await window.workbench.listMessages({ limit: MESSAGE_LIMIT });
         if (!alive) {
           return;
         }
@@ -308,6 +349,10 @@ export function useHudData(
           return;
         }
         setMessagesError(null);
+        // list_messages returns the OLDEST `limit` rows (created_at ASC). Once
+        // the total exceeds 500, newer rows never enter the window; surface
+        // this deterministic degradation instead of silently freezing.
+        setMessagesSaturated(result.data.messages.length >= MESSAGE_LIMIT);
         const rows = result.data.messages.slice().sort(byMessageTime).slice(-MESSAGE_TAIL);
         setMessages(rows);
 
@@ -394,6 +439,7 @@ export function useHudData(
         engine,
         agentState.agents,
         !agentState.loading,
+        agentState.error,
         taskState.rawTasks,
         unread.claude,
         0,
@@ -404,6 +450,7 @@ export function useHudData(
         engine,
         agentState.agents,
         !agentState.loading,
+        agentState.error,
         taskState.rawTasks,
         unread.dsh,
         0,
@@ -416,10 +463,11 @@ export function useHudData(
       unread,
       agentState.agents,
       agentState.loading,
+      agentState.error,
     ],
   );
 
-  return { slots, flights, markRead, messagesError };
+  return { slots, flights, markRead, messagesError, messagesSaturated };
 }
 
 export function hudElapsedLabel(ms: number | null): string {

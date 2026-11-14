@@ -123,6 +123,7 @@ export interface EngineMessageList {
 
 export interface HudConfig {
   paperPlanes: boolean;
+  contextWindowTokens: number;
 }
 
 export interface EngineTaskSummary {
@@ -133,6 +134,27 @@ export interface EngineTaskSummary {
   created_at: string;
   updated_at: string;
   summary: string | null;
+}
+
+export interface EngineApproval {
+  approval_id: string;
+  thread_id: string;
+  task_id: string;
+  agent: Executor;
+  category: string;
+  action: string;
+  command: string | null;
+  files: string[];
+  reason: string;
+  message_id: string;
+  response_message_id: string | null;
+  status: string;
+  decision: string | null;
+  error: string | null;
+  created_at: string;
+  responded_at: string | null;
+  thread_state: string;
+  waiting_for_user: boolean;
 }
 
 export interface EngineTaskStatus {
@@ -154,6 +176,20 @@ export interface EngineTaskStatus {
   };
   files_modified: string[];
   summary: string | null;
+  thread_id?: string;
+  thread_state?: string;
+  waiting_for_user?: boolean;
+  exchange_count?: number;
+  exchange_limit?: number;
+  message_count?: number;
+  approval_gate?: {
+    enabled: boolean;
+  };
+  approval?: {
+    gate_enabled: boolean;
+    pending: EngineApproval | null;
+    last: EngineApproval | null;
+  } | null;
 }
 
 export interface EngineLogEntry {
@@ -271,9 +307,18 @@ export interface WorkbenchApi {
   stopEngine: () => Promise<EngineResult<EngineStatus>>;
   getAgentInfo: () => Promise<EngineResult<AgentInfo>>;
   listTasks: (limit?: number) => Promise<EngineResult<TaskListPayload>>;
-  listMessages: (limit?: number) => Promise<EngineResult<EngineMessageList>>;
+  listMessages: (input?: {
+    limit?: number;
+    taskId?: string;
+  }) => Promise<EngineResult<EngineMessageList>>;
   getHudConfig: () => Promise<HudConfig>;
   setHudConfig: (patch: Partial<HudConfig>) => Promise<HudConfig>;
+  respondApproval: (input: {
+    taskId?: string;
+    approvalId?: string;
+    decision: 'once' | 'session' | 'deny';
+    reason?: string;
+  }) => Promise<EngineResult<Record<string, unknown>>>;
   getTaskStatus: (taskId: string) => Promise<EngineResult<EngineTaskStatus>>;
   getTaskLogs: (input: TaskLogsInput) => Promise<EngineResult<EngineTaskLogs>>;
   startTask: (input: TaskStartInput) => Promise<EngineResult<EngineTaskStartResult>>;

@@ -1,6 +1,9 @@
-import { Cloud, Hourglass, Mail, Sparkles, Terminal, TriangleAlert } from 'lucide-react';
+import { Circle, Hourglass, Mail, Play, TriangleAlert } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import type { ReactNode } from 'react';
+import dshMark from '../assets/sidebar/dsh-mark.png';
+import claudeMark from '../assets/sidebar/claude-mark.png';
+import museMark from '../assets/sidebar/muse-mark.png';
 import type { EngineStatus } from '../types';
 import {
   hudElapsedLabel,
@@ -13,13 +16,31 @@ import {
 import { navigate } from '../lib/router';
 import { PaperPlaneLayer } from './PaperPlaneLayer';
 
-const ICONS: Record<HudAgentId, ReactNode> = {
-  muse: <Cloud size={20} strokeWidth={1.75} aria-hidden="true" />,
-  claude: <Sparkles size={20} strokeWidth={1.75} aria-hidden="true" />,
-  dsh: <Terminal size={20} strokeWidth={1.75} aria-hidden="true" />,
+const GLYPHS: Record<HudAgentId, string> = {
+  muse: museMark,
+  claude: claudeMark,
+  dsh: dshMark,
 };
 
-const STATE_ICONS: Partial<Record<HudState, ReactNode>> = {
+function AgentGlyph({ id, size }: { id: HudAgentId; size: number }) {
+  return (
+    <img
+      className="hud-glyph"
+      src={GLYPHS[id]}
+      alt=""
+      width={size}
+      height={size}
+      style={{ width: size, height: size }}
+      draggable={false}
+    />
+  );
+}
+
+const STATE_ICONS: Record<HudState, ReactNode> = {
+  idle: <Circle size={9} strokeWidth={2.2} aria-hidden="true" />,
+  working: (
+    <Play size={8} strokeWidth={2.2} fill="currentColor" aria-hidden="true" />
+  ),
   waiting: <Hourglass size={9} strokeWidth={2.2} aria-hidden="true" />,
   error: <TriangleAlert size={9} strokeWidth={2.2} aria-hidden="true" />,
 };
@@ -47,12 +68,12 @@ function StatusBadge({ state, label }: { state: HudState; label: string }) {
   );
 }
 
-function HudPopover({ slot, note }: { slot: HudSlot; note?: string }) {
+function HudPopover({ slot, note, id }: { slot: HudSlot; note?: string; id: string }) {
   return (
-    <div className="hud-popover" role="tooltip">
+    <div className="hud-popover" role="tooltip" id={id}>
       <div className="hud-popover__head">
         <span className="hud-popover__icon" aria-hidden="true">
-          {ICONS[slot.id]}
+          <AgentGlyph id={slot.id} size={18} />
         </span>
         <span className="hud-popover__name">{slot.name}</span>
         <StatusBadge state={slot.state} label={slot.statusText} />
@@ -94,7 +115,10 @@ function HudPopover({ slot, note }: { slot: HudSlot; note?: string }) {
  */
 export function AgentHud({ engine }: { engine: EngineStatus | null }) {
   const { config } = useHudConfig();
-  const { slots, flights, markRead, messagesError } = useHudData(engine, config.paperPlanes);
+  const { slots, flights, markRead, messagesError, messagesSaturated } = useHudData(
+    engine,
+    config.paperPlanes,
+  );
   const [queued, setQueued] = useState<Partial<Record<HudAgentId, number>>>({});
   const [flashNonce, setFlashNonce] = useState<Record<HudAgentId, number>>({
     muse: 0,
@@ -130,6 +154,18 @@ export function AgentHud({ engine }: { engine: EngineStatus | null }) {
       <nav className="hud" aria-label="Agent 状态侧栏">
         {slots.map((slot) => {
           const queueCount = queued[slot.id] ?? 0;
+          const tipId = `hud-tip-${slot.id}`;
+          const notes: string[] = [];
+          if (slot.id === 'muse') {
+            if (messagesError != null) {
+              notes.push(`消息读取失败：${messagesError}（未读与纸飞机可能不完整）`);
+            }
+            if (messagesSaturated) {
+              notes.push(
+                '消息窗口已满（list_messages 500 条上限）：未读与纸飞机将停止更新，重启 GUI 也不能恢复。',
+              );
+            }
+          }
           return (
             <div className="hud-slot" key={slot.id}>
               <button
@@ -137,6 +173,7 @@ export function AgentHud({ engine }: { engine: EngineStatus | null }) {
                 className={`hud-slot__button hud-slot__button--${slot.state}`}
                 data-hud-agent={slot.id}
                 aria-label={slotAria({ ...slot, queued: queueCount })}
+                aria-describedby={tipId}
                 onClick={() => openSlot(slot)}
               >
                 <svg className="hud-ring" viewBox="0 0 44 44" aria-hidden="true">
@@ -149,7 +186,7 @@ export function AgentHud({ engine }: { engine: EngineStatus | null }) {
                   />
                 </svg>
                 <span className="hud-slot__glyph" aria-hidden="true">
-                  {ICONS[slot.id]}
+                  <AgentGlyph id={slot.id} size={24} />
                 </span>
                 {STATE_ICONS[slot.state] != null && (
                   <span
@@ -182,12 +219,9 @@ export function AgentHud({ engine }: { engine: EngineStatus | null }) {
                 )}
               </button>
               <HudPopover
+                id={tipId}
                 slot={{ ...slot, queued: queueCount }}
-                note={
-                  slot.id === 'muse' && messagesError != null
-                    ? `消息读取失败：${messagesError}（未读与纸飞机可能不完整）`
-                    : undefined
-                }
+                note={notes.length > 0 ? notes.join(' ') : undefined}
               />
             </div>
           );

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   AgentInfo,
   EngineLogEntry,
+  EngineMessage,
   EngineResult,
   EngineStatus,
   EngineTaskStatus,
@@ -79,11 +80,13 @@ export function useEngineStatus(pollMs = 5_000): {
 
 export function useAgentInfo(pollMs = 30_000): {
   agents: AgentInfo['agents'];
+  info: AgentInfo | null;
   error: string | null;
   loading: boolean;
   refresh: () => Promise<void>;
 } {
   const [agents, setAgents] = useState<AgentInfo['agents']>([]);
+  const [info, setInfo] = useState<AgentInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const alive = useRef(true);
@@ -101,6 +104,7 @@ export function useAgentInfo(pollMs = 30_000): {
       return;
     }
     if (result.ok) {
+      setInfo(result.data);
       setAgents(result.data.agents);
       setError(null);
     } else {
@@ -121,7 +125,7 @@ export function useAgentInfo(pollMs = 30_000): {
     };
   }, [pollMs, refresh]);
 
-  return { agents, error, loading, refresh };
+  return { agents, info, error, loading, refresh };
 }
 
 export function useTaskList(limit = 200, pollMs = 5_000): {
@@ -190,6 +194,79 @@ export function useTaskList(limit = 200, pollMs = 5_000): {
   }, [pollMs, refresh]);
 
   return { tasks, rawTasks, error, loading, lastUpdated, refresh };
+}
+
+export function useTaskMessages(
+  taskId: string,
+  pollMs = 4_000,
+): {
+  messages: EngineMessage[];
+  error: string | null;
+  loading: boolean;
+  saturated: boolean;
+  refresh: () => Promise<void>;
+} {
+  const [messages, setMessages] = useState<EngineMessage[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saturated, setSaturated] = useState(false);
+  const alive = useRef(true);
+  const inFlight = useRef(false);
+
+  const refresh = useCallback(async () => {
+    if (!window.workbench) {
+      if (alive.current) {
+        setError(NO_MAIN);
+        setLoading(false);
+      }
+      return;
+    }
+    if (inFlight.current) {
+      return;
+    }
+    inFlight.current = true;
+    try {
+      const result = await window.workbench.listMessages({ limit: 500, taskId });
+      if (!alive.current) {
+        return;
+      }
+      if (result.ok) {
+        setMessages(result.data.messages);
+        setSaturated(result.data.messages.length >= 500);
+        setError(null);
+      } else {
+        setError(result.error);
+      }
+    } catch {
+      if (alive.current) {
+        setError('读取会话消息失败。');
+      }
+    } finally {
+      inFlight.current = false;
+      if (alive.current) {
+        setLoading(false);
+      }
+    }
+  }, [taskId]);
+
+  useEffect(() => {
+    alive.current = true;
+    setMessages([]);
+    setError(null);
+    setLoading(true);
+    void refresh();
+    const timer = setInterval(() => {
+      if (!document.hidden) {
+        void refresh();
+      }
+    }, pollMs);
+    return () => {
+      alive.current = false;
+      clearInterval(timer);
+    };
+  }, [pollMs, refresh]);
+
+  return { messages, error, loading, saturated, refresh };
 }
 
 export function useTaskDetail(taskId: string): {
@@ -367,5 +444,21 @@ export async function cancelTask(
     return await window.workbench.cancelTask(taskId);
   } catch {
     return { ok: false, error: '取消任务失败。' };
+  }
+}
+
+export async function respondApproval(input: {
+  taskId?: string;
+  approvalId?: string;
+  decision: 'once' | 'session' | 'deny';
+  reason?: string;
+}): Promise<EngineResult<Record<string, unknown>>> {
+  if (!window.workbench) {
+    return engineUnavailable();
+  }
+  try {
+    return await window.workbench.respondApproval(input);
+  } catch {
+    return { ok: false, error: '提交审批决定失败。' };
   }
 }

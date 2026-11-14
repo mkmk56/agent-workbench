@@ -36,18 +36,30 @@ type Result = { ok: boolean; error?: string };
 
 interface HudConfig {
   paperPlanes: boolean;
+  contextWindowTokens: number;
 }
 
-const DEFAULT_HUD_CONFIG: HudConfig = { paperPlanes: true };
+const DEFAULT_HUD_CONFIG: HudConfig = {
+  paperPlanes: true,
+  contextWindowTokens: 128_000,
+};
 
 function readHudConfig(): HudConfig {
   try {
     const raw = JSON.parse(fs.readFileSync(HUD_CONFIG_FILE, 'utf8')) as Record<string, unknown>;
+    const context =
+      typeof raw.contextWindowTokens === 'number' &&
+      Number.isInteger(raw.contextWindowTokens) &&
+      raw.contextWindowTokens >= 1_000 &&
+      raw.contextWindowTokens <= 2_000_000
+        ? raw.contextWindowTokens
+        : DEFAULT_HUD_CONFIG.contextWindowTokens;
     return {
       paperPlanes:
         typeof raw.paperPlanes === 'boolean'
           ? raw.paperPlanes
           : DEFAULT_HUD_CONFIG.paperPlanes,
+      contextWindowTokens: context,
     };
   } catch {
     return { ...DEFAULT_HUD_CONFIG };
@@ -61,6 +73,13 @@ function writeHudConfig(patch: unknown): HudConfig {
     : {};
   if (typeof value.paperPlanes === 'boolean') {
     current.paperPlanes = value.paperPlanes;
+  }
+  if (value.contextWindowTokens != null) {
+    const context = Number(value.contextWindowTokens);
+    if (!Number.isInteger(context) || context < 1_000 || context > 2_000_000) {
+      throw new Error('上下文参考上限必须是 1,000–2,000,000 之间的整数。');
+    }
+    current.contextWindowTokens = context;
   }
   ensureDataDir();
   const tempFile = `${HUD_CONFIG_FILE}.${process.pid}.tmp`;
@@ -137,7 +156,15 @@ function clearToken(): Result {
   }
 }
 
-const engine = new EngineManager(readToken);
+// Test seam: point the GUI at an isolated engine without touching the default
+// port. Production runs leave this unset.
+const ENGINE_PORT_OVERRIDE = Number(process.env.WORKBENCH_GUI_ENGINE_PORT);
+const engine = new EngineManager(
+  readToken,
+  Number.isInteger(ENGINE_PORT_OVERRIDE) && ENGINE_PORT_OVERRIDE > 0
+    ? { port: ENGINE_PORT_OVERRIDE }
+    : {},
+);
 
 function isTrustedSender(event: IpcMainInvokeEvent): boolean {
   const url = event.senderFrame?.url ?? '';
@@ -335,10 +362,48 @@ function registerIpc(): void {
     return engineResult(() => engine.listTasks(resolved));
   });
 
-  handle('engine:message-list', (limit) => {
-    const resolved = optionalInteger(limit, 1, 500, 500);
-    return engineResult(() => engine.listMessages(resolved));
+  handle('engine:message-list', (input) => {
+    return engineResult(() => {
+      if (input == null) {
+        return engine.listMessages({ limit: 500 });
+      }
+      const value = asRecord(input);
+      const limit = optionalInteger(value.limit, 1, 500, 500);
+      const taskId =
+        value.taskId == null || value.taskId === ''
+          ? undefined
+          : requireTaskId(value.taskId);
+      return engine.listMessages({ limit, taskId });
+    });
   });
+
+  handle('engine:respond-approval', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      if (value.decision !== 'once' && value.decision !== 'session' && value.decision !== 'deny') {
+        throw new Error('审批决定必须是 once、session 或 deny。');
+      }
+      const taskId =
+        value.taskId == null || value.taskId === ''
+          ? undefined
+          : requireTaskId(value.taskId);
+      const approvalId =
+        value.approvalId == null || value.approvalId === ''
+          ? undefined
+          : requireTaskId(value.approvalId);
+      if (taskId == null && approvalId == null) {
+        throw new Error('审批调用需要 taskId 或 approvalId。');
+      }
+      const reason =
+        value.reason == null ? undefined : requireText(value.reason, '理由', 4_000);
+      return engine.respondApproval({
+        taskId,
+        approvalId,
+        decision: value.decision,
+        reason,
+      });
+    }),
+  );
 
   handle('engine:task-status', (taskId) =>
     engineResult(() => engine.taskStatus(requireTaskId(taskId))),

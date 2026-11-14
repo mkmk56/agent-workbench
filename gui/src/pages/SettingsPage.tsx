@@ -1,15 +1,19 @@
 import {
+  Bot,
+  Check,
   Database,
   KeyRound,
+  MessagesSquare,
   RefreshCw,
   Server,
   Shield,
-  Check,
+  ShieldCheck,
   Terminal,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Notice } from '../components/Layout';
+import { useHudConfig } from '../lib/hud';
 import { startEngine, stopEngine, useAgentInfo, useEngineStatus } from '../lib/engine';
 import {
   UPDATE_PHASE_LABELS,
@@ -29,12 +33,13 @@ import {
   AppTextField,
 } from '../ui/astryx';
 
-type SectionId = 'credentials' | 'engine' | 'executors' | 'updates' | 'data';
+type SectionId = 'credentials' | 'engine' | 'executors' | 'hud' | 'updates' | 'data';
 
 const SECTIONS: Array<{ id: SectionId; label: string; icon: ReactNode }> = [
   { id: 'credentials', label: '凭据', icon: <KeyRound size={15} /> },
   { id: 'engine', label: '引擎', icon: <Server size={15} /> },
   { id: 'executors', label: '执行器', icon: <Terminal size={15} /> },
+  { id: 'hud', label: 'Agent HUD', icon: <Bot size={15} /> },
   { id: 'updates', label: '更新', icon: <RefreshCw size={15} /> },
   { id: 'data', label: '数据', icon: <Database size={15} /> },
 ];
@@ -50,6 +55,8 @@ export function SettingsPage() {
   const engine = useEngineStatus(5_000);
   const agentsState = useAgentInfo(30_000);
   const updates = useUpdateState();
+  const hud = useHudConfig();
+  const [contextDraft, setContextDraft] = useState('128000');
   const [activeSection, setActiveSection] = useState<SectionId>('credentials');
   const [tokenStored, setTokenStored] = useState<boolean | null>(null);
   const [editingToken, setEditingToken] = useState(false);
@@ -68,6 +75,13 @@ export function SettingsPage() {
   const [autoStart, setAutoStart] = useState(DEFAULT_STATE.autoStart);
   const [proxy, setProxy] = useState(DEFAULT_STATE.proxy);
   const [autoUpdate, setAutoUpdate] = useState(DEFAULT_STATE.autoUpdate);
+
+  useEffect(() => {
+    setContextDraft(String(hud.config.contextWindowTokens));
+  }, [hud.config.contextWindowTokens]);
+
+  const protocol = agentsState.info?.message_protocol ?? null;
+  const gate = agentsState.info?.approval_gate ?? null;
 
   const stored = tokenStored ?? info.tokenStored;
   const encryptionAvailable = info.encryptionAvailable;
@@ -94,6 +108,33 @@ export function SettingsPage() {
   const scrollTo = (id: SectionId) => {
     setActiveSection(id);
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const togglePaperPlanes = async (value: boolean) => {
+    await hud.setPaperPlanes(value);
+    setNotice({
+      tone: 'success',
+      title: value ? '纸飞机动画已开启' : '纸飞机动画已关闭',
+      text: '配置已写入主进程 userData/hud.json，立即生效。',
+    });
+  };
+
+  const applyContextWindow = async () => {
+    const tokens = Number(contextDraft);
+    if (!Number.isInteger(tokens) || tokens < 1_000 || tokens > 2_000_000) {
+      setNotice({
+        tone: 'warning',
+        title: '上下文参考值无效',
+        text: '请输入 1,000–2,000,000 之间的整数。',
+      });
+      return;
+    }
+    await hud.setContextWindowTokens(tokens);
+    setNotice({
+      tone: 'success',
+      title: '上下文参考值已保存',
+      text: `会话流按 ${tokens.toLocaleString()} tokens 参考上限显示占用条。`,
+    });
   };
 
   const saveToken = async () => {
@@ -274,7 +315,7 @@ export function SettingsPage() {
         <div>
           <h1 className="page-title">设置</h1>
           <p className="page-subtitle">
-            凭据、引擎生命周期、执行器状态、任务 IPC 与更新管道已接入；非凭据配置持久化未接入。
+            凭据、引擎生命周期、执行器状态、任务 IPC 与更新管道已接入；HUD 动效与上下文参考值已持久化，引擎协作参数只读。
           </p>
         </div>
       </div>
@@ -282,7 +323,7 @@ export function SettingsPage() {
       <AppBanner
         status="info"
         title="本次接入范围"
-        description="Token 使用 safeStorage 加密保存；引擎启停、健康检查、执行器与任务数据来自主进程和本地引擎。更新通过 GitHub Releases 检查与安装；非凭据配置持久化、日志虚拟列表尚未接入。"
+        description="Token 使用 safeStorage 加密保存；引擎启停、健康检查、执行器与任务数据来自主进程和本地引擎。HUD 的纸飞机动画与上下文参考值写入 userData/hud.json；引擎协作参数只读展示，修改需重启引擎。日志虚拟列表尚未接入。"
       />
 
       {notice != null && (
@@ -671,6 +712,182 @@ export function SettingsPage() {
             </div>
           </section>
 
+          <section className="section" id="hud" aria-labelledby="hud-title">
+            <div className="section__head">
+              <h2 className="section__title" id="hud-title">
+                Agent HUD
+              </h2>
+              <AppBadge tone="neutral" label="本地配置 + 引擎只读" />
+            </div>
+            <div className="section__body settings-section__body">
+              <div className="setting-row">
+                <div>
+                  <div className="setting-label">纸飞机动画</div>
+                  <div className="setting-desc">
+                    两个 agent 互发结论时，纸飞机沿弧线飞行并留下虚线尾迹。关闭后只保留未读与状态变化；
+                    系统“减少动态效果”设置也会自动降级。
+                  </div>
+                </div>
+                <div className="setting-control">
+                  <div className="setting-inline">
+                    <span className="muted">
+                      {hud.config.paperPlanes ? '已开启（默认）' : '已关闭'}
+                    </span>
+                    <AppSwitch
+                      label="纸飞机动画"
+                      value={hud.config.paperPlanes}
+                      onChange={(value) => void togglePaperPlanes(value)}
+                    />
+                  </div>
+                  <p className="field__hint">持久化到 userData/hud.json，立即生效。</p>
+                </div>
+              </div>
+
+              <div className="setting-row">
+                <div>
+                  <div className="setting-label">上下文参考上限</div>
+                  <div className="setting-desc">
+                    结论流顶部的占用条按这个值计算百分比。引擎没有返回真实上下文上限，
+                    所以这是可调整的参考值，不是引擎承诺。
+                  </div>
+                </div>
+                <div className="setting-control">
+                  <div className="setting-inline context-input">
+                    <input
+                      className="input input--mono"
+                      type="number"
+                      min={1000}
+                      max={2000000}
+                      step={1000}
+                      value={contextDraft}
+                      aria-label="上下文参考上限"
+                      onChange={(event) => setContextDraft(event.target.value)}
+                    />
+                    <AppButton
+                      label="应用"
+                      size="sm"
+                      className="context-input__apply"
+                      onClick={() => void applyContextWindow()}
+                    />
+                  </div>
+                  <p className="field__hint">范围 1,000–2,000,000 tokens；默认 128,000。</p>
+                </div>
+              </div>
+
+              <div className="setting-row">
+                <div>
+                  <div className="setting-label">允许 agent 互发消息</div>
+                  <div className="setting-desc">
+                    引擎消息协议的总开关；关闭后 <span className="mono">send_message</span> 不可用。
+                  </div>
+                </div>
+                <div className="setting-control">
+                  <AppStatus
+                    tone={protocol?.enabled ? 'success' : 'neutral'}
+                    label={protocol?.enabled ? '引擎已启用' : '引擎未启用'}
+                  />
+                  <p className="field__hint">只读：由引擎实现决定，本期不提供运行时开关。</p>
+                </div>
+              </div>
+
+              <div className="setting-row">
+                <div>
+                  <div className="setting-label">连续来回上限</div>
+                  <div className="setting-desc">
+                    同一线程中的 agent-to-agent 消息达到上限后暂停，等你说话再恢复。
+                  </div>
+                </div>
+                <div className="setting-control">
+                  <span className="mono">
+                    {protocol?.exchange_limit != null ? `${protocol.exchange_limit} 条` : '—'}
+                  </span>
+                  <p className="field__hint">
+                    引擎环境变量 <span className="mono">AGENT_MESSAGE_LIMIT</span>，只读。
+                  </p>
+                </div>
+              </div>
+
+              <div className="setting-row">
+                <div>
+                  <div className="setting-label">结论摘要上限</div>
+                  <div className="setting-desc">单条 agent 消息的 summary token 上限，超出会截断。</div>
+                </div>
+                <div className="setting-control">
+                  <span className="mono">
+                    {protocol?.summary_max_tokens != null
+                      ? `${protocol.summary_max_tokens} tokens`
+                      : '—'}
+                  </span>
+                  <p className="field__hint">
+                    引擎环境变量 <span className="mono">AGENT_SUMMARY_MAX_TOKENS</span>，只读。
+                  </p>
+                </div>
+              </div>
+
+              <div className="setting-row">
+                <div>
+                  <div className="setting-label">自动投递</div>
+                  <div className="setting-desc">
+                    目标 agent 空闲时是否自动创建任务接收结论。
+                  </div>
+                </div>
+                <div className="setting-control">
+                  <AppStatus
+                    tone={protocol?.auto_deliver ? 'success' : 'neutral'}
+                    label={protocol?.auto_deliver ? '已开启' : '已关闭'}
+                  />
+                  <p className="field__hint">
+                    引擎环境变量 <span className="mono">AGENT_AUTO_DELIVER</span>，只读。
+                  </p>
+                </div>
+              </div>
+
+              <div className="setting-row">
+                <div>
+                  <div className="setting-label">关键操作审批门</div>
+                  <div className="setting-desc">
+                    合并代码、删文件、装依赖前是否在聊天里问你。关闭时保持全自动。
+                  </div>
+                </div>
+                <div className="setting-control">
+                  <div className="setting-inline">
+                    <ShieldCheck size={15} aria-hidden="true" />
+                    <AppStatus
+                      tone={gate?.enabled ? 'warning' : 'neutral'}
+                      label={gate?.enabled ? '已开启' : '关闭（默认）'}
+                    />
+                  </div>
+                  <p className="field__hint">
+                    引擎环境变量 <span className="mono">AGENT_APPROVAL_GATE</span>，只读；
+                    开启后待审批会出现在任务详情顶部。
+                  </p>
+                </div>
+              </div>
+
+              <div className="setting-row">
+                <div>
+                  <div className="setting-label">消息协议状态</div>
+                  <div className="setting-desc">
+                    以上协作参数来自引擎 <span className="mono">agent_info</span>；GUI
+                    不修改引擎消息与审批逻辑，修改环境变量后需重启引擎。
+                  </div>
+                </div>
+                <div className="setting-control">
+                  <div className="setting-inline">
+                    <MessagesSquare size={15} aria-hidden="true" />
+                    <span className="mono dim">
+                      {agentsState.error
+                        ? `读取失败：${agentsState.error}`
+                        : agentsState.info
+                          ? 'agent_info 已返回'
+                          : '读取中…'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <section className="section" id="updates" aria-labelledby="updates-title">
             <div className="section__head">
               <h2 className="section__title" id="updates-title">
@@ -893,7 +1110,7 @@ export function SettingsPage() {
           <div className="save-bar">
             <div className="save-bar__status">
               <Check size={15} aria-hidden="true" />
-              <span>凭据由主进程保存；引擎生命周期已接入，其余设置持久化未接入</span>
+              <span>凭据由主进程保存；HUD 配置即时写入 userData；引擎协作参数只读</span>
             </div>
             <div className="save-bar__actions">
               <AppButton
@@ -904,7 +1121,9 @@ export function SettingsPage() {
                   setProxy(DEFAULT_STATE.proxy);
                   setAutoUpdate(DEFAULT_STATE.autoUpdate);
                   void updates.setChannel('stable');
-                  setNotice({ tone: 'info', title: '已还原界面状态' });
+                  void hud.setPaperPlanes(true);
+                  void hud.setContextWindowTokens(128_000);
+                  setNotice({ tone: 'info', title: '已还原界面状态与 HUD 配置' });
                 }}
               />
               <AppButton
@@ -912,9 +1131,9 @@ export function SettingsPage() {
                 tone="primary"
                 onClick={() =>
                   setNotice({
-                    tone: 'warning',
-                    title: '设置尚未持久化',
-                    text: '本次只接入凭据保存与引擎生命周期；非凭据配置的主进程持久化将在后续任务实现。',
+                    tone: 'info',
+                    title: 'HUD 设置已即时保存',
+                    text: '纸飞机动画与上下文参考值在修改时写入主进程；其余非凭据配置仍在既有范围内。',
                   })
                 }
               />

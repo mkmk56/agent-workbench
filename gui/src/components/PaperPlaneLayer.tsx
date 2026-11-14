@@ -169,6 +169,7 @@ export function PaperPlaneLayer({
   const initialized = useRef(false);
   const raf = useRef<number | null>(null);
   const pumpTimer = useRef<number | null>(null);
+  const zeroTimers = useRef<Set<number>>(new Set());
   const lastStart = useRef(0);
   const enabledRef = useRef(enabled);
   const arriveRef = useRef(onArrive);
@@ -254,7 +255,11 @@ export function PaperPlaneLayer({
         plane.endedAt = now;
         fading.current.push(plane);
         arriveRef.current(plane.to);
-        window.setTimeout(pump, 0);
+        const timer = window.setTimeout(() => {
+          zeroTimers.current.delete(timer);
+          pump();
+        }, 0);
+        zeroTimers.current.add(timer);
       }
     }
     active.current = remaining;
@@ -342,6 +347,10 @@ export function PaperPlaneLayer({
         window.clearTimeout(pumpTimer.current);
         pumpTimer.current = null;
       }
+      for (const timer of zeroTimers.current) {
+        window.clearTimeout(timer);
+      }
+      zeroTimers.current.clear();
     };
     // resize/loop setup is mount-only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
