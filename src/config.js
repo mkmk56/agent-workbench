@@ -5,24 +5,62 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
 
-function loadClaudeEnv() {
-  try {
-    const path = join(homedir(), '.claude', 'settings.json');
-    const doc = JSON.parse(readFileSync(path, 'utf8'));
-    return doc && typeof doc.env === 'object' && doc.env ? doc.env : {};
-  } catch {
-    return {};
-  }
+function readSettingsEnv(path) {
+  const doc = JSON.parse(readFileSync(path, 'utf8'));
+  return doc && typeof doc.env === 'object' && doc.env ? doc.env : {};
 }
 
-const npmGlobal = process.env.WORKBENCH_NPM_GLOBAL || 'D:\\workbuddy-tools\\node\\global';
+// Claude's gateway settings normally live in ~/.claude/settings.json. In a
+// container that file may be mounted (default path or WORKBENCH_CLAUDE_SETTINGS)
+// or the same env block may be supplied inline as WORKBENCH_CLAUDE_ENV_JSON.
+// The inline form wins when both are present.
+function loadClaudeEnv() {
+  const env = {};
+  const explicitPath = process.env.WORKBENCH_CLAUDE_SETTINGS;
+  const settingsPath = explicitPath || join(homedir(), '.claude', 'settings.json');
+  try {
+    Object.assign(env, readSettingsEnv(settingsPath));
+  } catch (error) {
+    if (explicitPath) {
+      // Do not include the parser message: JSON.parse echoes part of the input,
+      // which may contain an API token.
+      throw new Error(`cannot load WORKBENCH_CLAUDE_SETTINGS (${settingsPath}): ${error.code || 'unreadable or invalid JSON'}`);
+    }
+    // The default per-user settings file is optional.
+  }
+
+  const inline = process.env.WORKBENCH_CLAUDE_ENV_JSON;
+  if (inline !== undefined && inline !== '') {
+    let parsed;
+    try {
+      parsed = JSON.parse(inline);
+    } catch {
+      // Same reason as above: never echo the parser message or the raw value.
+      throw new Error('WORKBENCH_CLAUDE_ENV_JSON is not valid JSON');
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('WORKBENCH_CLAUDE_ENV_JSON must be a JSON object');
+    }
+    for (const [key, value] of Object.entries(parsed)) env[key] = String(value);
+  }
+
+  // The raw JSON may contain an API token. Remove it before executors inherit
+  // process.env; the parsed values still reach claude through config.claudeEnv.
+  delete process.env.WORKBENCH_CLAUDE_ENV_JSON;
+  return env;
+}
+
+// On Windows the npm global prefix itself contains node_modules. On POSIX the
+// prefix is the parent of bin/ and packages live under <prefix>/lib/node_modules.
+const defaultNpmGlobal = process.platform === 'win32' ? 'D:\\workbuddy-tools\\node\\global' : null;
+const npmGlobal = process.env.WORKBENCH_NPM_GLOBAL || defaultNpmGlobal;
 // npm prefix implied by the Node.js executable running this server. npm global
 // installs land here by default; unlike WORKBENCH_NPM_GLOBAL it follows a Node
 // or npm prefix change automatically, so a moved install is still found.
 const nodePrefix = dirname(process.execPath);
 
-const CLAUDE_ENTRY_SEGMENTS = ['node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe'];
-const DSH_ENTRY_SEGMENTS = ['node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'];
+const CLAUDE_PACKAGE_SEGMENTS = ['@anthropic-ai', 'claude-code', 'bin', 'claude.exe'];
+const DSH_PACKAGE_SEGMENTS = ['@deepseek-ai', 'dsh', 'lib', 'bin.js'];
 
 function intEnv(name, fallback) {
   const raw = process.env[name];
@@ -40,11 +78,17 @@ function boolEnv(name, fallback = false) {
 
 const port = intEnv('MCP_PORT', 8080);
 const dataDir = resolve(root, process.env.MCP_DATA_DIR || 'data');
+// Local default stays loopback-only. Containers set MCP_BIND=0.0.0.0 so the
+// platform's reverse proxy can reach the engine.
+const bind = process.env.MCP_BIND || '127.0.0.1';
+// The engine and executors share a process namespace, so the internal MCP URL
+// can always use loopback even when the listener is wildcard-bound.
+const internalHost = ['0.0.0.0', '::', '[::]'].includes(bind) ? '127.0.0.1' : bind;
 
 export const config = {
   root,
   port,
-  bind: '127.0.0.1',
+  bind,
   token: process.env.MCP_BEARER_TOKEN || '',
   dataDir,
   dbPath: resolve(root, process.env.MCP_DB_PATH || join(process.env.MCP_DATA_DIR || 'data', 'workbench.db')),
@@ -58,7 +102,7 @@ export const config = {
   dshBin: process.env.WORKBENCH_DSH_BIN || 'dsh',
   nodeBin: process.execPath,
   claudeEnv: loadClaudeEnv(),
-  mcpUrl: `http://127.0.0.1:${port}/mcp`,
+  mcpUrl: `http://${internalHost}:${port}/mcp`,
   claudeMcpConfigPath: resolve(dataDir, 'claude-mcp.json'),
   agentMessageLimit: intEnv('AGENT_MESSAGE_LIMIT', 10),
   agentSummaryMaxTokens: intEnv('AGENT_SUMMARY_MAX_TOKENS', 500),
@@ -106,8 +150,36 @@ function lookupInPath(name) {
 }
 
 function samePath(a, b) {
-  const norm = (p) => resolve(p).replace(/[\\/]+$/, '').toLowerCase();
+  const norm = (p) => {
+    const resolved = resolve(p).replace(/[\\/]+$/, '');
+    // Windows paths are case-insensitive; POSIX paths are not.
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  };
   return norm(a) === norm(b);
+}
+
+// Return directories that directly contain node_modules.
+// Windows: <npm prefix>/node_modules. POSIX: <npm prefix>/lib/node_modules.
+// WORKBENCH_NPM_GLOBAL is an npm prefix; on POSIX both <prefix>/node_modules and
+// <prefix>/lib/node_modules are probed so a custom layout still resolves.
+function npmNodeModulesDirs() {
+  const dirs = [];
+  const add = (dir, source) => {
+    if (!dirs.some((entry) => samePath(entry.dir, dir))) dirs.push({ dir, source });
+  };
+  if (npmGlobal) {
+    add(join(npmGlobal, 'node_modules'), `npm-prefix ${npmGlobal}`);
+    if (process.platform !== 'win32') {
+      add(join(npmGlobal, 'lib', 'node_modules'), `npm-prefix ${npmGlobal}`);
+    }
+  }
+  if (process.platform === 'win32') {
+    add(join(nodePrefix, 'node_modules'), `npm-prefix ${nodePrefix}`);
+  } else {
+    const prefix = resolve(nodePrefix, '..');
+    add(join(prefix, 'lib', 'node_modules'), `npm-prefix ${prefix}`);
+  }
+  return dirs;
 }
 
 export function claudeCommandCandidates() {
@@ -118,9 +190,8 @@ export function claudeCommandCandidates() {
   if (process.env.WORKBENCH_CLAUDE_BIN) {
     candidates.push({ path: process.env.WORKBENCH_CLAUDE_BIN, source: 'WORKBENCH_CLAUDE_BIN', lookup: true });
   }
-  candidates.push({ path: join(npmGlobal, ...CLAUDE_ENTRY_SEGMENTS), source: `npm-prefix ${npmGlobal}` });
-  if (!samePath(npmGlobal, nodePrefix)) {
-    candidates.push({ path: join(nodePrefix, ...CLAUDE_ENTRY_SEGMENTS), source: `npm-prefix ${nodePrefix}` });
+  for (const entry of npmNodeModulesDirs()) {
+    candidates.push({ path: join(entry.dir, ...CLAUDE_PACKAGE_SEGMENTS), source: entry.source });
   }
   candidates.push({ path: 'claude', source: 'PATH', lookup: true });
   return candidates;
@@ -134,9 +205,8 @@ export function dshCommandCandidates() {
   if (process.env.WORKBENCH_DSH_BIN) {
     candidates.push({ path: process.env.WORKBENCH_DSH_BIN, source: 'WORKBENCH_DSH_BIN', lookup: true });
   }
-  candidates.push({ path: join(npmGlobal, ...DSH_ENTRY_SEGMENTS), source: `npm-prefix ${npmGlobal}`, viaNode: true });
-  if (!samePath(npmGlobal, nodePrefix)) {
-    candidates.push({ path: join(nodePrefix, ...DSH_ENTRY_SEGMENTS), source: `npm-prefix ${nodePrefix}`, viaNode: true });
+  for (const entry of npmNodeModulesDirs()) {
+    candidates.push({ path: join(entry.dir, ...DSH_PACKAGE_SEGMENTS), source: entry.source, viaNode: true });
   }
   candidates.push({ path: 'dsh', source: 'PATH', lookup: true });
   return candidates;

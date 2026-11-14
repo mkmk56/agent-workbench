@@ -8,9 +8,13 @@ Local MCP server that lets a cloud orchestrator (Muse) dispatch tasks to Claude 
 2. `npm install`
 3. `npm start`
 
-The server binds to `127.0.0.1:8080` only. The MCP endpoint is `POST /mcp`; `GET /health` is unauthenticated.
+By default the server binds to `127.0.0.1:8080`; set `MCP_BIND=0.0.0.0` in a container. The MCP endpoint is `POST /mcp`; `GET /health` is unauthenticated.
 
 On this machine the npm global prefix is `D:\workbuddy-tools\node\global`; executables are resolved to direct entries (`dsh/lib/bin.js` via `node`, `claude-code/bin/claude.exe`) so the recorded PID is the real process. Override with `WORKBENCH_NPM_GLOBAL`, `WORKBENCH_DSH_ENTRY`, or `WORKBENCH_CLAUDE_ENTRY` if those paths move.
+
+## Container (Cloady)
+
+A `Dockerfile` builds the engine for Linux (Node 22, Claude Code CLI, and dsh 0.1.0-rc.6). The image sets `MCP_BIND=0.0.0.0`; the local Windows default stays `127.0.0.1`. Credentials are supplied only through environment variables or mounted files. See [`docs/CLOADY_DEPLOY.md`](docs/CLOADY_DEPLOY.md) for the variable list, build commands, and limitations. The maintainer's Windows machine has no Docker, so the image has not been built or run locally; build it on a Docker host.
 
 ## Deployment on this machine
 

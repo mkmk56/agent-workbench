@@ -569,3 +569,60 @@ dsh：
 - 代码提交 `e7b05f4`（12 个文件，1902 insertions / 10 deletions）；推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`，未改全局 git 配置，命令、文档与日志中无 token。
 - 未做 GUI、侧栏、纸飞机、结论卡片界面、设置页、审批卡片/弹窗、签名；未改 `docs/AGENT_HUD_PHASE1_REVIEW.md`；未碰 `spike/`；未删除文件；未改 `src/messages.js` 的 10 条上限与 B1 逻辑。
 - `docs/AGENT_HUD_SPEC.md` 与 `spike/` 保持未跟踪，未提交。
+
+---
+
+## M 容器化改造与 Cloady 部署准备（2026-11-14）
+
+> 本节为追加记录，不改写上文历史。只做容器化改造与本地验证；本次**没有部署到 Cloady**，也未改动 GUI、`spike/`、签名与审批。
+
+### M.1 结论与状态
+
+- **代码状态**：[DONE] 引擎可通过 `MCP_BIND` 监听 `0.0.0.0`，Claude/dsh 凭据可全部从环境变量或挂载文件提供；新增 `Dockerfile`、`.dockerignore`、`docker-entrypoint.sh` 与 `docs/CLOADY_DEPLOY.md`。
+- **Docker 验证**：[BLOCKED] 本机没有 Docker / WSL / podman（`docker`、`podman` 均 command not found；`wsl --status` 提示未安装 Linux 发行版）。因此镜像**未构建、未运行**，需在装有 Docker 的机器上验证。
+- **真实小任务**：未执行。无 Docker，未使用本机网关凭据跑真实 claude/dsh 任务；本次未调用 agent LLM，额度消耗无法直接观测。
+- **生产 `:8080`**：未重启、未改动；隔离实例使用 18127/18128，结束后端口已释放。
+- **分支**：`gui/v0.1`；提交 hash 以 `git log -1` 与任务汇报为准。
+
+### M.2 Linux 可行性（实测/证据边界）
+
+| 项目 | 结论 | 依据与边界 |
+|---|---|---|
+| Claude Code CLI | Linux 可用（官方 npm 安装）。2.1.325 声明 Linux x64/arm64 的 glibc 与 musl 可选二进制；`install.cjs` 把对应原生二进制放到 `bin/claude.exe`（Linux 上是 ELF）。`engines.node >=22`。 | npm registry 元数据 + 本机安装目录 `install.cjs` 检查；用 npm `--os=linux --cpu=x64 --libc=glibc --package-lock-only` 复核 Linux 可选包进入依赖图。**未在 Linux 上执行** `claude --version`（本机无 Linux 运行时）。 |
+| dsh Linux 版 | 有 Linux 安装路径：npm 包无 `os`/`cpu` 限制；GitHub Releases 只有 npm 标签、无平台二进制资产；原生可选依赖有 Linux glibc 版本（`node-addon-require-builtin-linux-x64-gnu`、`@koromix/koffi-linux-x64`、`@img/sharp-linux-x64`）。 | npm registry + GitHub Release 元数据 + 本机依赖树检查。**未在 Linux 上执行** `dsh --version` 或 headless 任务；完整 dsh 依赖图的 `npm --package-lock-only` 解析在 240 s 内无输出而超时，不能作为执行证据。 |
+| node-pty | 发布包只有 darwin/win32 预编译；Linux 走 `node-gyp rebuild`。 | 本机安装目录 `prebuilds/` 仅 4 个平台目录。Dockerfile 构建阶段装 `python3 make g++`，并使用 Node 镜像自带 headers。 |
+| 版本 | dsh `latest` 0.2.2-rc.1 要求 Node >=24.9.0；镜像按用户要求用 Node 22，因此固定 dsh **0.1.0-rc.6**（本机 Windows 上已在 Node 22.20.0 实测可运行）。 | npm `engines` + RESUME §K。迁移到 dsh 0.2.x 需 Node 24+ 底图。 |
+
+### M.3 代码改动
+
+| 文件 | 改动 |
+|---|---|
+| `src/config.js` | `MCP_BIND` 环境变量（默认仍 `127.0.0.1`）；`0.0.0.0`/`::` 时内部 MCP URL 用 `127.0.0.1`；Claude gateway env 支持 `WORKBENCH_CLAUDE_ENV_JSON`（内联 JSON，覆盖文件）与 `WORKBENCH_CLAUDE_SETTINGS`（挂载文件路径），默认仍读 `~/.claude/settings.json`；内联 JSON 解析后从 `process.env` 删除，避免执行器继承原始密钥；JSON 解析错误不再回显输入；npm 全局前缀解析新增 POSIX `<prefix>/lib/node_modules` 布局，Windows 顺序不变；仍每次任务启动惰性解析，无快照。 |
+| `Dockerfile` | Node 22 两阶段：构建阶段装 claude 2.1.325 + dsh 0.1.0-rc.6（`INSTALL_DSH=0` 可只装 claude），运行阶段装 git/CA，拷全局 node_modules，`npm ci --omit=dev`，非 root `node` 用户，`MCP_BIND=0.0.0.0`，`EXPOSE 8080`，healthcheck，entrypoint。`NPM_REGISTRY` 可覆盖（默认 npmjs；lockfile 里的 npmmirror host 会被替换）。 |
+| `.dockerignore` | 排除 `.git`、node_modules、data/logs、GUI、spike、design/assets、docs、scripts、env 与数据库文件。 |
+| `docker-entrypoint.sh` | 校验 `MCP_BEARER_TOKEN`；从 `DSH_CREDENTIALS_YAML` 生成 `~/.dsh/.credentials-headless.yaml`（Linux 上 chmod 600）、从 `DSH_HEADLESS_PATCH_YAML` 生成 headless profile patch；随后 `exec` 服务进程。dsh 的 profile 初始化只补缺失文件，已存在的 patch 不会被覆盖。 |
+| `docs/CLOADY_DEPLOY.md` | 变量清单、Docker 构建/运行、Cloady CLI 方向与面板步骤、已知限制。 |
+| `README.md` / `workbench.env.example` | 增加容器入口说明与占位变量；本地默认行为不变。 |
+| `.gitattributes` | `docker-entrypoint.sh` / `Dockerfile` 强制 LF，避免 Windows 检出后 shebang 失效。 |
+
+### M.4 本地验证
+
+- `node --check src/config.js`、`node --check src/server.js`、`sh -n docker-entrypoint.sh` 通过。
+- 默认 `config.bind=127.0.0.1`、`mcpUrl=http://127.0.0.1:8080/mcp`；`MCP_BIND=0.0.0.0` 时 `bind=0.0.0.0`、内部 URL 仍为 loopback。
+- `WORKBENCH_CLAUDE_ENV_JSON` 生效且覆盖 `WORKBENCH_CLAUDE_SETTINGS`；解析后原始 JSON 环境变量已从 `process.env` 删除；非法 JSON 以非零退出，输出不含输入片段（用哑值验证无回显）。
+- 缺失/过短 `MCP_BEARER_TOKEN` 仍拒绝启动（exit 1）。
+- 隔离引擎 `127.0.0.1:18127`/`18128`，`MCP_BIND=0.0.0.0`、独立 `MCP_DATA_DIR`/`MCP_LOG_DIR`、48 字符哑 token：
+  - `/health` 200；无 token `/mcp` 401；带 Bearer 的 `initialize` 200（`serverInfo.name=agent-workbench`）；`tools/list` 13 个工具；启动日志显示监听 `http://0.0.0.0:<port>/mcp`；结束后端口关闭。
+  - 说明：不带 `Accept: application/json, text/event-stream` 时 Streamable HTTP 返回 406，带正确头即 200；不是引擎故障。
+- `scripts/verify-command-resolution.mjs` → `ok: true`，Windows 解析顺序与惰性行为未变。
+- entrypoint 用哑值验证：生成 credentials/patch 文件，子进程内 `DSH_CREDENTIALS_YAML` 已 unset；缺 token 时 exit 1。Git Bash 在 Windows 上 `stat` 显示 644（Windows 不映射 POSIX mode），脚本对 Linux 显式 `chmod 600`，需在 Linux 上复核。
+- **未构建镜像、未跑真实任务**：本机无 Docker/WSL/podman。
+
+### M.5 明确未做
+
+- 未部署到 Cloady（需要用户登录，另行安排）；未登录、未创建应用、未推送镜像。
+- 未改 GUI、`spike/`、签名、审批；未改 `docs/AGENT_HUD_PHASE1_REVIEW.md`；未删除文件。
+- 未在任何文件、命令或日志中写入真实凭据；文档与示例只含占位。
+- 未验证 dsh 在 Linux 上的实际执行；未验证 Docker 构建与 `node-pty` 编译。
+- 未把 dsh 完整依赖图解析成功作为证据（该检查超时）；Linux 结论基于 registry 元数据与本机依赖树检查。
+- 额度消耗无法直接观测；本次未调用 claude/dsh LLM。

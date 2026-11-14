@@ -1,0 +1,4 @@
+# Keep container build files LF-only so shell shebangs work on Linux even when
+# the repository is checked out on Windows.
+docker-entrypoint.sh text eol=lf
+Dockerfile text eol=lf

@@ -1343,3 +1343,67 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 - `docs/AGENT_HUD_SPEC.md` 与 `spike/` 保持未跟踪，未提交。
 - 审批是 agent 遵守提示词与工具结果的闸门，不是 OS 沙箱；dsh 无 MCP 客户端，不能发起审批；阻塞式工具调用依赖客户端超时，已尽力提高 `MCP_TOOL_TIMEOUT`。以上限制已写入 `docs/AGENT_HUD_APPROVAL.md` 与 `RESUME.md` L.7。
 - 额度无法直接观测，本次未调用 agent LLM，不声称精确达标。
+
+---
+
+## 2026-11-14（周六）· 补充：容器化改造与 Cloady 部署准备
+
+### 今日目标
+
+- 为 agent-workbench 上 Cloady 做第一步：让引擎可以在 Linux 容器运行，提供 Dockerfile、凭据注入方式与部署文档。
+- 只做改造与本地验证；**本次不部署到 Cloady**（需要用户登录，另行安排）。
+- 不破坏 Windows 本机流程：默认绑定、路径、启动方式不变；不碰 GUI、`spike/`、签名、审批；不删除文件；不改 `docs/AGENT_HUD_PHASE1_REVIEW.md`。
+- 不把真实凭据写进仓库、命令、文档或日志。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%；额度消耗**无法直接观测**，本区块不记录虚构的百分比或余额。
+- 本次未调用 claude/dsh LLM；未构建 Docker 镜像（本机无 Docker）；仅做本地 Node/HTTP/Shell 验证。
+- 运行了多次 `npm view` 与一次 Claude-only 的 `--package-lock-only` 解析；完整 dsh 依赖图解析在 240 s 内无输出而超时，未作为证据。
+
+### Linux 可行性
+
+- **Claude Code**：npm 包 2.1.325 声明 Linux x64/arm64 的 glibc/musl 可选二进制，`engines.node >=22`；`install.cjs` 会把对应原生二进制放到 `bin/claude.exe`（Linux 上为 ELF）。用 `npm install --package-lock-only --os=linux --cpu=x64 --libc=glibc` 复核，`@anthropic-ai/claude-code-linux-x64` 等 Linux 包进入解析图。**未在 Linux 上执行** `claude --version`。
+- **dsh**：npm 包无 `os`/`cpu` 限制；GitHub Releases 只有 `dsh-v*` 标签、无平台二进制资产，说明 npm 是安装渠道；原生可选依赖发布 Linux glibc 版本（`node-addon-require-builtin-linux-x64-gnu`、`@koromix/koffi-linux-x64`、`@img/sharp-linux-x64`）。**未在 Linux 上执行** `dsh --version` 或 headless 任务。
+- **node-pty**：发布包只有 darwin/win32 预编译，Linux 需要 `node-gyp rebuild`；Dockerfile 构建阶段安装 `python3 make g++` 并使用 Node 镜像 headers。
+- **版本约束**：dsh `latest` 0.2.2-rc.1 要求 Node >=24.9.0；镜像按用户要求用 Node 22，固定 dsh 0.1.0-rc.6（与 Windows 本机一致，且本机已在 Node 22.20.0 上运行该版本）。迁移到 dsh 0.2.x 需要 Node 24+ 底图。
+
+### 改动
+
+- `src/config.js`：
+  - `MCP_BIND` 可配置监听地址，默认仍 `127.0.0.1`；`0.0.0.0`/`::` 时内部 MCP URL 使用 `127.0.0.1`。
+  - Claude gateway env 支持 `WORKBENCH_CLAUDE_ENV_JSON`（内联 JSON，覆盖文件）与 `WORKBENCH_CLAUDE_SETTINGS`（挂载文件路径），默认仍读 `~/.claude/settings.json`。
+  - 内联 JSON 解析后从 `process.env` 删除，避免执行器继承原始密钥；JSON 解析错误不回显输入（避免把 token 片段写进日志）。
+  - npm 全局前缀解析新增 POSIX `<prefix>/lib/node_modules` 布局；Windows 候选顺序不变；继续每次任务启动惰性解析，无快照。
+- 新增 `Dockerfile`：Node 22 两阶段构建；构建阶段安装 claude 2.1.325 与 dsh 0.1.0-rc.6（`INSTALL_DSH=0` 可只装 claude）；运行阶段安装 git/CA、拷全局 node_modules、`npm ci --omit=dev`；非 root `node` 用户（Claude Code 拒绝以 root 使用 `--dangerously-skip-permissions`）；`MCP_BIND=0.0.0.0`、`MCP_PORT=8080`、healthcheck、entrypoint。`NPM_REGISTRY` 可覆盖，lockfile 中 npmmirror host 在安装时替换。
+- 新增 `.dockerignore`：排除 `.git`、node_modules、data/logs、GUI、spike、design/assets、docs、scripts、env 与数据库文件。
+- 新增 `docker-entrypoint.sh`：校验 `MCP_BEARER_TOKEN`；从 `DSH_CREDENTIALS_YAML` 生成 `~/.dsh/.credentials-headless.yaml`（Linux 上 chmod 600）；从 `DSH_HEADLESS_PATCH_YAML` 生成 headless profile patch；`exec` 服务进程。dsh 的 profile 初始化只补缺失文件，已有 patch 不会被覆盖。
+- 新增 `docs/CLOADY_DEPLOY.md`：变量清单（必填/可选/凭据来源）、Docker 构建与本地运行、Cloady CLI 方向与面板步骤、已知限制与安全检查清单。
+- 更新 `README.md`、`workbench.env.example`：容器入口说明与占位变量；本地默认行为不变。
+- 新增 `.gitattributes`：`docker-entrypoint.sh` / `Dockerfile` 强制 LF。
+
+### 验证
+
+- `node --check src/config.js`、`node --check src/server.js`、`sh -n docker-entrypoint.sh` 通过。
+- 默认配置：`bind=127.0.0.1`、`mcpUrl=http://127.0.0.1:8080/mcp`；`MCP_BIND=0.0.0.0` 时 `bind=0.0.0.0`、内部 URL 仍为 loopback。
+- `WORKBENCH_CLAUDE_ENV_JSON` 生效且覆盖 `WORKBENCH_CLAUDE_SETTINGS`；解析后原始 JSON 环境变量已删除；非法 JSON 以非零退出且不输出输入片段（哑值验证）。
+- 缺失/过短 `MCP_BEARER_TOKEN` 仍拒绝启动（exit 1）。
+- 隔离引擎 18127/18128：`MCP_BIND=0.0.0.0`、独立 data/log、48 字符哑 token；`/health` 200；无 token `/mcp` 401；带 Bearer `initialize` 200；`tools/list` 13 个工具；启动日志显示 `http://0.0.0.0:<port>/mcp`；结束后端口关闭。MCP 请求需 `Accept: application/json, text/event-stream`，否则 Streamable HTTP 返回 406，属协议要求。
+- `scripts/verify-command-resolution.mjs` → `ok: true`，Windows 解析顺序与惰性行为未变。
+- entrypoint 哑值验证：生成 credentials/patch，子进程内 `DSH_CREDENTIALS_YAML` 已 unset；缺 token 时 exit 1。Git Bash 在 Windows 上 `stat` 显示 644（Windows 不映射 POSIX mode），脚本对 Linux 显式 `chmod 600`，需在 Linux 上复核。
+- **镜像未构建、真实任务未执行**：本机 `docker`/`podman` 不存在，WSL 未安装 Linux 发行版。
+
+### Git 同步
+
+- 分支 `gui/v0.1`；提交内容：`src/config.js`、`README.md`、`workbench.env.example`、`Dockerfile`、`.dockerignore`、`docker-entrypoint.sh`、`.gitattributes`、`docs/CLOADY_DEPLOY.md`、`RESUME.md`、`DAILY_LOG.md`。
+- 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未改全局 git 配置；命令、文档与日志中无 token。
+- 提交 hash 与远程 HEAD 以 `git log -1`、`git ls-remote` 及任务汇报为准。
+
+### 未做 / 注意
+
+- 未部署到 Cloady；未登录、未创建应用、未推送镜像。
+- 未构建/运行 Docker 镜像；未验证 `node-pty` 在 Linux 的编译、claude/dsh 在 Linux 的实际执行。
+- 未改 GUI、`spike/`、签名与审批；未改 `docs/AGENT_HUD_PHASE1_REVIEW.md`；未删除文件。
+- `docs/AGENT_HUD_SPEC.md` 与 `spike/` 保持未跟踪，未提交。
+- 容器数据在 `/app/data`、`/app/logs`，无持久卷时随容器替换丢失；容器不是沙箱，执行器有完整权限；无 TLS，需由 Cloady 终止 TLS。
+- 额度无法直接观测，本次未调用 agent LLM，不声称精确达标。
