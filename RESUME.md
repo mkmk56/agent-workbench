@@ -837,3 +837,35 @@ dsh：
 - 无自动化测试；M2 四分支、M1 饱和路径为代码审查 + 一次临时降阈值的 UI 验证。
 - `list_messages` 500 条 ASC 窗口、未读不跨重启、`files_modified` 恒空、HUD ≤900px 隐藏等限制仍在。
 - 额度无法直接观测；本期未调用 agent LLM（dsh 评审任务另计，`task_status` tokens 0/0）。
+
+---
+
+## R 第三期评审 M1–M3 复核与回归验证（2026-11-14）
+
+> 本节为追加记录，不改写上文历史。复核对象为已提交的 `8c86178`（第三期评审 M1–M3 修正随第四/五期评审修正一并入库）；未改引擎消息/审批逻辑，未碰 `spike/`、签名、第一/二期评审文件，未删除文件。
+
+### R.1 M1–M3 复核
+
+- **M1**：`gui/src/lib/hud.ts` 在 `list_messages` 返回 500 条时置 `messagesSaturated`；`AgentHud.tsx` 在 Muse 悬停卡显示“消息窗口已满…重启 GUI 也不能恢复”；`ConversationPanel.tsx` 显示会话级饱和提示；`docs/hud-phase3/README.md` 已改为“确定性降级”。[PASS]
+- **M2**：`hud.ts` 对 `engine == null` / `state === 'starting'` 显示“连接中”，对 `agent_info` 读取失败显示“状态未知”，只有真实离线 / `available:false` / `BLOCKED`·`STALE` / 15 分钟内 `FAILED` 才显示“出错”。[PASS]
+- **M3**：`RESUME.md` P.3 与 `DAILY_LOG.md` 第三期区块追加更正：`b3b10f6` 未修改 `gui/src/lib/engine.ts`，该文件在第四期才因 `useTaskMessages` / 审批包装而修改；未回改历史区块。[PASS]
+- `cd gui && npm run typecheck` 通过。
+
+### R.2 回归结果（隔离实例，未调用 LLM）
+
+| 回归 | 命令 | 结果 |
+|---|---|---|
+| 审批门 | `VERIFY_APPROVAL_OFF_PORT=18501 VERIFY_APPROVAL_ON_PORT=18502 VERIFY_APPROVAL_TIMEOUT_MS=4000 node scripts/verify-approval-gate.mjs` | `ok:true`、`errors:[]`；`data/approval-verify-20261114084016/verify-result.json` |
+| 第一期（门 OFF） | `VERIFY_PORT=18505 VERIFY_SKIP_AGENTS=1 node scripts/verify-agent-messages.mjs` | `ok:true`、`errors:[]`；`data/agent-hud-verify-20261114084043/verify-result.json` |
+| 第一期（门 ON） | `VERIFY_PORT=18506 VERIFY_SKIP_AGENTS=1 AGENT_APPROVAL_GATE=1 node scripts/verify-agent-messages.mjs` | `ok:true`、`errors:[]`；`data/agent-hud-verify-20261114084101/verify-result.json` |
+
+- 审批门回归覆盖：门 OFF 短路、门 ON 的 `once`/`deny`/`session`、聊天自由回复、歧义回复、超时、审批后计数、重启后 session 授权、pending `abandoned` 恢复。
+- 第一期回归覆盖：`reply_to` 链、10 条上限、第 10 条 `held`、第 11 条拒绝、`WAITING_USER`、B1 user 报告 `stored`、500 token 截断、重启前后 13/13 条持久化。
+- 测试实例结束后关闭；18501/18502/18505/18506 无 LISTEN。生产 `:8080` 未触碰。
+- 额度：未调用 claude/dsh LLM；额度无法直接观测，不记录虚构百分比。
+
+### R.3 提交与推送
+
+- 本节与 `DAILY_LOG.md` 追加区块随文档提交推送；分支 `gui/v0.1`。
+- 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未改全局 git 配置；命令、文档与日志中无 token。
+- 提交 hash 与远程 HEAD 以 `git log -1`、`git ls-remote` 及任务汇报为准。
