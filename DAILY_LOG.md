@@ -1760,3 +1760,42 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 - 分支 `gui/v0.1`；本次只追加 `RESUME.md` / `DAILY_LOG.md` 并推送。
 - 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未改全局 git 配置；命令、文档与日志中无 token。
 - 提交 hash 与远程 HEAD 以 `git log -1`、`git ls-remote` 及任务汇报为准。
+
+## 2026-11-14（周六）· 补充：第四/五期评审 M1–M5 独立复评
+
+### 今日目标
+
+- 独立复评 `docs/AGENT_HUD_PHASE4_REVIEW.md`（对 `90296c9`）的 5 个必须修项（M1–M5）在 `8c86178` / HEAD `6c08e5e` 是否真的修好。
+- 只复核与测试：未改 `src/`、未改原评审文件、`spike/`、签名；未删除文件；未重启生产 `:8080`。
+- 交付 `docs/AGENT_HUD_PHASE45_REVERIFY.md` 并推送。
+
+### 复评结论
+
+- **CONDITIONAL PASS**：M1–M5 均已在代码/文档中修好；新发现 1 个必须修 R1；`build:renderer` 仍被沙箱阻断、M4 无浏览器运行时实测。
+
+### M1–M5
+
+- **M1 [已修]**：5 处“只读包装”均已改正（`RESUME.md:771/772`、`docs/hud-phase5/README.md:13`、`DAILY_LOG.md:1649`、`ConversationPanel.tsx:399` 改为“引擎数据”）；并独立确认 `src/approvals.js:518-529` 确为写操作（写入 user 回复 + `_finalize`，session 还写 `approval_grants`）。
+- **M2 [主路径已修]**：`hud.ts:269-299` 返回 `Promise<boolean>`，失败 `false` 且不 `publishConfig`；`SettingsPage.tsx:113-146` 按结果给成功/错误与“写入 hud.json 失败，原配置保持不变”；`main.ts:181-188/352-353` 不吞异常。残留见 R1。
+- **M3 [已修]**：`docs/hud-phase5/README.md:5` 改为“浅色主题整窗”；独立像素统计 `01` 白 64.03% + 纸白 26.19% 为浅色，`02`/`03` 为深色。
+- **M4 [代码层面已修]**：`brand.css:2101-2110` 的 `.01ms !important` 未删，修法是 `hud.css:392-412` 给 `.hud-slot__flash` 加 `animation-duration: 400ms !important`（特异性 0,1,0 > `*`，胜出）；真实构建产物 `dist/assets/index-CL89dtTs.css` 同样含该覆盖；级联求解 `t=120ms` opacity≈0.499，为可见的无位移淡出。浏览器运行时实测被沙箱阻断（见验证）。
+- **M5 [已修]**：三处说明改为“Muse/dsh 上下约 20/14px、Claude 约 1–2px”；独立 alpha bbox：muse 20/20、dsh 14/13、claude 2/1，与描述一致。
+
+### 新问题
+
+- **必须修 R1**：`SettingsPage.tsx:1144-1156` 的「还原」用 `void` 丢弃 `setPaperPlanes` / `setContextWindowTokens` 结果，写盘失败时仍提示“已还原界面状态与 HUD 配置”（M2 同类残留）。
+- 非阻塞：R2「保存更改」无条件提示“HUD 设置已即时保存”；R3 M4 仍缺运行时证据；R4 `build:renderer` 在本沙箱不可复现。
+
+### 测试与验证
+
+- `cd gui && npm run typecheck`：EXIT=0。
+- `cd gui && npm run build`：`theme:build` + `build:main` 成功；`build:renderer` 仍 `Error: spawn EPERM`（esbuild service 无法 spawn），与上次评审一致；未提权、未绕过。
+- M4 浏览器实测受阻：`agent-browser` 报 socket 目录工作区外不可写；Chrome/系统 Chrome 均因 mojo 命名管道 `拒绝访问 (0x5)` 无法启动；按约束未提权、未绕过。
+- 探针与日志写在 gitignored 的 `data/reverify-phase45/`（Pillow 像素/alpha 统计、`m4-cascade.cjs` 级联求解、构建日志），不提交。
+- 未调用 claude/dsh LLM；额度无法直接观测，不记录虚构百分比。
+
+### Git 同步
+
+- 分支 `gui/v0.1`；新增 `docs/AGENT_HUD_PHASE45_REVERIFY.md`，`DAILY_LOG.md` 仅追加本区块。
+- 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未改全局 git 配置；命令、文档与日志中无 token。
+- 提交 hash 以 `git log -1`、`git ls-remote` 与任务汇报为准。
