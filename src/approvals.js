@@ -294,9 +294,30 @@ export class ApprovalService {
   }
 
   async request(input = {}) {
+    const taskId = typeof input.task_id === 'string' ? input.task_id : '';
+    const threadId = taskId ? this.store.getThreadId(taskId) : null;
+
+    // Gate off: fully automatic, exactly the pre-phase-2 behaviour. This must be
+    // the very first branch: any schema-valid call returns disabled even when it
+    // omits files/command, and nothing below (input validation, ensureThread,
+    // messages, waiting, thread state) may run. Phase-2 review M1 + N6.
+    if (!this.config.agentApprovalGate) {
+      return {
+        approval_id: null,
+        gate_enabled: false,
+        asked: false,
+        allowed: true,
+        decision: 'disabled',
+        stop: false,
+        category: input.category ?? null,
+        task_id: taskId || null,
+        thread_id: threadId,
+        instructions: 'Approval gate is off; proceed. No user question was sent.'
+      };
+    }
+
     const agent = input.agent;
     if (!AGENTS.has(agent)) throw new Error(`invalid agent: ${agent}`);
-    const taskId = typeof input.task_id === 'string' ? input.task_id : '';
     if (!taskId) throw new Error('task_id is required');
     const task = this.store.getTask(taskId);
     if (!task) throw new Error(`task not found: ${taskId}`);
@@ -317,25 +338,7 @@ export class ApprovalService {
       throw new Error('list at least one file or the command being approved');
     }
 
-    const threadId = this.store.getThreadId(taskId);
     this.store.ensureThread(threadId, threadId);
-
-    // Gate off: fully automatic, exactly the pre-phase-2 behaviour. No message,
-    // no waiting, no thread-state change.
-    if (!this.config.agentApprovalGate) {
-      return {
-        approval_id: null,
-        gate_enabled: false,
-        asked: false,
-        allowed: true,
-        decision: 'disabled',
-        stop: false,
-        category,
-        task_id: taskId,
-        thread_id: threadId,
-        instructions: 'Approval gate is off; proceed. No user question was sent.'
-      };
-    }
 
     const pending = this.store.findPendingApprovalForThread(threadId);
     if (pending) {

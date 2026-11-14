@@ -1475,3 +1475,53 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 - 未改 GUI、侧栏、纸飞机、结论卡片界面、设置页、签名；未碰 `spike/`；未删文件。
 - `docs/AGENT_HUD_SPEC.md` 与 `spike/` 仍为未跟踪，未提交。
 - 额度无法直接观测；本次未调用 agent LLM，不声称精确达标。
+
+---
+
+## 2026-11-14（周六）· 补充：Agent HUD 第二期评审必须修项 M1 修正（N6 随同）
+
+### 今日目标
+
+- 修 `docs/AGENT_HUD_PHASE2_REVIEW.md`（提交 `127007e`）的唯一必须修项 M1：门关时 `request_approval` 的输入校验先于门开关短路，缺 `files`/`command` 的 schema 合法调用会报错。
+- 评审 N6（门关路径新建 `threads` 行）与 M1 同处，随本次一并解决；N1–N5、N7–N8 本次不动。
+- 只改引擎与验证脚本；不碰评审文件、GUI、`spike/`、签名；不重启生产 `:8080`；更新 `RESUME.md`（只追加）与 `DAILY_LOG.md`（只追加），提交推送。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%；额度消耗**无法直接观测**，本区块不记录虚构百分比或余额。
+- 审批回归与第一期回归全部使用直接写入 SQLite 的占位任务 + MCP 协议调用（第一期带 `VERIFY_SKIP_AGENTS=1`），**未调用 claude/dsh LLM**。
+
+### 根因与修正
+
+- 根因（`src/approvals.js` 修正前）：`delete` 需文件（`:313-315`）、`files`/`command` 二选一（`:316-318`）、`getThreadId` + `ensureThread`（`:320-321`）都在门关短路（`:325-338`）之前。
+- 修法：把门关短路移到 `request()` 最前，只读取 `taskId` 与 `threadId`（`getThreadId` 只读，无写入），随后立即返回 `allowed:true, decision:"disabled", asked:false, stop:false, gate_enabled:false`。门关时不再做任何输入校验、不调 `ensureThread`、不写消息、不等待、不改线程状态。
+- N6 随之消失：门关不再创建 `threads` 行；无 `task_threads` 链接时 `thread_id` 仅按既有规则回退为 `task_id`。
+- 门开路径保持不变：原有校验、`ensureThread`、pending 并发检查、session 授权、卡片写入、阻塞等待与恢复逻辑顺序未动。
+- 验证脚本 `scripts/verify-approval-gate.mjs` 的门 OFF 阶段新增 edge probe：一个没有 `task_threads` 行的占位任务，分别调用缺 `files`/`command` 的 `merge` 与 `files:[]` 的 `delete`，断言返回 disabled、无消息、`threads` 行数为 0。
+
+### 测试与验证
+
+- 语法：`node --check src/approvals.js`、`node --check scripts/verify-approval-gate.mjs` 通过。
+- **审批门回归**：`VERIFY_APPROVAL_OFF_PORT=18301 VERIFY_APPROVAL_ON_PORT=18302 VERIFY_APPROVAL_TIMEOUT_MS=4000 node scripts/verify-approval-gate.mjs` → `ok:true`、`errors:[]`；结果 `data/approval-verify-20261114063742/verify-result.json`。
+  - 门 OFF：正常调用 7 ms `disabled`；`respond_approval` 仍报 gate disabled。
+  - 门 OFF edge（M1/N6）：缺 `files`/`command` 与 `delete + files:[]` 均 13 ms 内返回 `allowed:true/disabled/asked:false`，**不抛错**；消息 0 条；`thread_rows: 0`。
+  - 门 ON：`once`、`deny`、`session`（不同类别仍问）、聊天自由回复、歧义回复、超时 4,061 ms、审批后计数从 1 开始、重启后 session 授权、pending `abandoned` 恢复全部通过。
+- **第一期回归**（`VERIFY_SKIP_AGENTS=1`）两次均 `ok:true`：
+  - 门 OFF，端口 18305：`data/agent-hud-verify-20261114063755/verify-result.json`。
+  - 门 ON，端口 18306：`data/agent-hud-verify-20261114063759/verify-result.json`。
+  - 覆盖 `reply_to` 链、10 条上限、第 10 条 `held`、第 9 条保持 `stored`、第 11 条拒绝、`WAITING_USER`、B1 user 报告 `stored`（计数保持 10）、500 token 截断（2000 字符）、重启前后 13/13 条。
+- 测试实例结束后关闭；18301/18302/18305/18306 无 LISTEN（仅客户端 TIME_WAIT）。生产 `:8080` 未触碰。
+
+### Git 同步
+
+- 分支 `gui/v0.1`；修改文件：`src/approvals.js`、`scripts/verify-approval-gate.mjs`、`RESUME.md`、`DAILY_LOG.md`。
+- 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未改全局 git 配置；命令、文档与日志中无 token。
+- 提交 hash 与远程 HEAD 以 `git log -1`、`git ls-remote` 及任务汇报为准。
+
+### 未做 / 注意
+
+- 评审 N1–N5、N7–N8 未处理；未改 `docs/AGENT_HUD_PHASE2_REVIEW.md`、`docs/AGENT_HUD_PHASE1_REVIEW.md`、`docs/AGENT_HUD_APPROVAL.md`。
+- 未做真实 claude↔用户审批往返；未重启生产 `:8080`，生产仍跑旧代码。
+- 未改 GUI、`spike/`、签名；未删除文件。
+- `docs/AGENT_HUD_SPEC.md` 与 `spike/` 仍为未跟踪，未提交。
+- 额度无法直接观测，本次未调用 agent LLM，不声称精确达标。

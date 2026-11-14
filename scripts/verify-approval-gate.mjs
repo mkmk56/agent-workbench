@@ -184,7 +184,7 @@ function insertDummyTask(st, { id, sessionId, agent, threadId }) {
     resume: 0,
     model: null
   });
-  st.setTaskThread(id, threadId, null);
+  if (threadId) st.setTaskThread(id, threadId, null);
 }
 
 function seedTasks(dataDir, tasks) {
@@ -335,6 +335,61 @@ async function runOffPhase() {
   });
   result.off.respond_error = respondError;
   assert(respondError && /disabled/i.test(respondError), 'respond_approval must reject while the gate is off');
+
+  // ----------------------------------------------- gate-off edge probes (M1/N6)
+  // Schema-valid calls that omit files/command (and a delete with files: [])
+  // must still return disabled immediately: no validation error, no message,
+  // no thread row. The task below deliberately has no task_threads link so the
+  // probe can prove that request_approval does not call ensureThread when off.
+  {
+    const edgeThread = randomUUID();
+    const edgeTask = `dummy-approval-off-edge-${edgeThread.slice(0, 8)}`;
+    seedTasks(offDir, [{ id: edgeTask, sessionId: randomUUID(), agent: 'claude', threadId: null }]);
+
+    const startedAtEdge = Date.now();
+    const noFilesCommand = await call(client, 'request_approval', {
+      agent: 'claude',
+      task_id: edgeTask,
+      category: 'merge',
+      action: 'merge a into b',
+      reason: 'no files, no command'
+    });
+    const deleteWithoutFiles = await call(client, 'request_approval', {
+      agent: 'claude',
+      task_id: edgeTask,
+      category: 'delete',
+      action: 'delete a file',
+      files: [],
+      reason: 'delete with an empty file list'
+    });
+    const edgeMessages = await listMessages(client, edgeThread);
+    const st = new Store(join(offDir, 'workbench.db'), offDir);
+    let threadRows;
+    try {
+      threadRows = st.db.prepare('SELECT COUNT(*) AS n FROM threads WHERE thread_id = ?').get(edgeThread).n;
+    } finally {
+      st.close();
+    }
+    result.off.edge = {
+      no_files_command: noFilesCommand,
+      delete_without_files: deleteWithoutFiles,
+      elapsed_ms: Date.now() - startedAtEdge,
+      messages: edgeMessages.messages,
+      thread_rows: threadRows
+    };
+
+    for (const [name, response] of [
+      ['no_files_command', noFilesCommand],
+      ['delete_without_files', deleteWithoutFiles]
+    ]) {
+      assert(response.gate_enabled === false,
+        `gate-off ${name} probe must report gate_enabled=false`);
+      assert(response.allowed === true && response.asked === false && response.decision === 'disabled',
+        `gate-off ${name} probe must return allowed=true/disabled/asked=false, got ${JSON.stringify(response)}`);
+    }
+    assert(edgeMessages.messages.length === 0, 'gate-off edge probes must not write a chat message');
+    assert(threadRows === 0, 'gate-off edge probes must not create a threads row (N6)');
+  }
 
   await stopServer();
 }

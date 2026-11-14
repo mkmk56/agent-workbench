@@ -626,3 +626,39 @@ dsh：
 - 未验证 dsh 在 Linux 上的实际执行；未验证 Docker 构建与 `node-pty` 编译。
 - 未把 dsh 完整依赖图解析成功作为证据（该检查超时）；Linux 结论基于 registry 元数据与本机依赖树检查。
 - 额度消耗无法直接观测；本次未调用 claude/dsh LLM。
+
+---
+
+## N Agent HUD 第二期评审必须修项 M1 修正（2026-11-14）
+
+> 本节为追加记录，不改写上文历史。只修 `docs/AGENT_HUD_PHASE2_REVIEW.md` 的必须修项 M1；评审 N6 与 M1 同处，随本次一并解决。N1–N5、N7–N8 按用户要求本次不动（与第一期 N1–N8 暂缓处理一致）。
+
+### N.1 范围与状态
+
+- **范围**：只改 `src/approvals.js` 与 `scripts/verify-approval-gate.mjs`；未改 `docs/AGENT_HUD_PHASE2_REVIEW.md`、`docs/AGENT_HUD_PHASE1_REVIEW.md`、GUI、`spike/`、签名。
+- **代码状态**：[DONE] 门关短路已移到 `request()` 最前；隔离实例回归通过。
+- **生产 `:8080`**：未重启、未写入；生产仍运行旧代码。
+- **分支**：`gui/v0.1`；提交 hash 以 `git log -1` 与任务汇报为准。
+
+### N.2 代码修正
+
+- **M1**：`src/approvals.js` 的 `request()` 现在第一步计算 `taskId` / `threadId`（`getThreadId` 只读），第二步即检查 `agentApprovalGate`。门关时立即返回 `allowed:true, decision:"disabled", asked:false, stop:false, gate_enabled:false`，不执行 agent/category/action/files/command 校验，不调用 `ensureThread`，不写消息、不等待、不改线程状态；缺 `files`/`command` 与 `delete + files:[]` 的 schema 合法调用不再抛错。
+- **N6**：门关路径不再调用 `ensureThread`，没有 `task_threads` 行的任务不会再被新建 `threads` 行；`thread_id` 仅来自只读的 `getThreadId`（无链接时按既有规则回退为 task_id）。
+- **门开路径**：所有原有校验、`ensureThread`、并发 pending 检查、session 授权、卡片写入与阻塞等待逻辑保持原顺序，行为不变。
+
+### N.3 验证证据（隔离实例，未调用 agent LLM）
+
+- **审批门回归**：`VERIFY_APPROVAL_OFF_PORT=18301 VERIFY_APPROVAL_ON_PORT=18302 VERIFY_APPROVAL_TIMEOUT_MS=4000 node scripts/verify-approval-gate.mjs` → `ok:true`、`errors:[]`；结果 `data/approval-verify-20261114063742/verify-result.json`。
+  - 门 OFF：正常调用 7 ms 返回 disabled；`respond_approval` 仍报 gate disabled。
+  - 门 OFF edge probe（新增，任务无 `task_threads` 行）：缺 `files`/`command` 与 `delete + files:[]` 均在 13 ms 内返回 `allowed:true, decision:"disabled", asked:false`，不抛错、消息 0 条、`threads` 行数为 0（M1 + N6 同时覆盖）。
+  - 门 ON：`once` / `deny` / `session`（含不同类别仍问）/ 聊天自由回复 / 歧义回复 / 超时（4,061 ms）/ 审批后 10 条上限计数 / 重启后 session 授权 / pending `abandoned` 恢复全部通过。
+- **第一期回归**（`VERIFY_SKIP_AGENTS=1`）两次均 `ok:true`：
+  - 门 OFF，端口 18305：`data/agent-hud-verify-20261114063755/verify-result.json`。
+  - 门 ON，端口 18306：`data/agent-hud-verify-20261114063759/verify-result.json`。
+  - 覆盖 `reply_to` 链、10 条上限、第 10 条 `held`、第 11 条拒绝、`WAITING_USER`、B1 user 报告 `stored`、500 token 截断、重启前后 13/13 条。
+- 测试实例均已关闭；18301/18302/18305/18306 无 LISTEN（仅客户端 TIME_WAIT）。额度消耗无法直接观测；本次未调用 claude/dsh LLM。
+
+### N.4 明确未做
+
+- 评审 N1–N5、N7–N8 未处理；未改 `docs/AGENT_HUD_PHASE2_REVIEW.md`、`docs/AGENT_HUD_PHASE1_REVIEW.md`、`docs/AGENT_HUD_APPROVAL.md`。
+- 未做真实 claude↔用户审批往返；未重启生产 `:8080`；未改 GUI、`spike/`、签名；未删除文件。
