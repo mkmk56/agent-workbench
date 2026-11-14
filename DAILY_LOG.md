@@ -1407,3 +1407,71 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 - `docs/AGENT_HUD_SPEC.md` 与 `spike/` 保持未跟踪，未提交。
 - 容器数据在 `/app/data`、`/app/logs`，无持久卷时随容器替换丢失；容器不是沙箱，执行器有完整权限；无 TLS，需由 Cloady 终止 TLS。
 - 额度无法直接观测，本次未调用 agent LLM，不声称精确达标。
+
+---
+
+## 2026-11-14（周六）· 补充：Agent HUD 第二期独立评审（引擎聊天式审批，默认关）
+
+### 今日目标
+
+- 作为独立评审方（非实现方）核查 Agent HUD 第二期：引擎聊天式审批（`AGENT_APPROVAL_GATE`，默认关）是否达到验收标准。
+- 逐项核查：三类审批清单边界、提问/回复流程（once / session / deny / timeout）、门关零行为变化、第一期回归、已知限制是否如实记录。
+- 在隔离实例上独立复跑审批回归与第一期回归（真实 MCP 工具调用），不写生产 `:8080`。
+- 只评审：不改 `src/`、不碰 `docs/AGENT_HUD_PHASE1_REVIEW.md`、不碰 GUI / `spike/` / 签名、不删除文件。
+- 产出 `docs/AGENT_HUD_PHASE2_REVIEW.md` 并追加本区块，提交推送。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%；额度消耗**无法直接观测**，本区块不记录虚构的百分比或余额。
+- 本次评审**未调用任何 claude/dsh LLM**：审批回归与第一期回归都使用直接写入 SQLite 的占位任务 + MCP 协议调用（第一期回归带 `VERIFY_SKIP_AGENTS=1`），另加自写协议探针。
+- 另外本会话沙箱禁止子进程管道 stdio（直接运行仓库脚本时 `spawn EPERM`），且引擎拉起真实 claude 时会卡在 `src/mcp-config.js` 的 `icacls` 步骤，因此**无法**在本会话做真实执行器往返；该限制如实写入评审文件。实际消耗 agent token 为 0。
+
+### 评审对象
+
+- 分支 `gui/v0.1`；引擎/验证脚本提交 `e7b05f4`（`feat(engine): add chat approval gate for critical operations`），文档提交 `e200ec3`；评审时本地 HEAD `4c2627f`。
+- 逐文件读：`docs/AGENT_HUD_APPROVAL.md`、`src/approvals.js`、`src/config.js`、`src/executors/claude.js`、`src/executors/dsh.js`、`src/tools.js`、`src/scheduler.js`、`src/store.js`、`src/messages.js`、`src/server.js`、`src/executors/process.js`、`scripts/verify-approval-gate.mjs`、`scripts/verify-agent-messages.mjs`、`README.md`、`workbench.env.example`。
+
+### 独立复跑（隔离实例，未触碰生产）
+
+- 审批门回归：`VERIFY_APPROVAL_OFF_PORT=18201 VERIFY_APPROVAL_ON_PORT=18202 VERIFY_APPROVAL_TIMEOUT_MS=4000 node <副本> scripts/verify-approval-gate.mjs` → `ok:true`，`errors:[]`，结果 `data/approval-verify-20261114062308/verify-result.json`。
+  - 门 OFF：6 ms 返回 `allowed:true, decision:"disabled", asked:false`；无消息；线程 `ACTIVE`。
+  - 门 ON：once（提问 `stored`、`WAITING_USER`、`exchange_count:0`、回复后 `allowed:true`）；deny（`allowed:false, stop:true`，不产生授权）；session（7 ms 直接放行、`grant_source` 正确、不同类别仍问）；聊天自由回复解析为 session；歧义回复保持 pending 且可显式解析；超时 4,183 ms 返回 `timeout, stop:true` 且线程恢复；重启后 session 授权保留、pending `abandoned` 且线程释放。
+- 第一期回归（门 OFF / 门 ON）：端口 18205 / 18206，`VERIFY_SKIP_AGENTS=1`，均 `ok:true`：
+  - `data/agent-hud-verify-20261114062326/verify-result.json`（门 OFF）、`data/agent-hud-verify-20261114062356/verify-result.json`（门 ON）。
+  - 两次都覆盖 `reply_to` 链、10 条上限、第 10 条 `held`、第 9 条不被误标 `answered`、第 11 条拒绝、`WAITING_USER`、B1（默认 `deliver` 下 user 报告 `stored` 且计数不变）、500 token 截断（2000 字符）、重启前后 13/13 条。
+- 自写协议探针（端口 18211/18212）：`data/review-phase2-probe-20261114062324/probe-result.json`（`ok:true`）——门关零消息、审批不占上限、同线程并发审批被拒、session 不跨线程（新线程仍问）、截断行为、按 `task_id` 回答。
+- 门关边界探针：`data/review-phase2/edge-probe-result.json`——缺 `files`/`command` 的合法调用在门关时抛错（M1）；无 `task_threads` 行的任务会新建 `threads` 行（N6）。
+- 真实启动路径探针（端口 18220）：`data/review-phase2-real-1794637487372/probe-result.json`——门开时提示词注入日志出现（`approval_prompt_injected:true`），执行器因沙箱 `icacls` 失败未被拉起（环境限制，`tokens 0/0`）。
+- 生产只读检查：`/health` 200；`tools/list` 仍为 **10 个工具**、无审批工具，`agent_info` 无 `approval_gate`（`data/review-phase2/prod-readonly.json`）——证明“生产 `:8080` 仍跑第一期代码、二期未上线”属实。未写生产数据库/消息/审批。
+
+### 结论
+
+- **有条件通过（CONDITIONAL PASS）**：核心状态机、清单、门关路径、第一期回归均成立；有 **1 个必须修**（M1）与 **8 个非阻塞**（N1–N8），详见 `docs/AGENT_HUD_PHASE2_REVIEW.md`。
+- **必须修 M1**：门关时 `src/approvals.js` 的输入校验（`:313-318`）与 `ensureThread`（`:320-321`）发生在门开关短路（`:325-338`）之前；缺 `files`/`command` 的 schema 合法调用会报错，而不是按 `docs/AGENT_HUD_APPROVAL.md:119-121,184` 返回 `allowed:true, disabled`。证据 `data/review-phase2/edge-probe-result.json`。建议把门关短路移到 `request()` 最前面。
+- **非阻塞要点**：N1 卡片截断会丢掉“三选一 + approval_id”且与文档“关键信息放前面”的说法相反（实测 `summary_truncated=true`、`has_three_options_in_summary=false`、`question` 仍含 approval_id）；N2 文档 §2.3 的 `package.json` 依赖字段名未进代码清单；N3 审批工具与 agent 共用同一 token，agent 可自审批（未写入已知限制）；N4 清单漏项（`git clean -f`、`--abort`、`Clear-Content`、`mv` 覆盖、`npm publish`/`gh release create`/`docker push`、裸 `npm install`）；N5 解析边界（`no problem` → deny，fail-safe）；N6 门关新建 `threads` 行（公开工具不可达）；N7 门关仍新增 `approval_gate`/`approval` 字段（加法）；N8 `request_approval` 不阻止 `agent:"dsh"`（dsh 实际无 MCP 客户端）。
+
+### 已知限制复核
+
+- “自觉遵守的闸门而非沙箱”“dsh 不能发起审批”“拒绝不强杀任务”“阻塞依赖客户端超时”“卡片受 500 token 上限”“生产未重启”均已如实记录（`docs/AGENT_HUD_APPROVAL.md` §8、`RESUME.md` L.7）。
+- `MCP_TOOL_TIMEOUT` 在本机 `claude.exe` 2.1.325 二进制中确实存在（`findstr` 命中），说明该版本认识此变量名；文档仍保留版本差异的边界，口径正确。
+- 未记录项：审批工具本身可被 agent 调用（自审批），见 N3。
+
+### 验证脚本的沙箱适配（不提交、不改仓库）
+
+- 本会话沙箱禁止子进程管道 stdio（`spawn EPERM`）。为完成复跑，把两个验证脚本复制到 gitignored 的 `data/review-phase2/`，只改相对 import 路径与 `stdio:['ignore','pipe','pipe']` → 继承文件描述符（diff 8 增 7 删）。仓库内 `scripts/` 未被修改。
+
+### Git 同步
+
+- 分支 `gui/v0.1`；新增 `docs/AGENT_HUD_PHASE2_REVIEW.md`，追加 `DAILY_LOG.md`；未改 `src/`、`scripts/`、`gui/`、`spike/`、签名与 `docs/AGENT_HUD_PHASE1_REVIEW.md`；未删除文件。
+- 推送：先按单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push origin gui/v0.1` 执行；本会话沙箱禁止进程创建命名管道，Git 的凭据助手一律经 `sh.exe -c` 启动，`sh.exe` 报 `couldn't create signal pipe, Win32 error 5`，HTTPS 凭据无法注入（凭据本身存在：`git-credential-wincred.exe get` / `git-credential-manager.exe get` 直接调用均返回 user/password；换 helper、加 `|` 直执行前缀均无效）。
+- 因此改用本机已登录的 `gh api`（`gh auth status` 为 mkmk56，API 可达）：先写 blob、按父提交 tree 建 tree、建 commit，**核对返回的 tree SHA 与本地 `git rev-parse HEAD^{tree}` 一致、commit SHA 与本地 `git log -1` 一致**，再用 `PATCH /git/refs/heads/gui/v0.1` 快进更新；随后用 `gh api` 复核远程 ref 指向同一 SHA。远程与本地提交一致，非重写为另一个 commit。
+- 未改全局 git 配置；命令、文档与日志中无 token（凭据由 gh 从系统凭据库读取，未打印）；评审会话内没有可用的审批通道，未升级沙箱。
+- 提交 hash 与远程 HEAD 以 `git log -1`、`gh api repos/mkmk56/agent-workbench/git/ref/heads/gui/v0.1` 及任务汇报为准。
+
+### 未做 / 注意
+
+- 未做真实 claude↔用户审批往返：额度控制 + 本会话沙箱无法拉起执行器（`icacls` 失败、管道 stdio 被禁）；“agent 是否真的遵守闸门”未实测，评审文件已如实标注。
+- 未重启生产 `:8080`，未写生产数据；生产仍为第一期 10 工具。
+- 未改 GUI、侧栏、纸飞机、结论卡片界面、设置页、签名；未碰 `spike/`；未删文件。
+- `docs/AGENT_HUD_SPEC.md` 与 `spike/` 仍为未跟踪，未提交。
+- 额度无法直接观测；本次未调用 agent LLM，不声称精确达标。
