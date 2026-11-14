@@ -317,12 +317,12 @@ start-hidden.vbs     隐藏启动入口
 
 ### I.2 引擎改动
 
-- **claude 连接本地 MCP**：启动参数新增 `--mcp-config <data/claude-mcp.json>`；配置由 `src/mcp-config.js` 原子写入（临时文件 + rename，mode `0600`），内容为 `http://127.0.0.1:<port>/mcp` + Bearer token。服务启动时写一次，每次 claude 启动前重写。配置位于 gitignored 的 `data/`，不提交、不打印 token。
+- **claude 连接本地 MCP**：启动参数新增 `--mcp-config <data/claude-mcp.json>`；配置由 `src/mcp-config.js` 原子写入（临时文件 + rename），内容为 `http://127.0.0.1:<port>/mcp` + Bearer token。POSIX 上以 mode `0600` 写入；Windows 上 Node 的 `mode` 不生效，生成时用 `icacls` 移除继承并仅授权当前用户、`SYSTEM` 与 `Administrators`（临时文件先收紧再 rename）。服务启动时写一次，每次 claude 启动前重写。配置位于 gitignored 的 `data/`，不提交、不打印 token。
 - **环境变量**：`src/executors/process.js` 不再删除子进程的 `MCP_*` / `WORKBENCH_*`，执行器可继承服务端环境与本地 MCP 配置。
 - **新工具**：`send_message` 与 `list_messages`；代码中工具总数为 10 个（生产重启前仍为 8 个）。
 - **持久化**：SQLite 新增 `threads`、`task_threads`、`messages` 表；`message_id` 由服务端生成 UUID；`reply_to` 有唯一索引，一条消息最多一个回复；消息与线程状态可查询、重启后保留。
 - **结论体**：`{summary, files, question}`；`summary` 默认 500 tokens 上限，采用保守估算（CJK 每字 1 token，其他每 4 字符 1 token），超限截断并记录 `summary_truncated`；`files` 最多 100 项。
-- **交换上限**：同一线程内 agent-to-agent 连续消息默认 10 条；第 10 条写入为 `held`，线程进入 `WAITING_USER`，`task_status` / `list_messages` 暴露 `waiting_for_user: true`；第 11 条 agent 消息被拒绝；用户消息重置计数为 0 并恢复 `ACTIVE`。发给 `user` 的最终报告不计入上限，在 `WAITING_USER` 下仍可写入。
+- **交换上限**：同一线程内 agent-to-agent 连续消息默认 10 条；第 10 条写入为 `held`，线程进入 `WAITING_USER`，`task_status` / `list_messages` 暴露 `waiting_for_user: true`；第 11 条 agent 消息被拒绝；用户消息重置计数为 0 并恢复 `ACTIVE`。发给 `user` 的最终报告不计入上限；默认 `deliver`（true）下在 `WAITING_USER` 中也写入为 `stored`，不再被误标 `failed`（2026-11-14 修正 B1）。
 - **自动投递**：目标 agent 空闲时创建任务（续用线程内该 agent 最近的 session），忙碌时置 `queued`；任务结束后处理队列。dsh 没有 MCP 客户端，其回复从任务最终结果中的 `<agent_reply>{...}</agent_reply>` JSON 解析；任务若自己调用了 `send_message`，以实际消息为准，避免重复回复。
 - **提示词占位符**：`{{task_id}}`、`{{session_id}}`、`{{thread_id}}`、`{{agent}}` 在任务启动时渲染，存储的 prompt 保持可复用。
 - **配置项**：`AGENT_MESSAGE_LIMIT`（默认 10）、`AGENT_SUMMARY_MAX_TOKENS`（默认 500）、`AGENT_AUTO_DELIVER`（默认 1，设为 `0` 关闭自动投递）。
@@ -332,6 +332,7 @@ start-hidden.vbs     隐藏启动入口
 - **流程已验证**：claude 任务通过 `send_message` 向 dsh 发出结论；dsh 任务收到消息卡并通过 `reply_to` 回复 review；回复自动投递给 claude revision 任务；revision 任务完成并再次通过 `send_message` 回复。全程无用户介入。
 - **dsh 第一轮发现**：`held` 消息没有任何重试/失败路径；且回复被写成 `held` 时仍把原消息标为 `answered`；`attemptDelivery` 在非 `ACTIVE` 线程上写 `held` 形成死状态。已修正：只有非 `held` 回复才标 `answered`；非 `ACTIVE` 线程的投递改为 `failed` 并记日志；`onTaskFinished` 改用状态感知的回复查询，只有 `delivered/stored/queued` 回复才把原消息标为 `answered`，`held/failed` 记日志但不标。
 - **dsh 第二轮发现**：`onTaskFinished` 的 `taskHasReplyFrom` 仍会把 `held` 回复算作 answered；另指出“达到上限时发给 user 的消息也会被 held”。已修正并纳入协议回归验证（对 user 报告在 `WAITING_USER` 下成功写入、计数不变；第 9 条在 10 条 held 后保持 `stored`）。
+- **dsh 独立评审必须修项（2026-11-14）**：B1 调整 `attemptDelivery()` 判断顺序，非 agent 收件人先按 `stored` 处理，发给 `user` 的报告在默认 `deliver` 下不再因 `WAITING_USER` 被标 `failed`；回归脚本改为不传 `deliver` 并断言 `status === 'stored'`。B2 `src/mcp-config.js` 在 Windows 上用 `icacls` 移除继承并仅保留当前用户 / `SYSTEM` / `Administrators`，POSIX 仍 chmod `0600`；已有含真实 token 的 `data/mcp-probe/config.json` 与历史日志已按同一 ACL 收紧。评审的非阻塞项（N1–N8）本期不扩范围处理。
 - **未采纳的建议**：dsh 建议“用户恢复时把 held 消息重排投递”。本期将 held-at-cap 视为可见终态（`list_messages` 可查），用户恢复后不自动重放，避免用户刚恢复就再次消耗额度；后续如需保留该结论，可改为重排或由用户显式触发。
 - **说明**：revision 任务是只读协议测试，未授权改文件；上述修正由实现方在评审后完成，并用协议回归重新验证。
 
@@ -351,6 +352,8 @@ start-hidden.vbs     隐藏启动入口
   - 持久化：重启前后均为 13 条消息，`reply_to` 链完整，线程状态保留。
 - **评审原文证据（较早真实流）**：`data/agent-hud-verify-20261113192546`，消息 `383e13c1-410d-4b28-ac3b-087bab190689` → `1a8adcad-b310-4b74-94d0-b40dc5d59890`（500 tokens，已截断）→ `9bff8e95-db86-45a8-a1bf-254eacee2f12`（`is_final: true`），dsh 在该轮指出 held/answered 问题。
 - **服务端日志**：`data/agent-hud-verify-20261113193005/server.log` 第 1 行记录 claude MCP 配置路径，第 4 行监听 18091；`MCP tools/list` 出现 3 次，`MCP tools/call` 多次；未记录 token 或参数。
+- **B1/B2 修正回归（2026-11-14）**：隔离实例 `127.0.0.1:18097`，`VERIFY_SKIP_AGENTS=1`，未调用 agent LLM。结果 `data/agent-hud-verify-20261114003514/verify-result.json`（`ok: true`）：默认 `deliver` 的 user 报告为 `stored`、`error: null`、`exchange_count: 10`、`waiting_for_user: true`；第 10 条仍 `held`、第 11 条仍被拒、用户消息重置为 0/`ACTIVE`、重置后计数为 1；重启前后 13/13 条。探针汇总写在 `data/review-phase1/fix-user-report-20261114003514/probe-result.json`（新目录，未覆盖 dsh 的探针）。
+- **B2 ACL 实测**：隔离实例生成的 `claude-mcp.json` 的 Node `mode_octal` 仍为 `666`（Windows 忽略 `mode`），`Get-Acl` / `icacls` 显示仅 `NT AUTHORITY\SYSTEM`、`BUILTIN\Administrators`、`NIUMOI\yikai` 为 FullControl，继承权限已移除，`BUILTIN\Users` / `Authenticated Users` 不再出现。`data/mcp-probe/config.json` 与含当前 token 的历史日志 `data/c68b9d69-…log` 已同样收紧。
 
 ### I.5 已知限制与后续
 
@@ -359,5 +362,14 @@ start-hidden.vbs     隐藏启动入口
 - token 估算为保守上界，不等同于真实 tokenizer；非 CJK、非拉丁文字可能被低估（dsh 评审的非阻塞项）。
 - held-at-cap 不自动重放；用户恢复后仍可在 `list_messages` 中查看。
 - 额度消耗无法直接观测；本日只做隔离验证与少量真实流，不记录虚构百分比。
-- 运行时生成的 `data/claude-mcp.json`（或对应 `MCP_DATA_DIR` 下的同名文件）含真实 token，位于 gitignored `data/` 且代码以 mode `0600` 写入；不得提交或打印。
+- 运行时生成的 `data/claude-mcp.json`（或对应 `MCP_DATA_DIR` 下的同名文件）含真实 token，位于 gitignored `data/`；POSIX 上 mode `0600`，Windows 上 Node `mode` 不生效，实际由 `icacls` ACL 限制为当前用户 / `SYSTEM` / `Administrators`。不得提交或打印。
+
+### I.6 评审必须修项修正（2026-11-14）
+
+- **范围**：只修 dsh 独立评审（`docs/AGENT_HUD_PHASE1_REVIEW.md`）的两个必须修项 B1、B2；未改评审文件、GUI、侧栏、纸飞机、结论卡 UI、审批或签名；审批仍为全自动/关闭。
+- **B1**：[DONE] `src/messages.js` 的 `attemptDelivery()` 先判断收件人是否为 agent，非 agent（`user`）直接置 `stored`，再检查线程状态。默认 `deliver` 下 `WAITING_USER` 线程中的 user 最终报告现为 `stored`，`exchange_count` 保持 10；第 10 条 `held`、第 11 条被拒、用户重置等行为不变。回归脚本 `scripts/verify-agent-messages.mjs` 已去掉 user 报告的 `deliver:false`，改为默认 `deliver` 并断言 `stored`。
+- **B2**：[DONE] `src/mcp-config.js` 在 Windows 上改用 `icacls`：临时文件写入后先 `/inheritance:r` 并仅授权当前用户、`SYSTEM`、`Administrators`，再原子 rename，rename 后再收紧一次；当前用户无法解析时在写 token 前失败。POSIX 继续 `chmod 0600`。已有含真实 token 的 `data/mcp-probe/config.json` 与历史日志 `data/c68b9d69-…log` 已按同一 ACL 收紧；两者均被 `.gitignore` 的 `data/` 覆盖、未被 git 跟踪、内容未打印。生产路径 `data/claude-mcp.json` 仍未生成（生产引擎未重启）。
+- **证据**：`data/agent-hud-verify-20261114003514/verify-result.json`（`ok: true`）与 `data/review-phase1/fix-user-report-20261114003514/probe-result.json`；B2 ACL 由 `Get-Acl` / `icacls` 在本机核实。
+- **明确未做**：评审 N1–N8 非阻塞项未处理；未复跑 `f121f0b` 上的真实 claude↔dsh 往返（N2 建议，本期验收只要求 B1/B2，且控制额度）；生产 `:8080` 未重启。
+- **提交**：`src/messages.js`、`src/mcp-config.js`、`scripts/verify-agent-messages.mjs`、`RESUME.md`、`DAILY_LOG.md` 随后提交并推送到 `origin/gui/v0.1`；提交 hash 以 `git log -1` 与任务汇报为准。
 - 未做 GUI/sidebar/纸飞机动画/结论卡/审批；未改签名；v0.1 仍不签名。

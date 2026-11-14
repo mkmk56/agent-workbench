@@ -406,21 +406,26 @@ async function main() {
   }
 
   // A final report to the user is not agent-to-agent traffic: it must pass
-  // even while the thread is waiting for the user, and must not move the counter.
+  // even while the thread is waiting for the user, and must not move the
+  // counter. Use the default deliver path (deliver omitted = true) so this
+  // covers the real tool call; passing deliver:false previously hid a bug
+  // where attemptDelivery marked the report failed on a WAITING_USER thread.
   const userReport = await call(client, 'send_message', {
     from: 'claude',
     to: 'user',
     task_id: claudeDummy,
-    summary: 'final report to the user',
-    deliver: false
+    summary: 'final report to the user'
   });
   result.cap.user_report = {
     status: userReport.status,
+    error: userReport.error ?? null,
     exchange_count: userReport.exchange_count,
     thread_state: userReport.thread_state,
     waiting_for_user: userReport.waiting_for_user
   };
-  if (userReport.status === 'held') throw new Error('report to user was held at the exchange limit');
+  if (userReport.status !== 'stored') {
+    throw new Error(`report to user should be stored, got ${userReport.status}`);
+  }
   if (userReport.exchange_count !== 10 || !userReport.waiting_for_user) {
     throw new Error('report to user changed the exchange counter or waiting state');
   }

@@ -273,6 +273,15 @@ export class MessageService {
     const message = this.store.getMessage(messageId);
     if (!message) return null;
 
+    // A message addressed to a non-agent (the user) is never delivered by
+    // starting a task; it is stored as a report. Check this before the thread
+    // state: a final report to the user is always accepted, including while
+    // the thread is WAITING_USER.
+    if (!AGENTS.has(message.to_agent)) {
+      this.store.updateMessage(messageId, { status: 'stored' });
+      return null;
+    }
+
     const thread = this.store.getThread(message.thread_id);
     if (!thread || thread.state !== 'ACTIVE') {
       // Nothing retries a held row, so a non-active thread must fail visibly
@@ -283,10 +292,6 @@ export class MessageService {
       });
       this.store.appendLog(message.task_id, 'system',
         `message ${messageId} delivery skipped: thread state ${thread?.state ?? 'missing'}`);
-      return null;
-    }
-    if (!AGENTS.has(message.to_agent)) {
-      this.store.updateMessage(messageId, { status: 'stored' });
       return null;
     }
     if (!this.config.agentAutoDeliver) {

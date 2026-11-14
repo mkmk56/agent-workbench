@@ -1091,3 +1091,60 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 - 生产 `:8080` 仍跑旧代码，未重启、未写入；新工具待任务外重启后上线。
 - 未复跑真实 claude/dsh 执行器往返（沙箱禁止管道子进程）；真实流证据以既有产物交叉核对 + f121f0b 上的协议级复跑为准。
 - 额度无法直接观测，本次评审未调用 agent LLM，不声称精确达标。
+
+---
+
+## 2026-11-14（周六）· 补充：Agent HUD 第一期评审必须修项修正（B1/B2）
+
+### 今日目标
+
+- 修 `docs/AGENT_HUD_PHASE1_REVIEW.md`（dsh 独立评审，基线提交 `767e647`）中两个必须修问题：B1（默认 `deliver` 下发给 user 的最终报告被标 `failed`）与 B2（`data/claude-mcp.json` 的 mode `0600` 在 Windows 上不成立）。
+- 只修 B1、B2，不扩范围：不碰评审文件、GUI、侧栏、纸飞机、结论卡 UI、审批与签名。
+- 更新 `RESUME.md`（I.2/I.5 口径修正 + 追加 I.6）与 `DAILY_LOG.md`，提交并推送。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%；额度消耗**无法直接观测**，本区块不记录虚构的百分比或余额，只做保守估算与控制。
+- 回归使用隔离实例 `127.0.0.1:18097` + `VERIFY_SKIP_AGENTS=1` 的协议级路径，**未调用 claude/dsh LLM，未消耗 agent 额度**。本任务自身为代码 + 文档小改动。
+
+### B1 修正
+
+- 根因：`src/messages.js` 的 `attemptDelivery()` 先检查线程状态（`WAITING_USER` → `failed`），后检查收件人是否为 `AGENT`；`user` 本应走 `stored`。
+- 修法：把非 agent 收件人判断移到线程状态检查之前；发给 `user` 的报告在任何线程状态下都直接 `stored`，不会启动投递任务。
+- 回归脚本：`scripts/verify-agent-messages.mjs` 中 user 报告不再传 `deliver:false`，改用默认 `deliver`（true），并新增 `status === 'stored'` 断言。
+- 结果：`data/agent-hud-verify-20261114003514/verify-result.json`（`ok: true`）：
+  - `thread_state: WAITING_USER`、`waiting_for_user: true` 下，默认 `deliver` 的 user 报告为 `stored`、`error: null`；
+  - `exchange_count` 保持 10（不占上限、不移动计数）；
+  - 第 10 条仍 `held`，第 11 条仍被拒，`task_status.waiting_for_user` 仍为 true；
+  - 用户消息仍重置为 `exchange_count: 0` / `ACTIVE`，重置后下一条 agent 消息计数为 1；
+  - summary 截断仍为 500 tokens / 2000 字符；重启前后均 13 条、`reply_to` 链完整。
+- 探针汇总：`data/review-phase1/fix-user-report-20261114003514/probe-result.json`（新建目录，未覆盖 dsh 的 `data/review-phase1/user-report-20261113195114/`）。
+
+### B2 修正
+
+- 修法：`src/mcp-config.js` 在 Windows 上不再依赖 Node 的 `mode`。临时文件写入后先用 `icacls` 执行 `/inheritance:r`，仅授权当前用户、`SYSTEM`、`Administrators` 为 FullControl，再原子 rename，rename 后再次收紧；当前用户无法解析时在写 token 前抛错（fail closed）。POSIX 继续 `chmod 0600`。
+- 验证（隔离实例 `18097` 生成的 `data/agent-hud-verify-20261114003514/claude-mcp.json`）：
+  - Node `statSync().mode` 仍为 `666`——确认 Windows 忽略 `mode`，文档不再把它当作保护手段；
+  - `icacls`：仅 `BUILTIN\Administrators:(F)`、`NT AUTHORITY\SYSTEM:(F)`、`NIUMOI\yikai:(F)`；
+  - `Get-Acl`：`Owner: NIUMOI\yikai`，ACL 仅上述三项 FullControl；继承权限已移除，`BUILTIN\Users` 与 `Authenticated Users` 不再出现。
+- 已有含真实 token 的文件：按同一 ACL 收紧 `data/mcp-probe/config.json` 与历史日志 `data/c68b9d69-b138-42a7-88e1-401156e50e38.log`（E-4 既有风险文件，仅改 ACL，内容未动）。`data/claude-mcp.json` 当前不存在（生产未重启）；两者均被 `.gitignore` 的 `data/` 覆盖、`git ls-files` 确认未跟踪、未打印内容。
+
+### 测试与验证
+
+- 语法检查：`node --check` 通过（`src/messages.js`、`src/mcp-config.js`、`scripts/verify-agent-messages.mjs`）。
+- 协议回归：`VERIFY_SKIP_AGENTS=1 VERIFY_PORT=18097 node scripts/verify-agent-messages.mjs`，`ok: true`，无错误；测试实例结束后已关闭，生产 `:8080` 未触碰。
+- B1 默认路径与 B2 ACL 的实际输出已写入上述 `verify-result.json` 与探针文件；本日志不复制 token 或配置正文。
+- 未复跑 `f121f0b` 上的真实 claude↔dsh 往返（评审 N2 建议）；本期验收只要求 B1/B2，且为控制额度未启动真实 agent 流。该项保留为后续建议。
+
+### Git 同步
+
+- 分支 `gui/v0.1`；修改文件：`src/messages.js`、`src/mcp-config.js`、`scripts/verify-agent-messages.mjs`、`RESUME.md`、`DAILY_LOG.md`。
+- 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未修改全局 git 配置；命令、文档与日志中无 token。
+- 提交 hash 与远程 HEAD 以 `git log -1`、`git ls-remote` 及任务汇报为准。
+
+### 未做 / 注意
+
+- 评审 N1–N8 非阻塞项未处理；本期不扩范围。
+- 生产 `:8080` 仍跑旧代码、未重启；生产路径 `data/claude-mcp.json` 尚未生成，新 ACL 逻辑只在隔离实例上验证。
+- 未改 `docs/AGENT_HUD_PHASE1_REVIEW.md`、GUI、`spike/`、签名与审批；未删除文件，未做破坏性 git 操作。
+- `docs/AGENT_HUD_SPEC.md` 与 `spike/` 保持未跟踪。
