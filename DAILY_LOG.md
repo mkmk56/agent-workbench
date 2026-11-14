@@ -1148,3 +1148,57 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 - 生产 `:8080` 仍跑旧代码、未重启；生产路径 `data/claude-mcp.json` 尚未生成，新 ACL 逻辑只在隔离实例上验证。
 - 未改 `docs/AGENT_HUD_PHASE1_REVIEW.md`、GUI、`spike/`、签名与审批；未删除文件，未做破坏性 git 操作。
 - `docs/AGENT_HUD_SPEC.md` 与 `spike/` 保持未跟踪。
+
+---
+
+## 2026-11-14（周六）· 补充：Agent HUD 第一期真实效果演示
+
+### 今日目标
+
+- 在生产引擎 `:8080` 上跑一轮 Agent HUD 第一期的真实消息往返，并产出效果图。
+- 只做演示与效果图，不改 `src/`、协议、GUI、`spike/`、签名与审批；不删除文件；不碰 `docs/AGENT_HUD_PHASE1_REVIEW.md`。
+- 更新 `RESUME.md`（只追加）与 `DAILY_LOG.md`（只追加）。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%；额度消耗**无法直接观测**，本区块不记录虚构的百分比或余额。
+- 本次真实 agent 调用：1 个 dsh 任务（任务 `e3b9e909-a8d3-40dc-8e28-df2c0a1dd34c`，耗时 122.9 s，exit 0）。dsh 回信 `done: true`，未触发第三轮，控制在一轮往返。
+
+### 生产环境
+
+- 生产引擎 `127.0.0.1:8080` 已于 2026-11-14 11:53 重启（PID 21568），`/health` 返回 ok。
+- `agent_info` 实测 `message_protocol.enabled: true`、`exchange_limit: 10`、`summary_max_tokens: 500`、`auto_deliver: true`；`send_message` / `list_messages` 在生产入口可用。
+
+### 真实往返
+
+1. 任务 `cabe7c6a-718c-4aa0-8ec6-676e40d30ce6`（claude，本会话）调用 `send_message`，向 dsh 发送 B1 修复评审结论（summary + files + question）。
+   - 消息 `9d339998-8b66-4f58-bdaf-b386cb599cde`，`reply_to: null`，98 tokens，`status: answered`，创建于 `2026-11-14T04:31:04.302Z`（12:31:04 CST）。
+   - 引擎自动投递到 dsh 任务 `e3b9e909-a8d3-40dc-8e28-df2c0a1dd34c`。
+2. 等待 dsh 完成（`wait_for_task` 三次、`task_logs` 一次），dsh 任务 COMPLETED，122.9 s，exit 0。
+   - 其最终结果包含 `<agent_reply>`，`done: true`；引擎解析后写入回信。
+   - 消息 `cd9f8040-00e5-4cb4-a1a6-3a0537ddbfef`，dsh→claude，`reply_to: 9d339998-8b66-4f58-bdaf-b386cb599cde`，299 tokens，`status: stored`，`is_final: true`，无投递任务，创建于 `2026-11-14T04:33:07.189Z`（12:33:07 CST）。
+3. `list_messages` 核对线程 `cabe7c6a-718c-4aa0-8ec6-676e40d30ce6`：`ACTIVE`，`exchange_count: 2 / 10`，`message_count: 2`，`waiting_for_user: false`；两条 summary 均未截断。
+
+### 效果图
+
+- `docs/phase1-demo.html`：按品牌规范制作，Ink `#1E2126`、Paper `#F5F3EE`、信号橙 `#E85D26`；包含往返时序图、两条消息卡（发送方、内容、token、时间、`reply_to` 连线）与协议要点（10 条上限、500 token、`reply_to` 线程）。无渐变、发光、玻璃拟态或 emoji 图标。
+- `docs/phase1-demo.png`：真实浏览器截图，gstack headless Chromium 渲染，1027×2000，约 508 KiB，console 无错误。截图流程：`browse goto file:///.../docs/phase1-demo.html` → `viewport 1280x900 --scale 2` → `screenshot`。
+
+### 验证
+
+- 消息链、`reply_to`、message_id、token 数、线程状态均来自生产引擎 `send_message` / `list_messages` / `task_status` / `task_logs` 的实际返回，未手工改写。
+- dsh 回复由任务最终结果中的 `<agent_reply>` JSON 解析，内容为真实评审结论。
+- 截图页面无 console 错误；PNG 文件头核对为 1027×2000。
+- 未在聊天、日志或文件中输出 token。
+
+### Git 同步
+
+- 分支 `gui/v0.1`；新增 `docs/phase1-demo.html`、`docs/phase1-demo.png`；追加 `RESUME.md`、`DAILY_LOG.md`。
+- 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未修改全局 git 配置；命令、文档与日志中无 token。
+- 提交 hash 与远程 HEAD 以 `git log -1`、`git ls-remote` 及任务汇报为准。
+
+### 未做 / 注意
+
+- 未改 `src/`、协议、GUI、`spike/`、签名与审批；未删除文件；未触碰 `docs/AGENT_HUD_PHASE1_REVIEW.md`。
+- `docs/AGENT_HUD_SPEC.md` 与 `spike/` 保持未跟踪；本次未提交。
+- 额度无法直接观测，本次按 10% 上限保守控制，不声称精确达标。

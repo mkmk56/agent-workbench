@@ -373,3 +373,34 @@ start-hidden.vbs     隐藏启动入口
 - **明确未做**：评审 N1–N8 非阻塞项未处理；未复跑 `f121f0b` 上的真实 claude↔dsh 往返（N2 建议，本期验收只要求 B1/B2，且控制额度）；生产 `:8080` 未重启。
 - **提交**：`src/messages.js`、`src/mcp-config.js`、`scripts/verify-agent-messages.mjs`、`RESUME.md`、`DAILY_LOG.md` 随后提交并推送到 `origin/gui/v0.1`；提交 hash 以 `git log -1` 与任务汇报为准。
 - 未做 GUI/sidebar/纸飞机动画/结论卡/审批；未改签名；v0.1 仍不签名。
+
+---
+
+## J Agent HUD 第一期真实效果演示（2026-11-14）
+
+> 本节为追加记录，不改写上文历史。演示只使用真实消息，不编造内容。
+
+### J.1 生产环境状态
+
+- 生产引擎 `127.0.0.1:8080` 已于 2026-11-14 11:53 重启（PID 21568，`/health` 返回 ok）。
+- `agent_info` 实测返回 `message_protocol.enabled: true`、`exchange_limit: 10`、`summary_max_tokens: 500`、`auto_deliver: true`；`send_message` / `list_messages` 在生产入口可用。
+
+### J.2 真实往返
+
+- 演示任务 `cabe7c6a-718c-4aa0-8ec6-676e40d30ce6`（claude，本会话）通过 `send_message` 向 dsh 发送 B1 修复的评审结论。
+- dsh 由引擎自动投递任务 `e3b9e909-a8d3-40dc-8e28-df2c0a1dd34c`（COMPLETED，122.9 s），其最终结果中的 `<agent_reply>` 带 `done: true`；引擎据此写入回信且不再投递下一轮，正好一轮往返。
+- 消息链：
+  - `9d339998-8b66-4f58-bdaf-b386cb599cde`：claude→dsh，`reply_to: null`，98 tokens，`status: answered`，创建于 `2026-11-14T04:31:04.302Z`（12:31:04 CST）。
+  - `cd9f8040-00e5-4cb4-a1a6-3a0537ddbfef`：dsh→claude，`reply_to: 9d339998-8b66-4f58-bdaf-b386cb599cde`，299 tokens，`status: stored`，`is_final: true`，无投递任务，创建于 `2026-11-14T04:33:07.189Z`（12:33:07 CST）。
+- 线程 `cabe7c6a-718c-4aa0-8ec6-676e40d30ce6`：`ACTIVE`，`exchange_count: 2 / 10`，`message_count: 2`，`waiting_for_user: false`；两条 summary 均未截断。
+
+### J.3 效果图产物
+
+- HTML：`docs/phase1-demo.html`。品牌色 Ink `#1E2126`、Paper `#F5F3EE`、信号橙 `#E85D26`；内容为往返时序图、两条消息卡（发送方、内容、token、时间、`reply_to` 连线）、协议要点（10 条上限、500 token、`reply_to` 线程）；无渐变、发光、玻璃拟态或 emoji 图标。
+- PNG：`docs/phase1-demo.png`，真实浏览器截图（gstack headless Chromium，1027×2000，约 508 KiB），console 无错误。截图命令：`browse goto file:///.../docs/phase1-demo.html` → `viewport 1280x900 --scale 2` → `screenshot`。
+
+### J.4 范围与额度
+
+- 未改 `src/`、协议、GUI、`spike/`、签名与审批；未删除文件；未触碰 `docs/AGENT_HUD_PHASE1_REVIEW.md`。
+- 本次只消耗 1 个 dsh 任务真实调用（122.9 s）；额度消耗无法直接观测，不记录虚构百分比。
+- 提交与推送：分支 `gui/v0.1`；推送使用单条命令临时 `-c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897`，未改全局 git 配置；文档提交 hash 以 `git log -1` 与任务汇报为准。
