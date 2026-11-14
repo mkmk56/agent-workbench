@@ -1646,8 +1646,8 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 ### 第五期：设置页与审批界面
 
 - 设置页新增「Agent HUD」：纸飞机开关、上下文参考上限（写入 `userData/hud.json`，立即生效）；引擎协作参数（互发消息、来回上限 10、摘要 500 tokens、自动投递、审批门）只读展示，标注“修改需重启引擎”。
-- 任务详情页在 `approval.pending` 非空时显示三选一审批卡片，调用 `engine:respond-approval`（只读包装既有 `respond_approval` 工具）。
-- 证据：`docs/hud-phase5/01-settings-hud.png`；审批卡片未做真实 pending 端到端验证（生产审批门默认关闭），已如实记录。
+- 任务详情页在 `approval.pending` 非空时显示三选一审批卡片，调用 `engine:respond-approval`（对既有 `respond_approval` 工具的显式用户操作包装：会写入用户回复并终结 pending 审批，**不是只读操作**）。
+- 证据：`docs/hud-phase5/01-settings-hud.png`；审批卡片已在隔离引擎 `127.0.0.1:18110` 完成真实 pending E2E（`AGENT_APPROVAL_GATE=1`、占位任务、真实 `request_approval`/`respond_approval`、未调用 LLM），截图 `02-approval-pending.png` / `03-approval-allowed.png`，结果 `data/approval-ui-verify/request-result.json`（`allowed:true, decision:"once"`）。生产审批门仍默认关闭。
 
 ### 验证
 
@@ -1665,5 +1665,62 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 
 ### 已知限制
 
-- `list_messages` 的 500 条 ASC 窗口限制仍在；未读不跨重启；第四期的“读文件/合并代码”卡片因引擎无结构化事件而未做；审批卡片未在生产环境做真实 pending 验证；HUD 在 ≤900px 时隐藏，纸飞机坐标不可用。
+- `list_messages` 的 500 条 ASC 窗口限制仍在；未读不跨重启；第四期的“读文件/合并代码”卡片因引擎无结构化事件而未做；审批卡片在隔离引擎完成真实 E2E，但生产环境未制造 pending（门默认关闭）；HUD 在 ≤900px 时隐藏，纸飞机坐标不可用。
 - 额度无法直接观测，不记录虚构百分比。
+
+---
+
+## 2026-11-14（周六）· 补充：第四/五期评审必须修项修正与审批 E2E
+
+### 今日目标
+
+- 处理 dsh 对 `90296c9` 的独立评审（`docs/AGENT_HUD_PHASE4_REVIEW.md`，CONDITIONAL PASS，5 个必须修）。
+- 补齐第五期审批卡片的真实 pending 端到端验证（隔离引擎，不调用 LLM）。
+- 只改 GUI 与文档；不改引擎消息/审批逻辑（`src/` 无改动），不碰 `spike/`、签名、第一/二期评审文件；不删除文件。
+
+### 必须修项修正
+
+| 编号 | 修正 |
+|---|---|
+| M1 | `engine:respond-approval` 改为“显式用户操作包装（写入用户回复并终结 pending 审批，非只读）”；结论流来源行改为“引擎数据”；RESUME/DAILY_LOG/phase5 README 同步。 |
+| M2 | `setPaperPlanes` / `setContextWindowTokens` 返回 `Promise<boolean>`；设置页按结果显示成功/失败，写盘失败不再提示“已保存”。 |
+| M3 | `01-settings-hud.png` 实为浅色主题整窗，README 已改正；深色证据由 `02`/`03` 审批截图承担。 |
+| M4 | reduced-motion 下 `.hud-slot__flash` 加 `animation-duration: 400ms !important`，保留无位移 opacity 淡出。 |
+| M5 | 三处图标说明改为“紧贴裁剪；为使画布为正方形，Muse/dsh 上下保留约 20/14px 透明边”。 |
+
+### 非阻塞项
+
+- 已修 N4（`useAgentInfo` reject 处理）、N5（占用条标注累计输入）、N6（日志正则锚定整行）、N7（设置页未加载时显示“读取中…”）、N8（品牌规范身份条目）、N10（`files_modified` 恒空说明）、N11（深色角标边框 `--hud-bg`）。
+- N1/N2/N9/N12/N13/N14/N15/N16 保留并在 README/评审报告中记录。
+
+### 审批 E2E（隔离引擎）
+
+- 隔离引擎 `127.0.0.1:18110`，`AGENT_APPROVAL_GATE=1`、`APPROVAL_TIMEOUT_MS=300000`、独立 data/db/log；占位任务 `hud-approval-ui-0001` 直接写入隔离 SQLite（COMPLETED，tokens 0/0），未调用 claude/dsh LLM。
+- 真实 `request_approval`：`merge` / `git merge feature/agent-hud` / 2 个文件 / 理由；GUI 以 `WORKBENCH_GUI_ENGINE_PORT=18110` 连接，打开任务详情显示审批卡。
+- 点击“允许一次” → 引擎返回 `allowed:true, decision:"once"`，卡片消失，消息流出现 user→claude 回复，线程恢复 `ACTIVE`；任务详情底部显示“已允许该操作 引擎返回 decision=once.”。
+- 证据：`docs/hud-phase5/02-approval-pending.png`、`03-approval-allowed.png`、`01-settings-hud.png`（浅色设置页）；审批 `a64267ff…`、问题消息 `e6c17d56…`、回复消息 `7acc0d0a…`；结果 `data/approval-ui-verify/request-result.json`（gitignored）。
+- 生产 `:8080` 未触碰；隔离引擎已停止，18110 释放。
+
+### 其他证据
+
+- `docs/hud-phase3/11-dark-sidebar.png`（深色 HUD）、`12-saturation-warning.png`（500 条饱和提示；验证时临时把 `MESSAGE_LIMIT` 降到 20，确认后恢复 500 并重建）。
+- `docs/hud-phase4/` 三张真实数据截图与 `docs/hud-phase5/01-settings-hud.png` 沿用构建版 Electron + 生产引擎。
+
+### 测试与验证
+
+- `cd gui && npm run typecheck`：通过。
+- `npm run build`：通过（渲染包构建成功；评审方沙箱的 `spawn EPERM` 不在本会话复现）。
+- 生产 `:8080` 未重启、未写入；隔离实例结束后端口释放。
+- 未调用 claude/dsh LLM；dsh 评审任务 `2f68ab35…` 另计，`task_status` tokens 0/0；额度无法直接观测，不记录虚构百分比。
+
+### Git 同步
+
+- 分支 `gui/v0.1`；提交包含评审修正、审批 E2E 证据、截图与两份追加文档。
+- 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未改全局 git 配置；命令、文档与日志中无 token。
+- 提交 hash 与远程 HEAD 以 `git log -1`、`git ls-remote` 及任务汇报为准。
+
+### 已知限制
+
+- 审批只验证 `once`；`session`/`deny` 走同一 IPC，引擎行为由第二期回归覆盖。
+- 无自动化测试；M2 四分支与 M1 饱和路径为代码审查 + 一次临时降阈值的 UI 验证。
+- `list_messages` 500 条 ASC 窗口、未读不跨重启、`files_modified` 恒空、HUD ≤900px 隐藏等限制仍在。

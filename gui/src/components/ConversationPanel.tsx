@@ -260,7 +260,7 @@ export function ConversationPanel({
       logs,
       /^(?:claude|dsh) command=.* source=.*$/,
     );
-    const pidLine = findLog(logs, /running pid=\d+/);
+    const pidLine = findLog(logs, /^running pid=\d+$/);
     if (commandLine != null) {
       result.push({
         key: 'command',
@@ -277,7 +277,7 @@ export function ConversationPanel({
       });
     }
 
-    const timeoutLine = findLog(logs, /timeout after \d+ ms/);
+    const timeoutLine = findLog(logs, /^timeout after \d+ ms$/);
     if (timeoutLine != null) {
       result.push({
         key: 'timeout',
@@ -289,7 +289,7 @@ export function ConversationPanel({
       });
     }
 
-    const exitLine = findLog(logs, /finished state=\S+ exit=\S+/);
+    const exitLine = findLog(logs, /^finished state=\S+ exit=\S+$/);
     if (exitLine != null) {
       const finishedState =
         /finished state=(\S+)/.exec(exitLine.message)?.[1] ?? '';
@@ -396,14 +396,14 @@ export function ConversationPanel({
         <div>
           <h2 className="conversation-panel__title">结论流</h2>
           <p className="conversation-panel__source">
-            task_status / task_logs / list_messages · 只读
+            task_status / task_logs / list_messages · 引擎数据
           </p>
         </div>
       </div>
 
       <div className="context-meter">
         <div className="context-meter__row">
-          <span>上下文占用（参考）</span>
+          <span>上下文占用（参考，累计输入）</span>
           <span className="num">
             {inputTokens.toLocaleString()} / {referenceTokens.toLocaleString()} tokens · {percent}%
           </span>
@@ -415,8 +415,8 @@ export function ConversationPanel({
           />
         </div>
         <p className="context-meter__note">
-          引擎未返回上下文上限；按 {referenceTokens.toLocaleString()} 参考值估算（可在设置中调整）。输出{' '}
-          {task.tokens.output.toLocaleString()} tokens。
+          引擎未返回上下文上限；按 {referenceTokens.toLocaleString()} 参考值估算（可在设置中调整）。
+          分子是任务累计输入 tokens，不是单轮上下文。输出 {task.tokens.output.toLocaleString()} tokens。
         </p>
       </div>
 

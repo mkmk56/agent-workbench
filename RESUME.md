@@ -747,7 +747,7 @@ dsh：
 ### P.1 品牌身份图标（用户 2026-11-14 补充要求）
 
 - 用户提供的三张临时链接图片已下载到 `gui/src/assets/sidebar/source/`：Muse 波浪 M、Claude 星形、dsh 鲸鱼；原件入库，不依赖临时链接长期有效。
-- 实际显示的是 `gui/src/assets/sidebar/{muse,claude,dsh}-mark.png`：仅提取源图中央的中性白色标志，去掉源图自带的彩色进度弧、角标、彩色徽章与深色底板；背景透明，紧贴外接框裁剪并留 1px 透明边。处理说明见 `gui/src/assets/sidebar/README.md`。
+- 实际显示的是 `gui/src/assets/sidebar/{muse,claude,dsh}-mark.png`：仅提取源图中央的中性白色标志，去掉源图自带的彩色进度弧、角标、彩色徽章与深色底板；背景透明，紧贴外接框裁剪；为使画布为正方形，Muse/dsh 上下保留透明边（约 20px / 14px），Claude 约 1–2px。处理说明见 `gui/src/assets/sidebar/README.md`。
 - 源图的弧线与角标**没有**在 UI 中重复绘制；状态仍由侧栏自己的 2px 环、状态角标（Play / Hourglass / TriangleAlert / Circle）与悬停卡文字表达；身份只由图形形状区分。
 
 ### P.2 居中修正
@@ -768,8 +768,8 @@ dsh：
 ### P.4 第四期会话流与第五期设置/审批界面（同工作树，已落地）
 
 - **第四期**：`TaskDetailPage` 改为左侧结论卡片流 + 右侧原始日志；卡片来源限定为 `task_status`、`task_logs` 的 system/warn 行与 `list_messages`，包含派发、执行器启动命令、超时/退出、文件改动、agent 消息（文件、问题、`reply_to`、`WAITING_USER`）、完成/失败/取消与运行中；顶部上下文占用条使用设置页可配置的参考上限（默认 128k，≥80% 警告、≥95% 错误）。证据：`docs/hud-phase4/`。
-- **第五期**：设置页新增「Agent HUD」分区，暴露纸飞机开关与上下文参考上限（写入 `userData/hud.json`，立即生效）；引擎协作参数（互发消息、来回上限、摘要上限、自动投递、审批门）只读展示，并明确“修改需重启引擎”。任务详情页在 `approval.pending` 非空时显示三选一审批卡片，调用新增的只读包装 IPC `engine:respond-approval`。证据：`docs/hud-phase5/`。
-- 未修改引擎消息/审批逻辑；新增 IPC 只是对既有 `list_messages` / `respond_approval` 工具的只读/显式包装。审批卡片**未**在生产环境做真实 pending 审批端到端验证（审批门默认关闭），已在 `docs/hud-phase5/README.md` 如实标注。
+- **第五期**：设置页新增「Agent HUD」分区，暴露纸飞机开关与上下文参考上限（写入 `userData/hud.json`，立即生效）；引擎协作参数（互发消息、来回上限、摘要上限、自动投递、审批门）只读展示，并明确“修改需重启引擎”。任务详情页在 `approval.pending` 非空时显示三选一审批卡片，调用新增的 `engine:respond-approval` IPC（对既有 `respond_approval` 工具的显式包装；会写入审批决定，不是只读操作）。证据：`docs/hud-phase5/`。
+- 未修改引擎消息/审批逻辑；新增 IPC 只是对既有 `list_messages`（只读）与 `respond_approval`（显式用户决定）工具的包装。审批卡片已在隔离引擎 `127.0.0.1:18110` 上完成真实 pending E2E（`AGENT_APPROVAL_GATE=1`、占位任务、真实 `request_approval`/`respond_approval`、未调用 LLM），截图 `docs/hud-phase5/02-approval-pending.png` / `03-approval-allowed.png`，结果 `data/approval-ui-verify/request-result.json`（`allowed:true, decision:"once"`）；生产环境审批门仍默认关闭。
 
 ### P.5 验证
 
@@ -784,3 +784,56 @@ dsh：
 - 分支 `gui/v0.1`；提交包含品牌图标资产与提取图、HUD 居中/评审修正、第四期会话流、第五期设置/审批界面、证据截图与本节记录。
 - 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未改全局 git 配置；命令、文档与日志中无 token。
 - 提交 hash 与远程 HEAD 以 `git log -1`、`git ls-remote` 及任务汇报为准。
+
+---
+
+## Q Agent HUD 第四/五期独立评审必须修项修正与审批 E2E（2026-11-14）
+
+> 本节为追加记录，不改写上文历史。补充 P 节的验证边界与评审修正；引擎消息/审批逻辑仍未修改（`src/` 无改动），未碰 `spike/`、签名、`docs/AGENT_HUD_PHASE1_REVIEW.md`、`docs/AGENT_HUD_PHASE2_REVIEW.md`，未删除文件。
+
+### Q.1 范围与状态
+
+- 评审报告：`docs/AGENT_HUD_PHASE4_REVIEW.md`，对象 `90296c9`，结论 **CONDITIONAL PASS**，5 个必须修（M1–M5）与 16 个非阻塞项。
+- 第四/五期 WIP 由同一工作区的并行会话合并提交为 `90296c9`；本节记录本会话完成的评审修正、审批卡片隔离引擎 E2E 与最终证据。
+- **代码状态**：[DONE] `cd gui && npm run typecheck` 与 `npm run build` 均通过；最终提交待推送。
+
+### Q.2 必须修项修正
+
+| 编号 | 修正 |
+|---|---|
+| M1 | 统一把 `engine:respond-approval` 描述为“显式用户操作包装：写入用户回复并终结 pending 审批，**不是只读**”；`ConversationPanel` 来源行改为“引擎数据”；`RESUME.md` / `DAILY_LOG.md` / `docs/hud-phase5/README.md` 同步。 |
+| M2 | `setPaperPlanes` / `setContextWindowTokens` 返回 `Promise<boolean>`；设置页按结果显示 success/error，写盘失败提示“写入 hud.json 失败，原配置保持不变”，不再谎报“已保存”。 |
+| M3 | `docs/hud-phase5/01-settings-hud.png` 为浅色主题整窗，README 已改为“浅色主题整窗”；深色证据由 `02`/`03` 审批截图承担。 |
+| M4 | `hud.css` 的 reduced-motion 规则给 `.hud-slot__flash` 加 `animation-duration: 400ms !important`，覆盖全局 `.01ms`；保留无位移的 opacity 落地提示。 |
+| M5 | 三处图标说明改为“紧贴外接框裁剪；为使画布为正方形，Muse/dsh 上下保留约 20px / 14px 透明边，Claude 约 1–2px”。 |
+
+### Q.3 非阻塞项处理
+
+- 已修：N4（`useAgentInfo` 的 IPC reject 进入错误态并结束 loading）、N5（占用条标注“累计输入”，note 说明不是单轮上下文）、N6（timeout/exit/pid 正则锚定整行）、N7（设置页 `agent_info` 未返回时显示“读取中…”而不是“关闭”）、N8（品牌规范身份条目改为用户提供的白色标识）、N10（文档明确 `files_modified` 当前恒空）、N11（深色角标边框改用 `--hud-bg`）。
+- 保留：N1/N2（共享轮询/精简消息投影）、N9（60px 与 1px 边框的口径）、N12（09/10 截图时间表）、N13（无自动化测试）、N14（`AGENT_HUD_SPEC.md` 未跟踪）、N15（终态任务消息轮询）、N16（还原按钮语义），在 README/评审报告中如实记录。
+
+### Q.4 审批卡片端到端验证（隔离引擎）
+
+- 隔离引擎 `127.0.0.1:18110`，`AGENT_APPROVAL_GATE=1`，独立 data/db/log；占位任务 `hud-approval-ui-0001` 直接写入隔离 SQLite，未调用 claude/dsh LLM。
+- 真实 `request_approval`（`merge` / `git merge feature/agent-hud` / 2 个文件 / 理由）产生 pending；GUI 以 `WORKBENCH_GUI_ENGINE_PORT=18110` 连接，打开任务详情显示三选一卡片；点击“允许一次”返回 `allowed:true, decision:"once"`，卡片消失，消息流出现 user→claude 回复，线程恢复 `ACTIVE`。
+- 证据：`docs/hud-phase5/02-approval-pending.png`、`03-approval-allowed.png`、`docs/hud-phase5/README.md`；真实 ID：审批 `a64267ff…`、问题消息 `e6c17d56…`、回复消息 `7acc0d0a…`；结果文件 `data/approval-ui-verify/request-result.json`（gitignored）。
+- 生产 `:8080` 未触碰；测试结束后隔离引擎已停止，18110 释放。
+
+### Q.5 其他证据
+
+- `docs/hud-phase3/11-dark-sidebar.png`：深色主题 HUD 胶囊与边框。
+- `docs/hud-phase3/12-saturation-warning.png`：500 条饱和警告；截图时临时把 `MESSAGE_LIMIT` 降到 20 触发分支，确认后恢复 500 并重建。
+- `docs/hud-phase4/` 三张截图与 `docs/hud-phase5/01-settings-hud.png` 均为构建版 Electron + 真实生产数据。
+
+### Q.6 提交与推送
+
+- 分支 `gui/v0.1`；提交包含评审修正、审批 E2E 证据、截图与两份追加文档。
+- 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未改全局 git 配置；命令、文档与日志中无 token。
+- 提交 hash 与远程 HEAD 以 `git log -1`、`git ls-remote` 及任务汇报为准。
+
+### Q.7 已知限制
+
+- 审批只验证 `once`；`session`/`deny` 走同一 IPC，引擎侧由第二期回归覆盖。
+- 无自动化测试；M2 四分支、M1 饱和路径为代码审查 + 一次临时降阈值的 UI 验证。
+- `list_messages` 500 条 ASC 窗口、未读不跨重启、`files_modified` 恒空、HUD ≤900px 隐藏等限制仍在。
+- 额度无法直接观测；本期未调用 agent LLM（dsh 评审任务另计，`task_status` tokens 0/0）。

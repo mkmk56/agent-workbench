@@ -30,8 +30,9 @@
 
 ## 4. 开关配置
 
-- 主进程持久化 `%APPDATA%\agent-workbench\hud.json`，默认 `{"paperPlanes": true}`。
-- 通过 IPC 实测：`getHudConfig()` → `{paperPlanes:true}`；`setHudConfig({paperPlanes:false})` → `false`；再设回 `true` 后文件内容为 `{"paperPlanes": true}`。第五期设置页只需调用 `useHudConfig().setPaperPlanes` 暴露开关。
+- 主进程持久化 `%APPDATA%\agent-workbench\hud.json`，默认 `{"paperPlanes": true, "contextWindowTokens": 128000}`。
+- 通过 IPC 实测：`getHudConfig()` → `{paperPlanes:true}`（第三期时仅有该字段）；`setHudConfig({paperPlanes:false})` → `false`；再设回 `true` 后文件内容为 `{"paperPlanes": true}`。
+- 第五期设置页现已暴露 `useHudConfig().setPaperPlanes` 与 `setContextWindowTokens`；上下文参考值默认 128,000，可在设置页修改，会话流顶部的占用条立即使用新值。
 
 ## 5. 已知限制（如实记录）
 
@@ -45,7 +46,7 @@
 ## 6. 品牌身份图标与居中（2026-11-14 用户补充）
 
 - 用户提供的三张身份图已下载到 `gui/src/assets/sidebar/source/`（`muse.png`、`claude.png`、`dsh.png`），不依赖 2026-11-16 后可能失效的临时链接。
-- 实际显示的是 `gui/src/assets/sidebar/*-mark.png`：从源图中央提取**中性白色**标志，去掉源图自带的彩色进度弧、角标、彩色徽章与深色底板，背景透明，紧贴外接框裁剪并留 1px 透明边。处理方式见该目录 `README.md`。
+- 实际显示的是 `gui/src/assets/sidebar/*-mark.png`：从源图中央提取**中性白色**标志，去掉源图自带的彩色进度弧、角标、彩色徽章与深色底板，背景透明，紧贴外接框裁剪；为使画布为正方形，Muse/dsh 上下保留透明边（约 20px / 14px），Claude 约 1–2px。处理方式见该目录 `README.md`。
 - 源图里的弧线和角标只是状态示意，**没有**在 UI 中重复绘制；状态仍由侧栏自己的 2px 环、状态角标（Play / Hourglass / TriangleAlert / Circle）和悬停卡文字表达。
 - 居中修正：
   - 胶囊宽度改为 `60px = 44px 槽位 + 2 × 8px padding`（原 `56px` 的内容盒只有 40px，槽位 44px 会溢出并造成视觉偏心）；
@@ -60,3 +61,9 @@
 - **M2**：引擎 `starting` 或 `agent_info` 首次读取失败不再显示红色“出错”；分别显示“连接中”“状态未知”，只有 `agent_info` 成功返回且 `available:false` 或引擎真实离线时才进入错误态。
 - **M3**：更正第三期记录——提交 `b3b10f6` **没有**修改 `gui/src/lib/engine.ts`；该文件是在后续第四期（`useTaskMessages`、审批包装）中才修改的。`RESUME.md` / `DAILY_LOG.md` 的新区块会记录此更正。
 - 同时处理：N4（0ms timer 清理）、N5（`aria-describedby`）、N6（working/idle 状态角标）、N7（深色主题胶囊与截图）、N11（配置写入失败不产生未处理拒绝）、N13（reduced-motion 保留无位移淡出）。
+
+## 8. 补充证据（2026-11-14，评审修正后）
+
+- `11-dark-sidebar.png`：深色主题下的 HUD 胶囊（提升到 `--surface` 并加强 1px 描边），确认深色下仍能分辨胶囊边界；身份图标为中性白标识，状态仍由环/角标/文字表达。
+- `12-saturation-warning.png`：`list_messages` 500 条饱和警告（Muse 悬停卡）。该图在验证时把 `MESSAGE_LIMIT` 临时降到 20 以触发分支，确认提示后已恢复为 500 并重建；警告文案本身描述的是真实的 500 条上限。
+- 独立评审报告：`docs/AGENT_HUD_PHASE4_REVIEW.md`（覆盖 `90296c9`，CONDITIONAL PASS，5 个必须修项）。M1–M5 已在最终提交修正：写操作措辞、写盘失败反馈、截图主题描述、reduced-motion 落地淡出、图标外接框描述。

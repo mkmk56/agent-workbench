@@ -111,11 +111,17 @@ export function SettingsPage() {
   };
 
   const togglePaperPlanes = async (value: boolean) => {
-    await hud.setPaperPlanes(value);
+    const saved = await hud.setPaperPlanes(value);
     setNotice({
-      tone: 'success',
-      title: value ? '纸飞机动画已开启' : '纸飞机动画已关闭',
-      text: '配置已写入主进程 userData/hud.json，立即生效。',
+      tone: saved ? 'success' : 'error',
+      title: saved
+        ? value
+          ? '纸飞机动画已开启'
+          : '纸飞机动画已关闭'
+        : '纸飞机动画未保存',
+      text: saved
+        ? '配置已写入主进程 userData/hud.json，立即生效。'
+        : '写入 hud.json 失败，原配置保持不变。请检查数据目录权限。',
     });
   };
 
@@ -129,11 +135,13 @@ export function SettingsPage() {
       });
       return;
     }
-    await hud.setContextWindowTokens(tokens);
+    const saved = await hud.setContextWindowTokens(tokens);
     setNotice({
-      tone: 'success',
-      title: '上下文参考值已保存',
-      text: `会话流按 ${tokens.toLocaleString()} tokens 参考上限显示占用条。`,
+      tone: saved ? 'success' : 'error',
+      title: saved ? '上下文参考值已保存' : '上下文参考值未保存',
+      text: saved
+        ? `会话流按 ${tokens.toLocaleString()} tokens 参考上限显示占用条。`
+        : '写入 hud.json 失败，原参考值保持不变。请检查数据目录权限。',
     });
   };
 
@@ -783,8 +791,14 @@ export function SettingsPage() {
                 </div>
                 <div className="setting-control">
                   <AppStatus
-                    tone={protocol?.enabled ? 'success' : 'neutral'}
-                    label={protocol?.enabled ? '引擎已启用' : '引擎未启用'}
+                    tone={protocol == null ? 'neutral' : protocol.enabled ? 'success' : 'neutral'}
+                    label={
+                      protocol == null
+                        ? '读取中…'
+                        : protocol.enabled
+                          ? '引擎已启用'
+                          : '引擎未启用'
+                    }
                   />
                   <p className="field__hint">只读：由引擎实现决定，本期不提供运行时开关。</p>
                 </div>
@@ -799,7 +813,11 @@ export function SettingsPage() {
                 </div>
                 <div className="setting-control">
                   <span className="mono">
-                    {protocol?.exchange_limit != null ? `${protocol.exchange_limit} 条` : '—'}
+                    {protocol == null
+                      ? '读取中…'
+                      : protocol.exchange_limit != null
+                        ? `${protocol.exchange_limit} 条`
+                        : '—'}
                   </span>
                   <p className="field__hint">
                     引擎环境变量 <span className="mono">AGENT_MESSAGE_LIMIT</span>，只读。
@@ -814,9 +832,11 @@ export function SettingsPage() {
                 </div>
                 <div className="setting-control">
                   <span className="mono">
-                    {protocol?.summary_max_tokens != null
-                      ? `${protocol.summary_max_tokens} tokens`
-                      : '—'}
+                    {protocol == null
+                      ? '读取中…'
+                      : protocol.summary_max_tokens != null
+                        ? `${protocol.summary_max_tokens} tokens`
+                        : '—'}
                   </span>
                   <p className="field__hint">
                     引擎环境变量 <span className="mono">AGENT_SUMMARY_MAX_TOKENS</span>，只读。
@@ -833,8 +853,14 @@ export function SettingsPage() {
                 </div>
                 <div className="setting-control">
                   <AppStatus
-                    tone={protocol?.auto_deliver ? 'success' : 'neutral'}
-                    label={protocol?.auto_deliver ? '已开启' : '已关闭'}
+                    tone={protocol == null ? 'neutral' : protocol.auto_deliver ? 'success' : 'neutral'}
+                    label={
+                      protocol == null
+                        ? '读取中…'
+                        : protocol.auto_deliver
+                          ? '已开启'
+                          : '已关闭'
+                    }
                   />
                   <p className="field__hint">
                     引擎环境变量 <span className="mono">AGENT_AUTO_DELIVER</span>，只读。
@@ -853,8 +879,10 @@ export function SettingsPage() {
                   <div className="setting-inline">
                     <ShieldCheck size={15} aria-hidden="true" />
                     <AppStatus
-                      tone={gate?.enabled ? 'warning' : 'neutral'}
-                      label={gate?.enabled ? '已开启' : '关闭（默认）'}
+                      tone={gate == null ? 'neutral' : gate.enabled ? 'warning' : 'neutral'}
+                      label={
+                        gate == null ? '读取中…' : gate.enabled ? '已开启' : '关闭（默认）'
+                      }
                     />
                   </div>
                   <p className="field__hint">

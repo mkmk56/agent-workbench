@@ -99,18 +99,27 @@ export function useAgentInfo(pollMs = 30_000): {
       }
       return;
     }
-    const result = await window.workbench.getAgentInfo();
-    if (!alive.current) {
-      return;
+    try {
+      const result = await window.workbench.getAgentInfo();
+      if (!alive.current) {
+        return;
+      }
+      if (result.ok) {
+        setInfo(result.data);
+        setAgents(result.data.agents);
+        setError(null);
+      } else {
+        setError(result.error);
+      }
+    } catch {
+      if (alive.current) {
+        setError('读取执行器状态失败（主进程调用异常）。');
+      }
+    } finally {
+      if (alive.current) {
+        setLoading(false);
+      }
     }
-    if (result.ok) {
-      setInfo(result.data);
-      setAgents(result.data.agents);
-      setError(null);
-    } else {
-      setError(result.error);
-    }
-    setLoading(false);
   }, []);
 
   useEffect(() => {

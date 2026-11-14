@@ -4,6 +4,7 @@
  */
 
 .hud {
+  --hud-bg: #1e2126;
   position: sticky;
   top: calc(var(--topbar-height) + 24px);
   z-index: 30;
@@ -16,7 +17,7 @@
   /* 44px slot + 2 × 8px padding: the content box must be exactly 44px. */
   width: 60px;
   padding: 8px;
-  background: #1e2126;
+  background: var(--hud-bg);
   border: 1px solid rgba(245, 243, 238, 0.1);
   border-radius: 28px;
   box-shadow: 0 8px 24px rgba(30, 33, 38, 0.18);
@@ -25,7 +26,8 @@
 html[data-theme="dark"] .hud {
   /* On the ink app background an ink capsule needs a visible edge; lift to the
    * dark surface token and strengthen the 1px border. */
-  background: #25292f;
+  --hud-bg: #25292f;
+  background: var(--hud-bg);
   border-color: rgba(245, 243, 238, 0.22);
 }
 
@@ -145,7 +147,7 @@ html[data-theme="dark"] .hud {
   place-items: center;
   width: 15px;
   height: 15px;
-  border: 1px solid #1e2126;
+  border: 1px solid var(--hud-bg);
   border-radius: 50%;
   color: #1e2126;
 }
@@ -177,7 +179,7 @@ html[data-theme="dark"] .hud {
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
-  border: 1px solid #1e2126;
+  border: 1px solid var(--hud-bg);
   border-radius: 4px;
   background: #e85d26;
   color: #1e2126;
@@ -197,7 +199,7 @@ html[data-theme="dark"] .hud {
   place-items: center;
   width: 16px;
   height: 16px;
-  border: 1px solid #1e2126;
+  border: 1px solid var(--hud-bg);
   border-radius: 4px;
   background: #f5f3ee;
   color: #1e2126;
@@ -394,6 +396,9 @@ html[data-theme="dark"] .hud {
 
   .hud-slot__flash {
     animation: hud-flash-fade 400ms ease-out 1 forwards;
+    /* The global reduced-motion rule sets animation-duration: .01ms !important.
+     * Keep this one opacity-only fade visible; it has no displacement. */
+    animation-duration: 400ms !important;
   }
 
   @keyframes hud-flash-fade {

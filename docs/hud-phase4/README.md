@@ -16,7 +16,10 @@
 
 ## 已知限制
 
-- 引擎没有结构化的“读了哪个文件 / 合并了哪个分支 / 命令成功失败”事件，因此不伪造这些卡片；当前只能可靠展示执行器启动命令、超时/退出、`files_modified` 路径与 agent 消息。
-- 审批卡片：当 `AGENT_APPROVAL_GATE=1` 且 `task_status.approval.pending` 非空时，结论流顶部显示允许一次/会话内允许/拒绝，并调用 `respond_approval`。本期生产环境门默认关闭，**未做真实 pending 审批的端到端截图**。
+- 引擎没有结构化的“读了哪个文件 / 合并了哪个分支 / 命令成功失败”事件，因此不伪造这些卡片；当前只能可靠展示执行器启动命令、超时/退出与 agent 消息。`task_status.files_modified` 目前也恒为空（引擎只在建任务时写入 `null`，全仓库没有写入方），所以“改动了 N 个文件”卡片实际不会出现；代码保留该路径，等引擎提供结构化文件事件后再启用。
+- 审批卡片：当 `AGENT_APPROVAL_GATE=1` 且 `task_status.approval.pending` 非空时，结论流顶部显示允许一次/会话内允许/拒绝，并调用 `respond_approval`。生产环境门默认关闭；隔离引擎 `127.0.0.1:18110` 已完成真实 pending E2E（未调用 LLM），截图见 `docs/hud-phase5/02-approval-pending.png` 与 `03-approval-allowed.png`。
 - 消息列表超过 500 条后的截断限制与第三期相同，需要引擎侧 `since`/倒序参数根治。
 - 截图来自构建版 Electron + CDP/桌面截图；卡片与日志是真实生产数据，验证消息已在 summary 中标注“忽略”。
+## 独立评审
+
+`docs/AGENT_HUD_PHASE4_REVIEW.md` 对 `90296c9` 的结论为 CONDITIONAL PASS（5 个必须修项）。最终提交已修正：审批 IPC 的“只读”措辞、写盘失败提示、设置页截图主题、reduced-motion 落地提示、图标外接框描述；非阻塞项中 N4/N5/N6/N7/N8/N10/N11/N13 已记录或修复，N1/N2/N9/N12/N14/N15/N16 保留为后续项。

@@ -251,8 +251,8 @@ function loadConfigOnce(): void {
 
 export function useHudConfig(): {
   config: HudConfig;
-  setPaperPlanes: (enabled: boolean) => Promise<void>;
-  setContextWindowTokens: (tokens: number) => Promise<void>;
+  setPaperPlanes: (enabled: boolean) => Promise<boolean>;
+  setContextWindowTokens: (tokens: number) => Promise<boolean>;
 } {
   const [config, setConfig] = useState<HudConfig>(sharedConfig);
 
@@ -269,29 +269,32 @@ export function useHudConfig(): {
   const setPaperPlanes = useCallback(async (enabled: boolean) => {
     if (!window.workbench) {
       publishConfig({ ...sharedConfig, paperPlanes: enabled });
-      return;
+      return true;
     }
     try {
       const next = await window.workbench.setHudConfig({ paperPlanes: enabled });
       configLoaded = true;
       publishConfig(next);
+      return true;
     } catch {
-      // Keep the previous value; phase 5's settings page can surface the
-      // failure if it wants to. Avoid an unhandled rejection here.
+      // Keep the previous value and report the failure to the settings page.
+      return false;
     }
   }, []);
 
   const setContextWindowTokens = useCallback(async (tokens: number) => {
     if (!window.workbench) {
       publishConfig({ ...sharedConfig, contextWindowTokens: tokens });
-      return;
+      return true;
     }
     try {
       const next = await window.workbench.setHudConfig({ contextWindowTokens: tokens });
       configLoaded = true;
       publishConfig(next);
+      return true;
     } catch {
-      // Keep the previous value; the settings page reports validation errors.
+      // Keep the previous value and report the failure to the settings page.
+      return false;
     }
   }, []);
 
