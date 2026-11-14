@@ -1,3 +1,4 @@
+import { describeResolution, resolveClaudeCommand } from '../config.js';
 import { ensureClaudeMcpConfig } from '../mcp-config.js';
 import { spawnProcess, killTree } from './process.js';
 
@@ -19,10 +20,16 @@ export const claudeExecutor = {
   name: 'claude',
   resumeSupported: true,
   start(task, ctx) {
+    // Resolve at launch time, never from a module-load snapshot: an npm upgrade
+    // can rename the executable out from under a long-running engine.
+    const resolved = resolveClaudeCommand();
+    ctx.log('system', describeResolution(resolved));
+    if (!resolved.found) {
+      throw new Error('claude executable not found; set WORKBENCH_CLAUDE_ENTRY or add claude to PATH');
+    }
     const args = buildArgs(task, ctx.config);
-    const command = ctx.config.claudeEntry || ctx.config.claudeBin;
     const child = spawnProcess({
-      command,
+      command: resolved.command,
       args,
       env: ctx.config.claudeEnv,
       cwd: task.cwd || ctx.config.root,

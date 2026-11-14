@@ -1,3 +1,4 @@
+import { describeResolution, resolveDshCommand } from '../config.js';
 import { spawnProcess, killTree } from './process.js';
 
 const MAX_HISTORY_CHARS = 12000;
@@ -29,12 +30,18 @@ export const dshExecutor = {
   name: 'dsh',
   resumeSupported: false,
   start(task, ctx) {
+    // Same rule as claude: resolve per launch so an upgraded/replaced dsh is
+    // picked up without restarting the engine.
+    const resolved = resolveDshCommand();
+    ctx.log('system', describeResolution(resolved));
+    if (!resolved.found) {
+      throw new Error('dsh executable not found; set WORKBENCH_DSH_ENTRY or add dsh to PATH');
+    }
     const prompt = task.resume ? stitchPrompt(ctx.history, task.prompt) : task.prompt;
     let out = '';
-    const direct = Boolean(ctx.config.dshEntry);
     const child = spawnProcess({
-      command: direct ? ctx.config.nodeBin : ctx.config.dshBin,
-      prefixArgs: direct ? [ctx.config.dshEntry] : [],
+      command: resolved.command,
+      prefixArgs: resolved.prefixArgs,
       args: ['--profile', 'headless', prompt],
       cwd: task.cwd || ctx.config.root,
       onLine: (stream, line) => {

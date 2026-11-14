@@ -1202,3 +1202,64 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 - 未改 `src/`、协议、GUI、`spike/`、签名与审批；未删除文件；未触碰 `docs/AGENT_HUD_PHASE1_REVIEW.md`。
 - `docs/AGENT_HUD_SPEC.md` 与 `spike/` 保持未跟踪；本次未提交。
 - 额度无法直接观测，本次按 10% 上限保守控制，不声称精确达标。
+
+---
+
+## 2026-11-14（周六）· 补充：claude 升级后全量 ENOENT 的根治修复（执行器命令解析去缓存）
+
+### 今日目标
+
+- 修掉“引擎启动时把 claude 路径快照在内存里、升级后所有 claude 任务瞬间 ENOENT”的根因；同一隐患的 dsh 路径一并修掉。
+- 每次任务启动时把实际解析到的命令路径写进任务日志，路径消失时一眼可见。
+- 静态验证（语法检查 + 隔离调用解析逻辑）后提交推送到 GitHub，并安排引擎在任务完成之后重启。
+- 不升级 Node、不往 workbuddy 前缀重装 claude、不删 `claude.exe.old.*`、不碰 GUI / `spike/` / 签名与审批 / `docs/AGENT_HUD_PHASE1_REVIEW.md`、不删文件。
+
+### 资源额度
+
+- 每日额度策略：不超过总额的 10%；额度消耗**无法直接观测**，本区块不记录虚构百分比或余额。
+- 本次为代码 + 文档任务，未调用 claude 模型；另排队了 1 个 dsh 维护任务（20 秒延迟后重启引擎，见下）。
+
+### 根因（采用调查任务 d9c4ac81 的结论，未重复调查）
+
+- 2026-11-14 12:34:59 npm 全局升级把 workbuddy 前缀下的 `claude.exe`（2.1.270）改名为 `claude.exe.old.<ms>`，新版 2.1.325 装到另一个 npm 前缀 `D:\nodejs`。
+- 引擎（PID 21568，11:53:24 起未重启）`src/config.js` 在模块加载时用 `existsSync` 解析一次并永久缓存 `claudeEntry`；升级后 claude 任务仍 spawn 已消失的绝对路径 → 瞬间 ENOENT。
+- `dshEntry` 是同款隐患：文件现在还在，一旦 dsh 升级换前缀就会同样全挂。
+
+### 改动
+
+- `src/config.js`：删除 `claudeEntryCandidate` / `dshEntryCandidate` 与 `config.claudeEntry` / `config.dshEntry` 快照；新增 `nodePrefix = dirname(process.execPath)`（20–22 行）、候选列表与惰性解析 `claudeCommandCandidates()` / `dshCommandCandidates()` / `resolveClaudeCommand()` / `resolveDshCommand()` / `describeResolution()`（62–180 行）。
+- `src/executors/claude.js`：`start()` 每次任务启动时解析（22–33 行），写日志、用解析结果 spawn；未命中抛明确错误。
+- `src/executors/dsh.js`：同样改为每次启动解析（32–45 行），JS 入口仍经当前 Node 执行。
+- `scripts/verify-command-resolution.mjs`：新增只读验证脚本。
+- 解析顺序：claude 为 `WORKBENCH_CLAUDE_ENTRY` → `WORKBENCH_CLAUDE_BIN` → `WORKBENCH_NPM_GLOBAL` 下 `node_modules\@anthropic-ai\claude-code\bin\claude.exe` → 运行中 Node 前缀下同一路径（当前 `D:\nodejs`）→ PATH 里的 `claude`；dsh 同理（入口为 `lib\bin.js`）。
+- 每次任务启动的任务日志新增一行，例如 `claude command=D:\nodejs\node_modules\@anthropic-ai\claude-code\bin\claude.exe source=npm-prefix D:\nodejs; skipped missing: D:\workbuddy-tools\node\global\node_modules\@anthropic-ai\claude-code\bin\claude.exe`。
+
+### 测试与验证
+
+- `node --check`：`src/config.js`、`src/executors/claude.js`、`src/executors/dsh.js`、`scripts/verify-command-resolution.mjs` 全部通过。
+- `node scripts/verify-command-resolution.mjs` → `ok: true`（`data/verify-command-resolution.json`）：
+  - claude 解析到 `D:\nodejs\node_modules\@anthropic-ai\claude-code\bin\claude.exe`（source `npm-prefix D:\nodejs`），`--version` = 2.1.325；
+  - workbuddy 死路径被跳过，skipped 中所有路径均确实不存在；
+  - dsh 解析到 workbuddy `lib\bin.js`，`--version` = 0.1.0-rc.6；
+  - 惰性证明：`WORKBENCH_CLAUDE_ENTRY` 指向不存在路径时被跳过、指向 `process.execPath` 时立即采用、清空后回到原命令。
+- 直接 shell 复核：`D:\nodejs\claude.cmd --version` 与 `D:\nodejs\node_modules\@anthropic-ai\claude-code\bin\claude.exe --version` 均为 2.1.325。
+- 说明：本机工具沙箱禁止管道 stdio，验证脚本用临时文件承接子进程输出读取版本号。
+
+### 重启（重要，如实记录）
+
+- 实测本任务的沙箱把每次工具调用放进 `KILL_ON_JOB_CLOSE` 的 Job 对象（`LimitFlags=0x2000`，不允许 breakaway）：`Start-Process` 子进程在调用结束即被回收；`explorer.exe` 打开文件、`ShellExecute` COM、`schtasks`、WMI 均不可用；`taskkill.exe` 被拒绝（`Stop-Process` 可用）；`danger-full-access` 升级需要审批而本 composition 没有审批通道。因此无法按“独立 PowerShell 进程延迟 20 秒”实现。
+- 替代安排：任务结束前通过引擎 `send_message` 排队 `from=user → to=dsh`、`is_final=true` 的维护消息（`525e8e94-e0e9-471f-8c1d-2bb028b393df`，`status=queued`，298 tokens）。引擎在本任务终止时自动投递为新的 dsh 任务；该任务 `Start-Sleep 20` 后，仅当 `logs/server.pid` 仍为 `21568` 时 `Stop-Process -Id 21568 -Force`，随后 Startup 的 `AgentWorkbench.vbs` 看门狗约 5 秒内用新代码拉起引擎。
+- 若未生效，手动兜底：`powershell -NoProfile -Command "$p=(Get-Content 'D:\Claude\agent-workbench\logs\server.pid' -Raw).Trim(); Stop-Process -Id ([int]$p) -Force"`（或任务管理器结束 PID 21568）。
+- 重启后验证：`/health` 的 `uptime_s` 重新计时、`logs/server.pid` 变化、`tools/list` 仍为 10 个工具、`agent_info` claude `available=true`/2.1.325、派一个 claude 小任务确认能启动、新任务日志首行出现 `resolved`/`command=` 行。恢复期间出现一个 `FAILED` 的 dsh 维护任务属预期。
+
+### Git 同步
+
+- 分支 `gui/v0.1`；修改 `src/config.js`、`src/executors/claude.js`、`src/executors/dsh.js`，新增 `scripts/verify-command-resolution.mjs`，追加 `RESUME.md`、`DAILY_LOG.md`。
+- 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push`；未改全局 git 配置；命令、文档与日志中无 token。
+- 提交 hash 与远程 HEAD 以 `git log -1`、`git ls-remote` 及任务汇报为准。
+
+### 未做 / 注意
+
+- 未升级 Node；未往 workbuddy 前缀重装 claude；未删 `claude.exe.old.*`；未改 GUI、`spike/`、签名与审批；未改 `docs/AGENT_HUD_PHASE1_REVIEW.md`；未删除任何文件。
+- `scheduler.agentInfo()` 仍用 `claudeBin`/`dshBin`（PATH 解析）做版本与登录探测，本次未调整。
+- 额度无法直接观测，本次按 10% 上限保守控制，不声称精确达标。
