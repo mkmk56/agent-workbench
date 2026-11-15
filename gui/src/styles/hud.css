@@ -50,6 +50,7 @@ html[data-theme="dark"] .hud {
   background: rgba(245, 243, 238, 0.06);
   color: #f5f3ee;
   cursor: pointer;
+  transition: background 120ms var(--ease);
 }
 
 .hud-slot__button:hover {
@@ -171,8 +172,8 @@ html[data-theme="dark"] .hud {
 
 .hud-slot__unread {
   position: absolute;
-  top: -3px;
-  right: -3px;
+  top: -4px;
+  right: -4px;
   z-index: 4;
   display: grid;
   place-items: center;
@@ -184,16 +185,16 @@ html[data-theme="dark"] .hud {
   background: #e85d26;
   color: #1e2126;
   font-family: var(--font-ui);
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 500;
   line-height: 1;
   font-variant-numeric: tabular-nums;
 }
 
 .hud-slot__queue {
   position: absolute;
-  left: -3px;
-  bottom: -3px;
+  left: -4px;
+  bottom: -4px;
   z-index: 4;
   display: grid;
   place-items: center;
@@ -212,17 +213,17 @@ html[data-theme="dark"] .hud {
   border: 2px solid #f5f3ee;
   border-radius: 50%;
   pointer-events: none;
-  animation: hud-flash 400ms ease-out 1 forwards;
+  animation: hud-flash 240ms var(--ease) 1 forwards;
 }
 
 @keyframes hud-flash {
   0% {
-    opacity: 0.9;
+    opacity: 0.8;
     transform: scale(1);
   }
   100% {
     opacity: 0;
-    transform: scale(1.22);
+    transform: scale(1.12);
   }
 }
 
@@ -233,9 +234,9 @@ html[data-theme="dark"] .hud {
   left: 60px;
   z-index: 60;
   display: none;
-  width: 280px;
+  width: 288px;
   max-width: calc(100vw - 120px);
-  padding: 12px;
+  padding: 16px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--surface);
@@ -281,7 +282,7 @@ html[data-theme="dark"] .hud {
 
 .hud-popover__name {
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .hud-badge {
@@ -293,7 +294,7 @@ html[data-theme="dark"] .hud {
   padding: 0 8px;
   border-radius: var(--radius-sm);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1;
   white-space: nowrap;
 }
@@ -320,7 +321,7 @@ html[data-theme="dark"] .hud {
 
 .hud-popover__detail {
   display: -webkit-box;
-  margin-top: 8px;
+  margin-top: 12px;
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -333,10 +334,10 @@ html[data-theme="dark"] .hud {
 .hud-popover__error {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
-  margin-top: 8px;
-  font-size: 11px;
-  line-height: 16px;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 18px;
   color: var(--error-text);
 }
 
@@ -347,11 +348,11 @@ html[data-theme="dark"] .hud {
 
 .hud-popover__meta {
   display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
-  gap: 4px 8px;
-  margin: 10px 0 0;
-  font-size: 11px;
-  line-height: 16px;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 6px 8px;
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .hud-popover__meta dt {
@@ -366,11 +367,11 @@ html[data-theme="dark"] .hud {
 }
 
 .hud-popover__hint {
-  margin-top: 10px;
-  padding-top: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
   border-top: 1px solid var(--border);
-  font-size: 11px;
-  line-height: 16px;
+  font-size: 12px;
+  line-height: 18px;
   color: var(--text-muted);
 }
 
@@ -395,10 +396,10 @@ html[data-theme="dark"] .hud {
   }
 
   .hud-slot__flash {
-    animation: hud-flash-fade 400ms ease-out 1 forwards;
+    animation: hud-flash-fade 240ms var(--ease) 1 forwards;
     /* The global reduced-motion rule sets animation-duration: .01ms !important.
      * Keep this one opacity-only fade visible; it has no displacement. */
-    animation-duration: 400ms !important;
+    animation-duration: 240ms !important;
   }
 
   @keyframes hud-flash-fade {

@@ -6,7 +6,6 @@ import {
   Clock3,
   Copy,
   CornerDownRight,
-  FileCode2,
   FilePenLine,
   MessageSquare,
   Play,
@@ -97,7 +96,6 @@ function FileChips({ files }: { files: string[] }) {
     <ul className="conv-files" aria-label="涉及文件">
       {files.map((file) => (
         <li key={file} className="conv-file">
-          <FileCode2 size={12} aria-hidden="true" />
           <span className="mono">{file}</span>
         </li>
       ))}
@@ -134,19 +132,19 @@ function CardView({
         </span>
         <span className="conv-card__title">{card.title}</span>
         {card.meta != null && <span className="conv-card__meta">{card.meta}</span>}
-        <ChevronDown size={14} className="conv-card__chevron" aria-hidden="true" />
+        <ChevronDown size={16} className="conv-card__chevron" aria-hidden="true" />
       </summary>
       <div className="conv-card__body">{card.body}</div>
       {(card.copyText != null || card.tone === 'error') && (
         <div className="conv-card__actions">
           {card.copyText != null && (
             <button type="button" className="conv-action" onClick={() => void copy()}>
-              <Copy size={12} aria-hidden="true" />
+              <Copy size={16} aria-hidden="true" />
               复制结论
             </button>
           )}
           <button type="button" className="conv-action" onClick={onJumpToLog}>
-            <ScrollText size={12} aria-hidden="true" />
+            <ScrollText size={16} aria-hidden="true" />
             在日志中查看
           </button>
         </div>
@@ -167,7 +165,7 @@ function messageCard(
   return {
     key: `message-${message.message_id}`,
     tone: messageTone(message),
-    icon: <MessageSquare size={14} />,
+    icon: <MessageSquare size={16} />,
     title: `${participantLabel(message.from)} → ${participantLabel(message.to)}`,
     meta: `${status.label} · ${message.summary_tokens} tokens · ${formatClock(message.created_at)}`,
     // Agent messages stay folded to one line by default; the observer expands
@@ -178,7 +176,7 @@ function messageCard(
       <>
         {reply != null && (
           <div className="conv-reply">
-            <CornerDownRight size={12} aria-hidden="true" />
+            <CornerDownRight size={16} aria-hidden="true" />
             <span>
               回复 {reply.message_id.slice(0, 8)}：{reply.summary.slice(0, 120)}
             </span>
@@ -235,7 +233,7 @@ export function ConversationPanel({
     result.push({
       key: 'start',
       tone: 'neutral',
-      icon: <Play size={14} />,
+      icon: <Play size={16} />,
       title: '任务已派发',
       meta: `${task.agent} · ${formatClock(task.created_at)}`,
       body: (
@@ -265,7 +263,7 @@ export function ConversationPanel({
       result.push({
         key: 'command',
         tone: 'neutral',
-        icon: <Terminal size={14} />,
+        icon: <Terminal size={16} />,
         title: '执行器已启动',
         meta: commandLine.time,
         body: (
@@ -282,7 +280,7 @@ export function ConversationPanel({
       result.push({
         key: 'timeout',
         tone: 'warning',
-        icon: <Timer size={14} />,
+        icon: <Timer size={16} />,
         title: '任务超时',
         meta: timeoutLine.time,
         body: <p className="conv-text">{timeoutLine.message}</p>,
@@ -298,7 +296,7 @@ export function ConversationPanel({
       result.push({
         key: 'exit',
         tone: failed ? 'error' : cancelled ? 'neutral' : 'success',
-        icon: failed ? <CircleX size={14} /> : <CircleCheck size={14} />,
+        icon: failed ? <CircleX size={16} /> : <CircleCheck size={16} />,
         title: failed ? '执行器异常结束' : cancelled ? '执行器已取消' : '执行器已结束',
         meta: exitLine.time,
         body: <p className="conv-text mono">{exitLine.message}</p>,
@@ -310,7 +308,7 @@ export function ConversationPanel({
       result.push({
         key: 'failure-line',
         tone: 'error',
-        icon: <CircleX size={14} />,
+        icon: <CircleX size={16} />,
         title: '执行器错误',
         meta: failureLine.time,
         body: <p className="conv-text mono conv-break">{failureLine.message}</p>,
@@ -321,7 +319,7 @@ export function ConversationPanel({
       result.push({
         key: 'files',
         tone: 'accent',
-        icon: <FilePenLine size={14} />,
+        icon: <FilePenLine size={16} />,
         title: `改动了 ${task.files_modified.length} 个文件`,
         meta: '来自 task_status.files_modified',
         body: <FileChips files={task.files_modified} />,
@@ -340,11 +338,11 @@ export function ConversationPanel({
         tone,
         icon:
           task.state === 'COMPLETED' ? (
-            <CircleCheck size={14} />
+            <CircleCheck size={16} />
           ) : task.state === 'FAILED' ? (
-            <CircleX size={14} />
+            <CircleX size={16} />
           ) : (
-            <Clock3 size={14} />
+            <Clock3 size={16} />
           ),
         title:
           task.state === 'COMPLETED'
@@ -366,7 +364,7 @@ export function ConversationPanel({
       result.push({
         key: 'running',
         tone: 'accent',
-        icon: <Bot size={14} />,
+        icon: <Bot size={16} />,
         title: '任务正在执行',
         meta: `${formatRelative(task.last_activity_at)} · 已用时 ${formatDuration(task.elapsed_ms)}`,
         body: (
@@ -396,7 +394,7 @@ export function ConversationPanel({
         <div>
           <h2 className="conversation-panel__title">结论流</h2>
           <p className="conversation-panel__source">
-            task_status / task_logs / list_messages · 引擎数据
+            引擎数据 · 实时更新
           </p>
         </div>
       </div>
@@ -415,20 +413,20 @@ export function ConversationPanel({
           />
         </div>
         <p className="context-meter__note">
-          引擎未返回上下文上限；按 {referenceTokens.toLocaleString()} 参考值估算（可在设置中调整）。
-          分子是任务累计输入 tokens，不是单轮上下文。输出 {task.tokens.output.toLocaleString()} tokens。
+          按 {referenceTokens.toLocaleString()} 参考值估算，可在设置中调整。
+          累计输入，不是单轮上下文。输出 {task.tokens.output.toLocaleString()} tokens。
         </p>
       </div>
 
       {messagesError != null && (
         <div className="conv-inline-error" role="status">
-          <MessageSquare size={14} aria-hidden="true" />
+          <MessageSquare size={16} aria-hidden="true" />
           <span>会话消息读取失败：{messagesError}</span>
         </div>
       )}
       {messagesSaturated && (
         <div className="conv-inline-warning" role="status">
-          <MessageSquare size={14} aria-hidden="true" />
+          <MessageSquare size={16} aria-hidden="true" />
           <span>
             该会话消息达到 500 条窗口上限；`list_messages` 按时间正序返回，更新的消息不会出现在结论流中。
           </span>

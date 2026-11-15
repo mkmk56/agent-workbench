@@ -25,15 +25,15 @@ export const LOG_STREAM_LABELS: Record<LogStream, string> = {
 };
 
 export const ENGINE_STATE_LABELS: Record<EngineState, string> = {
-  PENDING: 'PENDING · 排队',
-  STARTING: 'STARTING · 启动中',
-  WORKING: 'WORKING · 执行中',
-  WAITING: 'WAITING · 等待输入',
-  BLOCKED: 'BLOCKED · 阻塞',
-  STALE: 'STALE · 静默',
-  COMPLETED: 'COMPLETED · 完成',
-  FAILED: 'FAILED · 失败',
-  CANCELLED: 'CANCELLED · 已取消',
+  PENDING: '排队',
+  STARTING: '启动中',
+  WORKING: '执行中',
+  WAITING: '等待输入',
+  BLOCKED: '阻塞',
+  STALE: '静默',
+  COMPLETED: '完成',
+  FAILED: '失败',
+  CANCELLED: '已取消',
 };
 
 const SUCCESS_STATES = new Set<EngineState>(['COMPLETED']);

@@ -143,7 +143,7 @@ export function TasksPage() {
         subtitle={
           tasksState.error
             ? `引擎数据读取失败：${tasksState.error}`
-            : `${tasksState.tasks.length} 个任务 · ${counts.running ?? 0} 个运行中 · 最后更新 ${lastUpdated}`
+            : `${tasksState.tasks.length} 个任务 · ${counts.running ?? 0} 个运行中 · ${lastUpdated} 更新`
         }
         actions={
           <>
@@ -151,7 +151,7 @@ export function TasksPage() {
               <AppButton
                 label={starting ? '正在启动引擎…' : '启动引擎'}
                 tone="primary"
-                icon={<Server size={15} />}
+                icon={<Server size={16} />}
                 isLoading={starting}
                 isDisabled={starting || engine.status?.state === 'starting'}
                 onClick={() => void handleStart()}
@@ -159,13 +159,13 @@ export function TasksPage() {
             )}
             <AppButton
               label="刷新"
-              icon={<RefreshCw size={15} />}
+              icon={<RefreshCw size={16} />}
               onClick={refreshAll}
             />
             <AppButton
               label="派发任务"
               tone="primary"
-              icon={<Plus size={15} />}
+              icon={<Plus size={16} />}
               onClick={() => navigate('/dispatch')}
             />
           </>
@@ -210,7 +210,7 @@ export function TasksPage() {
                 <AppButton
                   label="重试"
                   tone="secondary"
-                  icon={<RefreshCw size={15} />}
+                  icon={<RefreshCw size={16} />}
                   onClick={refreshAll}
                 />
               }
@@ -237,26 +237,31 @@ export function TasksPage() {
                 {
                   key: 'title',
                   header: '任务',
-                  width: proportional(38),
-                  renderCell: (task) => (
-                    <div>
-                      <a className="task-link" href={`#/tasks/${task.id}`}>
-                        {task.title}
-                      </a>
-                      <div className="task-meta">
-                        <span>#{task.id}</span>
-                        <span className="mono">{task.engineState}</span>
+                  width: proportional(42),
+                  renderCell: (task) => {
+                    const shortId = task.id.slice(0, 8);
+                    const titleIsId = task.title.trim() === `任务 #${shortId}`;
+                    return (
+                      <div>
+                        <a className="task-link" href={`#/tasks/${task.id}`}>
+                          {task.title}
+                        </a>
+                        {!titleIsId && (
+                          <div className="task-meta" title={task.id}>
+                            <span>#{shortId}</span>
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ),
+                    );
+                  },
                 },
                 {
                   key: 'executor',
                   header: '执行器',
-                  width: proportional(14),
+                  width: proportional(12),
                   renderCell: (task) => (
                     <span className="executor">
-                      <Terminal size={14} aria-hidden="true" />
+                      <Terminal size={16} className="icon" aria-hidden="true" />
                       {task.executor}
                     </span>
                   ),
@@ -286,12 +291,11 @@ export function TasksPage() {
                 {
                   key: 'updated',
                   header: '更新时间',
-                  width: proportional(17),
+                  width: proportional(16),
                   renderCell: (task) => (
-                    <div>
-                      <span className="muted">{formatRelative(task.updatedAt)}</span>
-                      <div className="cell-sub">{formatClock(task.updatedAt)}</div>
-                    </div>
+                    <span className="muted" title={formatClock(task.updatedAt)}>
+                      {formatRelative(task.updatedAt)}
+                    </span>
                   ),
                 },
                 {
@@ -325,11 +329,8 @@ export function TasksPage() {
               <dt>地址</dt>
               <dd className="mono">{engine.status?.baseUrl ?? '127.0.0.1:8080'}</dd>
               <dt>连接</dt>
-              <dd>
-                <AppStatus
-                  tone={engine.status?.healthy ? 'success' : 'neutral'}
-                  label={engine.status?.healthy ? '健康检查通过' : '未连接'}
-                />
+              <dd className="muted">
+                {engine.status?.healthy ? '健康检查通过' : '未连接'}
               </dd>
               <dt>版本</dt>
               <dd className="mono">{engine.status?.version ?? '—'}</dd>
@@ -367,7 +368,7 @@ export function TasksPage() {
 
           <RailCard
             title="执行器"
-            meta={<span className="dim small">{agentsState.loading ? '读取中…' : 'agent_info'}</span>}
+            meta={<span className="dim small">{agentsState.loading ? '读取中…' : '实时'}</span>}
           >
             {agentsState.agents.length === 0 ? (
               <p className="rail-note">
@@ -377,12 +378,7 @@ export function TasksPage() {
               agentsState.agents.map((agent) => (
                 <div className="agent-row" key={agent.name}>
                   <div>
-                    <div className="agent-name">
-                      <AppStatus
-                        tone={agent.available ? 'success' : 'error'}
-                        label={agent.name}
-                      />
-                    </div>
+                    <div className="agent-name">{agent.name}</div>
                     <div className="agent-meta">
                       {agent.version ? `v${agent.version}` : '版本未知'}
                       {agent.gateway?.model ? ` · ${agent.gateway.model}` : ''}
@@ -398,7 +394,7 @@ export function TasksPage() {
             {agentsState.error && agentsState.agents.length > 0 && (
               <p className="rail-note rail-note--error">{agentsState.error}</p>
             )}
-            <p className="rail-note">执行器状态来自引擎 agent_info，每 30 秒刷新。</p>
+            <p className="rail-note">执行器状态每 30 秒刷新。</p>
           </RailCard>
 
           <RailCard

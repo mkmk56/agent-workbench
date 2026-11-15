@@ -194,7 +194,7 @@ export function AppSearch({
       value={value}
       onChange={(next) => onChange(next)}
       placeholder={placeholder}
-      startIcon={<Search size={15} aria-hidden="true" />}
+      startIcon={<Search size={16} aria-hidden="true" />}
       size="sm"
       hasClear
       containerClassName={['search-field', className].filter(Boolean).join(' ')}

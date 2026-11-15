@@ -36,12 +36,12 @@ import {
 type SectionId = 'credentials' | 'engine' | 'executors' | 'hud' | 'updates' | 'data';
 
 const SECTIONS: Array<{ id: SectionId; label: string; icon: ReactNode }> = [
-  { id: 'credentials', label: '凭据', icon: <KeyRound size={15} /> },
-  { id: 'engine', label: '引擎', icon: <Server size={15} /> },
-  { id: 'executors', label: '执行器', icon: <Terminal size={15} /> },
-  { id: 'hud', label: 'Agent HUD', icon: <Bot size={15} /> },
-  { id: 'updates', label: '更新', icon: <RefreshCw size={15} /> },
-  { id: 'data', label: '数据', icon: <Database size={15} /> },
+  { id: 'credentials', label: '凭据', icon: <KeyRound size={16} className="icon" /> },
+  { id: 'engine', label: '引擎', icon: <Server size={16} className="icon" /> },
+  { id: 'executors', label: '执行器', icon: <Terminal size={16} className="icon" /> },
+  { id: 'hud', label: 'Agent HUD', icon: <Bot size={16} className="icon" /> },
+  { id: 'updates', label: '更新', icon: <RefreshCw size={16} className="icon" /> },
+  { id: 'data', label: '数据', icon: <Database size={16} className="icon" /> },
 ];
 
 const DEFAULT_STATE = {
@@ -348,15 +348,15 @@ export function SettingsPage() {
         <div>
           <h1 className="page-title">设置</h1>
           <p className="page-subtitle">
-            凭据、引擎生命周期、执行器状态、任务 IPC 与更新管道已接入；HUD 动效与上下文参考值已持久化，引擎协作参数只读。
+            凭据、引擎、执行器、HUD 与更新。改动保存在本机。
           </p>
         </div>
       </div>
 
       <AppBanner
         status="info"
-        title="本次接入范围"
-        description="Token 使用 safeStorage 加密保存；引擎启停、健康检查、执行器与任务数据来自主进程和本地引擎。HUD 的纸飞机动画与上下文参考值写入 userData/hud.json；引擎协作参数只读展示，修改需重启引擎。日志虚拟列表尚未接入。"
+        title="本地设置"
+        description="Token 经系统安全存储加密保存；引擎与执行器状态来自本地进程。HUD 动效与上下文参考值即时生效；引擎协作参数为只读，修改环境变量后需重启引擎。"
       />
 
       {notice != null && (
@@ -902,7 +902,7 @@ export function SettingsPage() {
                 </div>
                 <div className="setting-control">
                   <div className="setting-inline">
-                    <ShieldCheck size={15} aria-hidden="true" />
+                    <ShieldCheck size={16} aria-hidden="true" />
                     <AppStatus
                       tone={gate == null ? 'neutral' : gate.enabled ? 'warning' : 'neutral'}
                       label={
@@ -921,18 +921,18 @@ export function SettingsPage() {
                 <div>
                   <div className="setting-label">消息协议状态</div>
                   <div className="setting-desc">
-                    以上协作参数来自引擎 <span className="mono">agent_info</span>；GUI
-                    不修改引擎消息与审批逻辑，修改环境变量后需重启引擎。
+                    以上参数来自引擎；GUI 不修改引擎消息与审批逻辑，
+                    修改环境变量后需重启引擎。
                   </div>
                 </div>
                 <div className="setting-control">
                   <div className="setting-inline">
-                    <MessagesSquare size={15} aria-hidden="true" />
+                    <MessagesSquare size={16} aria-hidden="true" />
                     <span className="mono dim">
                       {agentsState.error
                         ? `读取失败：${agentsState.error}`
                         : agentsState.info
-                          ? 'agent_info 已返回'
+                          ? '状态已读取'
                           : '读取中…'}
                     </span>
                   </div>
@@ -1068,7 +1068,7 @@ export function SettingsPage() {
                 数据
               </h2>
               <span className="status status--success">
-                <Shield size={14} aria-hidden="true" />
+                <Shield size={16} aria-hidden="true" />
                 本地优先
               </span>
             </div>
@@ -1089,7 +1089,7 @@ export function SettingsPage() {
                     aria-label="数据目录"
                   />
                   <div className="setting-inline">
-                    <span className="dim small">来自 app.getPath('userData')</span>
+                    <span className="dim small">用户数据目录</span>
                     <AppButton label="打开目录" size="sm" onClick={() => void openDataDir()} />
                   </div>
                 </div>
@@ -1162,8 +1162,8 @@ export function SettingsPage() {
 
           <div className="save-bar">
             <div className="save-bar__status">
-              <Check size={15} aria-hidden="true" />
-              <span>凭据由主进程保存；HUD 配置即时写入 userData；引擎协作参数只读</span>
+              <Check size={16} aria-hidden="true" />
+              <span>凭据加密保存；HUD 配置即时生效；引擎协作参数只读</span>
             </div>
             <div className="save-bar__actions">
               <AppButton

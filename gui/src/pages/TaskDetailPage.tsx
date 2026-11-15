@@ -13,7 +13,6 @@ import {
 } from '../lib/engine';
 import { setFlash, takeFlash } from '../lib/flash';
 import {
-  ENGINE_STATE_LABELS,
   LOG_STREAM_LABELS,
   STATUS_LABELS,
   formatClock,
@@ -135,13 +134,13 @@ export function TaskDetailPage({ id }: { id: string }) {
             <div className="setting-inline">
               <AppButton
                 label="重试"
-                icon={<RefreshCw size={15} />}
+                icon={<RefreshCw size={16} />}
                 onClick={() => void detail.refresh()}
               />
               <AppButton
                 label="返回任务列表"
                 tone="secondary"
-                icon={<ArrowLeft size={15} />}
+                icon={<ArrowLeft size={16} />}
                 onClick={() => navigate('/tasks')}
               />
             </div>
@@ -262,8 +261,7 @@ export function TaskDetailPage({ id }: { id: string }) {
             <AppBadge tone={statusTone} label={STATUS_LABELS[taskStatus]} />
           </div>
           <p className="page-subtitle">
-            执行器 <span className="mono">{task.agent}</span> · 状态{' '}
-            <span className="mono">{ENGINE_STATE_LABELS[task.state]}</span> · 派发于{' '}
+            执行器 <span className="mono">{task.agent}</span> · 派发于{' '}
             {formatClock(task.created_at)}
           </p>
         </div>
@@ -279,7 +277,6 @@ export function TaskDetailPage({ id }: { id: string }) {
           <AppButton
             label="取消任务"
             tone="danger"
-            size="sm"
             isDisabled={terminal || actionBusy}
             title={terminal ? '任务已结束，无需取消' : '取消前会二次确认'}
             onClick={() => setCancelOpen(true)}
@@ -363,7 +360,7 @@ export function TaskDetailPage({ id }: { id: string }) {
               <AppIconButton
                 label="复制日志"
                 title="复制日志"
-                icon={<Copy size={15} />}
+                icon={<Copy size={16} />}
                 onClick={copyLogs}
               />
             </div>
@@ -399,7 +396,7 @@ export function TaskDetailPage({ id }: { id: string }) {
                 <AppButton
                   label="发送"
                   tone="primary"
-                  icon={<Send size={15} />}
+                  icon={<Send size={16} />}
                   isLoading={actionBusy}
                   isDisabled={actionBusy}
                   onClick={() => void sendFollowup()}
@@ -410,12 +407,12 @@ export function TaskDetailPage({ id }: { id: string }) {
                   <span className="kbd">Enter</span> 发送 · <span className="kbd">Shift</span> +{' '}
                   <span className="kbd">Enter</span> 换行
                 </span>
-                <span>task_send 会在同一会话中创建新的后续任务</span>
+                <span>发送后在同一会话中创建后续任务</span>
               </div>
             </div>
 
             {notice != null && (
-              <div style={{ padding: '0 16px 16px' }}>
+              <div className="log-panel__notice">
                 <Notice tone={notice.tone} title={notice.title}>
                   {notice.text}
                 </Notice>
@@ -432,7 +429,7 @@ export function TaskDetailPage({ id }: { id: string }) {
               <AppIconButton
                 label="复制任务 ID"
                 title="复制任务 ID"
-                icon={<Copy size={14} />}
+                icon={<Copy size={16} />}
                 onClick={copyTaskId}
               />
             }
@@ -503,7 +500,7 @@ export function TaskDetailPage({ id }: { id: string }) {
                 {agent?.version ? `v${agent.version}` : '版本未知'}
               </span>
             </div>
-            <dl className="meta-list" style={{ marginTop: '10px' }}>
+            <dl className="meta-list meta-list--spaced">
               <div className="meta-row">
                 <dt>模型</dt>
                 <dd>{agent?.gateway?.model ?? '由执行器配置'}</dd>
@@ -523,8 +520,8 @@ export function TaskDetailPage({ id }: { id: string }) {
                 <dd>{agent?.resume_supported ? '支持' : '不支持（服务端拼接历史）'}</dd>
               </div>
               <div className="meta-row">
-                <dt>当前任务</dt>
-                <dd className="mono">{task.state}</dd>
+                <dt>任务状态</dt>
+                <dd>{STATUS_LABELS[taskStatus]}</dd>
               </div>
               <div className="meta-row">
                 <dt>心跳</dt>
@@ -538,7 +535,7 @@ export function TaskDetailPage({ id }: { id: string }) {
             <AppButton
               label="复制任务 ID"
               size="sm"
-              icon={<Copy size={14} />}
+              icon={<Copy size={16} />}
               className="btn-block"
               onClick={copyTaskId}
             />
@@ -546,7 +543,7 @@ export function TaskDetailPage({ id }: { id: string }) {
               label="打开数据目录"
               size="sm"
               tone="ghost"
-              icon={<Database size={14} />}
+              icon={<Database size={16} />}
               className="btn-block"
               onClick={() => void openDataDir()}
             />

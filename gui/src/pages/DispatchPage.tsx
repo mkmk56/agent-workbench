@@ -150,11 +150,11 @@ export function DispatchPage() {
     <>
       <PageHead
         title="派发任务"
-        subtitle="校验通过后直接调用引擎 task_start 创建真实任务；创建成功后进入任务详情。"
+        subtitle="选择执行器，写清任务与验收标准；派发后进入任务详情。"
         actions={
           <AppButton
             label="返回任务列表"
-            icon={<ArrowLeft size={15} />}
+            icon={<ArrowLeft size={16} />}
             onClick={() => navigate('/tasks')}
           />
         }
@@ -180,7 +180,7 @@ export function DispatchPage() {
               <h2 className="section__title" id="executor-title">
                 执行器
               </h2>
-              <span className="dim small">来自引擎 agent_info</span>
+              <span className="dim small">来自引擎</span>
             </div>
             <div className="section__body">
               <div className="executor-options" role="radiogroup" aria-label="选择执行器">
@@ -279,7 +279,7 @@ export function DispatchPage() {
                     value={workdir}
                     readOnly
                   />
-                  <p className="field__hint">来自主进程解析的引擎根目录；目录配置持久化未接入。</p>
+                  <p className="field__hint">来自引擎根目录；目录配置暂不支持修改。</p>
                 </div>
               </div>
             </div>
@@ -309,28 +309,23 @@ export function DispatchPage() {
               <AppButton
                 label={submitting ? '正在派发…' : '派发任务'}
                 tone="primary"
-                icon={<Send size={15} />}
+                icon={<Send size={16} />}
                 className="btn-block"
                 isLoading={submitting}
                 isDisabled={submitting || agentOptions.every((option) => !option.available)}
                 onClick={() => void dispatch()}
               />
               <p className="preview__note">
-                点击后调用引擎 task_start；成功后跳转到新任务详情，失败会显示引擎返回的错误。
+                派发后进入任务详情；失败原因会显示在这里。
               </p>
             </div>
           </RailCard>
 
-          <RailCard title="执行器状态" meta={<span className="dim small">agent_info</span>}>
+          <RailCard title="执行器状态" meta={<span className="dim small">实时</span>}>
             {agentOptions.map((item) => (
               <div className="agent-row" key={item.id}>
                 <div>
-                  <div className="agent-name">
-                    <AppStatus
-                      tone={item.available ? 'success' : 'error'}
-                      label={item.id}
-                    />
-                  </div>
+                  <div className="agent-name">{item.id}</div>
                   <div className="agent-meta">
                     {item.agent?.version ? `v${item.agent.version}` : '版本未知'}
                     {item.agent?.resume_supported ? ' · 支持续跑' : ' · 单轮'}
@@ -343,7 +338,7 @@ export function DispatchPage() {
               </div>
             ))}
             {agentOptions.length === 0 && <p className="rail-note">正在读取执行器状态…</p>}
-            <p className="rail-note">不可用的执行器无法选中；状态来自引擎。</p>
+            <p className="rail-note">不可用的执行器无法选中。</p>
           </RailCard>
         </aside>
       </div>
