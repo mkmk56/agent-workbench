@@ -535,6 +535,38 @@ export class EngineManager {
     return this.callTool('list_messages', args);
   }
 
+  async listChats(): Promise<{ chats: Array<Record<string, unknown>> }> {
+    return this.callTool('list_chats', {});
+  }
+
+  async createChat(name?: string): Promise<Record<string, unknown>> {
+    return this.callTool('create_chat', name == null ? {} : { name });
+  }
+
+  async renameChat(chatId: string, name: string): Promise<Record<string, unknown>> {
+    return this.callTool('rename_chat', { chat_id: chatId, name });
+  }
+
+  async listChatMessages(
+    chatId: string,
+    limit = 200,
+  ): Promise<{ messages: Array<Record<string, unknown>> }> {
+    return this.callTool('list_chat_messages', { chat_id: chatId, limit });
+  }
+
+  async sendChatMessage(chatId: string, summary: string): Promise<Record<string, unknown>> {
+    return this.callTool('send_chat_message', {
+      chat_id: chatId,
+      from: 'user',
+      to: 'muse',
+      summary,
+    });
+  }
+
+  async chatStatus(chatId: string): Promise<Record<string, unknown>> {
+    return this.callTool('chat_status', { chat_id: chatId });
+  }
+
   async taskStatus(taskId: string): Promise<Record<string, unknown>> {
     return this.callTool('task_status', { task_id: taskId });
   }

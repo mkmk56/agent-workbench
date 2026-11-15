@@ -5,6 +5,7 @@ import { useRoute } from './lib/router';
 import { useAppTheme } from './lib/theme';
 import { useAppInfo } from './lib/workbench';
 import { AboutPage } from './pages/AboutPage';
+import { ChatPage } from './pages/ChatPage';
 import { DispatchPage } from './pages/DispatchPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TaskDetailPage } from './pages/TaskDetailPage';
@@ -18,8 +19,17 @@ export function App() {
 
   let page: ReactElement;
   switch (route.name) {
+    case 'chat':
+      page = <ChatPage key={route.id} chatId={route.id} />;
+      break;
+    case 'chats':
+      page = <ChatPage chatId={null} />;
+      break;
     case 'task':
       page = <TaskDetailPage key={route.id} id={route.id} />;
+      break;
+    case 'tasks':
+      page = <TasksPage />;
       break;
     case 'dispatch':
       page = <DispatchPage />;
@@ -30,8 +40,6 @@ export function App() {
     case 'about':
       page = <AboutPage />;
       break;
-    default:
-      page = <TasksPage />;
   }
 
   return (

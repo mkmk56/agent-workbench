@@ -377,6 +377,50 @@ function registerIpc(): void {
     });
   });
 
+  handle('engine:chat-list', () => engineResult(() => engine.listChats()));
+
+  handle('engine:chat-create', (input) =>
+    engineResult(() => {
+      const value = input == null ? {} : asRecord(input);
+      const name =
+        value.name == null || value.name === ''
+          ? undefined
+          : requireText(value.name, '群聊名称', 100);
+      return engine.createChat(name);
+    }),
+  );
+
+  handle('engine:chat-rename', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      return engine.renameChat(requireChatId(value.chatId), requireText(value.name, '群聊名称', 100));
+    }),
+  );
+
+  handle('engine:chat-message-list', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      return engine.listChatMessages(
+        requireChatId(value.chatId),
+        optionalInteger(value.limit, 1, 500, 200),
+      );
+    }),
+  );
+
+  handle('engine:chat-send', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      return engine.sendChatMessage(
+        requireChatId(value.chatId),
+        requireText(value.summary, '消息', 20_000),
+      );
+    }),
+  );
+
+  handle('engine:chat-status', (chatId) =>
+    engineResult(() => engine.chatStatus(requireChatId(chatId))),
+  );
+
   handle('engine:respond-approval', (input) =>
     engineResult(() => {
       const value = asRecord(input);
@@ -470,6 +514,13 @@ function requireText(value: unknown, label: string, maxLength: number): string {
 function requireTaskId(value: unknown): string {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
     throw new Error('任务 ID 无效。');
+  }
+  return value;
+}
+
+function requireChatId(value: unknown): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
+    throw new Error('群聊 ID 无效。');
   }
   return value;
 }
