@@ -1874,3 +1874,82 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 ### 额度
 
 - 额度消耗无法直接观测；本次为单 agent 会话，只执行 typecheck、一次 build、一次隔离探针与文件读写，未记录虚构百分比。
+
+---
+
+## 2026-11-16（周日）· 阶段四：群聊整合联调 + 图标重做
+
+### 目标
+
+- 由 `gui/v0.1` 新建 `gui/redesign-chat`，合并群聊后端与前端；跑 typecheck / build / verify-chat-backend。
+- 按 12 点清单实测群聊；真实 Electron 白天/黑夜截图；图标重做并打包；关机权限探针；更新 RESUME/DAILY；提交并推送。
+- **不在会话内重启生产 `:8080`**：本任务由该引擎托管，重启会杀掉执行中的任务（已在 §引擎 记录进程树证据）；切换留给用户另派的独立任务。
+
+### 合并
+
+- 后端 `gui/redesign-chat-backend`（`75cfe85`）→ `245d36a`（8 文件 +1665/−76）。
+- 前端 `gui/redesign-chat-frontend`（`9d6483d`）→ `f5f395b`（17 文件 +2977/−143）。
+- 两路文件不重叠，零冲突；未触碰他人未提交文件。
+
+### 强制检查
+
+- `cd gui && npm run typecheck`：**EXIT 0**。
+- `cd gui && npm run build`：**EXIT 0**（theme:build / build:main / vite，3220 modules）。
+- `node scripts/verify-chat-backend.mjs`：**`ok:true`、`errors:[]`、47 MCP 调用、0 LLM、EXIT 0**。
+
+### 引擎与数据
+
+- 生产 `:8080` 旧引擎（13 工具）保留；本任务进程树 `engine 29088 → claude 30408 → bash`，`Scheduler.shutdown()`/`recover()` 会 `killTree` 当前任务，故不在会话内重启。
+- 合并版隔离实例 `:18093`（独立 data）完成联调；19 工具，claude/dsh 均 available。
+- 真实库副本 `VACUUM INTO` → `:18094` 启动到 listening；37 messages / 86 tasks 行数不变，`chat_id` 新增、`task_id` 可空、`chats`/`chat_tasks` 建表。
+- 会话在 00:26 被环境终止（exit 1）；18094 日志无代码错误。恢复后重启 18093，2 个群聊 / 7 条消息 / 4 个任务完整。
+
+### 12 点清单
+
+| # | 检查项 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | 建群聊 OK | PASS | A `6aa4d5c4…`、B `221532ed…` |
+| 2 | 多群聊独立保存 | PASS | A=3 `[user,muse,claude]`，B=4 `[user,muse,dsh,user]`，零泄漏，重启后不变 |
+| 3 | 群聊里能发任务 | PASS | API user→muse；GUI 输入框发送落库（16:25:15.889Z） |
+| 4 | Muse 分拆派发 | PASS | claude `ed55d680…`、dsh `f513c36b…`，均 delivered，间隔 153 ms |
+| 5 | Claude 接活并汇报 | PASS | COMPLETED 7.5 s；`from=claude` 结论 |
+| 6 | dsh 同样 | PASS | COMPLETED 66.6 s；`<agent_reply>` 解析，`from=dsh` 结论 |
+| 7 | 发送人身份正确 | PASS | 发送人字段正确；muse 冒充被拒 `belongs to claude, not muse` |
+| 8 | agent 状态真实更新 | PASS | `WORKING→COMPLETED`；`chat_status` completed；Muse `needs_reply` |
+| 9 | 多群聊并行互不干扰 | PASS | 153 ms 内并行派发，各绑定自己的 chat_id |
+| 10 | 切换群聊恢复完整历史 | PASS | 引擎重启后 A 3 条、B 4 条升序恢复；GUI 切 A/B 均恢复 |
+| 11 | 白天/黑夜主题完整 | PASS | 浅/深 A、B 各一张，列表+消息流+输入框齐全 |
+| 12 | 原有引擎/执行器可用 | PASS | agent_info 双执行器；`task_start`→`LEGACY_OK`；`task_send`→`TURN2_OK` |
+
+说明：第 4 点由测试脚本以 `from=muse` 调用（外部编排器契约），未驱动云端 Muse 本体；B 最后一条是 GUI 测试消息，`needs_muse=true` 为真实状态。
+
+### 截图
+
+`C:\Users\yikai\AppData\Local\Temp\aw-chat-preview\shots\`：`phase4-light-chat-A.png`、`phase4-dark-chat-A.png`、`phase4-light-chat-B.png`、`phase4-dark-chat-B.png`、`phase4-light-chat-B-gui-send.png`、`phase4-light-chat-B-after-restart.png`。
+
+### 图标
+
+- 原样落盘 `icon-master.svg`、新增 `icon-small.svg` 与 `generate_icons.py`；生成 16/24/32/48/128/256/512 PNG + ICO。
+- ICO 5 尺寸 16/24/32/48/256；16px paper=130/ink=21/orange=13；深色预览可辨；重跑 SHA-256 全一致。
+- `npm run dist` **EXIT 0**：`gui/release/AgentWorkbench-Setup-0.1.0.exe`（132,954,504 bytes）；静默 `/S` 安装 EXIT 0，落到 `%LOCALAPPDATA%\Programs\agent-workbench-gui`。
+- 安装包/exe 图标提取均为新标；深色任务栏实拍 `phase4-taskbar-dark-16px-zoom.png` / `phase4-taskbar-dark-context.png`，16px 图标可辨；安装版 GUI 连接 `:18093`，显示“引擎在线”。
+
+### 关机探针
+
+- `shutdown /s /t 3600` → EXIT 0；`shutdown /a` → EXIT 0；再次 `/a` → 1116「没有进行中的关机进程」；未关机。
+
+### 未完成 / 限制
+
+- 生产 `:8080` 未切换为合并版（按用户指示另派任务）；正式库迁移将由该任务触发，真实库副本预演已通过。
+- 云端 Muse 本体未驱动。
+- 截图在临时目录，未入库。
+
+### 额度
+
+- 真实 LLM：claude 1 次（chat A，20658 in / 422 out）；dsh 2 次（chat B + legacy 两轮）。额度消耗无法直接观测，不记录虚构百分比。
+
+### Git
+
+- 分支 `gui/redesign-chat`；提交内容：两次整合合并（`245d36a`、`f5f395b`）、图标源文件/生成脚本/PNG/ICO、`docs/PHASE4_INTEGRATION.md`、`RESUME.md`、`DAILY_LOG.md`。
+- 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push -u origin gui/redesign-chat`；未改全局 git 配置，命令/文档/日志中无 token。
+- 提交 hash 与远程 HEAD 以 `git log -1`、`git ls-remote` 与任务汇报为准。
