@@ -2,11 +2,22 @@ import { useEffect, useState } from 'react';
 import type { Route } from '../types';
 
 export function parseHash(hash: string): Route {
-  const path = hash.replace(/^#/, '').replace(/\/+$/, '') || '/tasks';
+  const path = hash.replace(/^#/, '').replace(/\/+$/, '') || '/chats';
   const parts = path.split('/').filter(Boolean);
 
+  if (parts[0] === 'chats' && parts.length === 2) {
+    return { name: 'chat', id: decodeURIComponent(parts[1]) };
+  }
+  if (parts[0] === 'chats') {
+    return { name: 'chats' };
+  }
+  // Hidden debug routes: the task console is no longer in the nav,
+  // but the pages still work (linked from a message's "查看执行记录").
   if (parts[0] === 'tasks' && parts.length === 2) {
     return { name: 'task', id: decodeURIComponent(parts[1]) };
+  }
+  if (parts[0] === 'tasks') {
+    return { name: 'tasks' };
   }
   if (parts[0] === 'dispatch') {
     return { name: 'dispatch' };
@@ -17,7 +28,7 @@ export function parseHash(hash: string): Route {
   if (parts[0] === 'about') {
     return { name: 'about' };
   }
-  return { name: 'tasks' };
+  return { name: 'chats' };
 }
 
 export function useRoute(): Route {
@@ -27,7 +38,7 @@ export function useRoute(): Route {
     const onHashChange = () => setRoute(parseHash(window.location.hash));
     window.addEventListener('hashchange', onHashChange);
     if (!window.location.hash) {
-      window.history.replaceState(null, '', '#/tasks');
+      window.history.replaceState(null, '', '#/chats');
     }
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);

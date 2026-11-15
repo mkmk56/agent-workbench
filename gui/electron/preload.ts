@@ -15,6 +15,16 @@ const workbench = {
   listTasks: (limit?: number) => ipcRenderer.invoke('engine:task-list', limit),
   listMessages: (input?: { limit?: number; taskId?: string }) =>
     ipcRenderer.invoke('engine:message-list', input),
+  listChats: () => ipcRenderer.invoke('engine:chat-list'),
+  createChat: (name?: string) =>
+    ipcRenderer.invoke('engine:chat-create', name == null ? {} : { name }),
+  renameChat: (chatId: string, name: string) =>
+    ipcRenderer.invoke('engine:chat-rename', { chatId, name }),
+  listChatMessages: (chatId: string, limit?: number) =>
+    ipcRenderer.invoke('engine:chat-message-list', { chatId, limit }),
+  sendChatMessage: (chatId: string, summary: string) =>
+    ipcRenderer.invoke('engine:chat-send', { chatId, summary }),
+  chatStatus: (chatId: string) => ipcRenderer.invoke('engine:chat-status', chatId),
   getTaskStatus: (taskId: string) => ipcRenderer.invoke('engine:task-status', taskId),
   getTaskLogs: (input: { taskId: string; cursor?: number; limit?: number }) =>
     ipcRenderer.invoke('engine:task-logs', input),

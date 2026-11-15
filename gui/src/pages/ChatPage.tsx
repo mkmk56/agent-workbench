@@ -1,5 +1,5 @@
 import { CircleAlert, MessagesSquare, Plus } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { ChatHeader } from '../components/ChatHeader';
 import { Composer } from '../components/Composer';
 import { MessageList } from '../components/MessageList';
@@ -7,48 +7,31 @@ import { createChat, useChatList, useChatMessages, useChatStatus } from '../lib/
 import { navigate } from '../lib/router';
 import '../styles/chat.css';
 
-function parseChatIdFromHash(): string | null {
-  const path = window.location.hash.replace(/^#/, '').replace(/\/+$/, '');
-  const parts = path.split('/').filter(Boolean);
-  if (parts[0] === 'chats' && parts.length >= 2) {
-    return decodeURIComponent(parts[1]);
-  }
-  return null;
-}
-
 /**
- * One group chat: header, message stream and composer. The shell mounts this
- * page with the active chat id; the hash fallback keeps the page usable on its
- * own while the router is being wired.
+ * One group chat: header, message stream and composer. The shell router mounts
+ * this page with the active chat id; all content comes from the engine chat
+ * tools. With no chat selected it shows the central empty state.
  */
-export function ChatPage({ chatId }: { chatId?: string | null }) {
-  const [hashChatId, setHashChatId] = useState<string | null>(parseChatIdFromHash);
+export function ChatPage({ chatId }: { chatId: string | null }) {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const onHashChange = () => setHashChatId(parseChatIdFromHash());
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
-
-  const activeId = chatId !== undefined ? (chatId ?? null) : hashChatId;
   const chatsState = useChatList(5_000);
   const {
     messages,
     error: messagesError,
     loading: messagesLoading,
     refresh: refreshMessages,
-  } = useChatMessages(activeId, 3_000);
+  } = useChatMessages(chatId, 3_000);
   const {
     status,
     error: statusError,
     loading: statusLoading,
     refresh: refreshStatus,
-  } = useChatStatus(activeId, 5_000);
+  } = useChatStatus(chatId, 5_000);
   const { refresh: refreshChats, chats } = chatsState;
 
-  const chat = activeId != null ? (chats.find((item) => item.chat_id === activeId) ?? null) : null;
+  const chat = chatId != null ? (chats.find((item) => item.chat_id === chatId) ?? null) : null;
 
   const onSent = useCallback(async () => {
     await Promise.all([refreshMessages(), refreshStatus(), refreshChats()]);
@@ -67,7 +50,7 @@ export function ChatPage({ chatId }: { chatId?: string | null }) {
     navigate(`/chats/${encodeURIComponent(result.data.chat_id)}`);
   };
 
-  if (activeId == null) {
+  if (chatId == null) {
     return (
       <section className="chat-page chat-page--welcome" aria-label="群聊">
         <div className="chat-empty">
@@ -101,7 +84,7 @@ export function ChatPage({ chatId }: { chatId?: string | null }) {
   return (
     <section className="chat-page" aria-label={chat?.name ?? '群聊'}>
       <ChatHeader
-        chatId={activeId}
+        chatId={chatId}
         chat={chat}
         status={status}
         statusLoading={statusLoading}
@@ -109,13 +92,13 @@ export function ChatPage({ chatId }: { chatId?: string | null }) {
         onRenamed={() => void refreshChats()}
       />
       <MessageList
-        chatId={activeId}
+        chatId={chatId}
         messages={messages}
         loading={messagesLoading}
         error={messagesError}
         onRetry={() => void refreshMessages()}
       />
-      <Composer chatId={activeId} onSent={onSent} />
+      <Composer chatId={chatId} onSent={onSent} />
     </section>
   );
 }

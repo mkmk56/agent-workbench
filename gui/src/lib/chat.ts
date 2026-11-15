@@ -96,19 +96,12 @@ export interface SendChatResult {
 }
 
 interface ChatBridge {
-  listChats?: (input?: {
-    status?: ChatStatusFilter;
-    limit?: number;
-  }) => Promise<EngineResult<unknown>>;
-  createChat?: (input?: { name?: string }) => Promise<EngineResult<unknown>>;
-  renameChat?: (input: { chatId: string; name: string }) => Promise<EngineResult<unknown>>;
-  sendChatMessage?: (input: SendChatInput) => Promise<EngineResult<unknown>>;
+  listChats?: () => Promise<EngineResult<unknown>>;
+  createChat?: (name?: string) => Promise<EngineResult<unknown>>;
+  renameChat?: (chatId: string, name: string) => Promise<EngineResult<unknown>>;
+  sendChatMessage?: (chatId: string, summary: string) => Promise<EngineResult<unknown>>;
   chatStatus?: (chatId: string) => Promise<EngineResult<unknown>>;
-  listChatMessages?: (input: {
-    chatId: string;
-    limit?: number;
-    before?: string;
-  }) => Promise<EngineResult<unknown>>;
+  listChatMessages?: (chatId: string, limit?: number) => Promise<EngineResult<unknown>>;
 }
 
 function chatBridge(): ChatBridge | null {
@@ -307,10 +300,7 @@ function failureMessage(error: string | null | undefined, fallback: string): str
   return error != null && error.trim().length > 0 ? error : fallback;
 }
 
-export async function listChatsOnce(
-  status: ChatStatusFilter = 'active',
-  limit = 100,
-): Promise<EngineResult<ChatSummary[]>> {
+export async function listChatsOnce(): Promise<EngineResult<ChatSummary[]>> {
   if (!window.workbench) {
     return { ok: false, error: NO_MAIN };
   }
@@ -319,7 +309,7 @@ export async function listChatsOnce(
     return { ok: false, error: NO_CHAT_BRIDGE };
   }
   try {
-    const result = await bridge.listChats({ status, limit });
+    const result = await bridge.listChats();
     if (!result.ok) {
       return { ok: false, error: failureMessage(result.error, '读取群聊列表失败。') };
     }
@@ -341,7 +331,8 @@ export async function createChat(name?: string): Promise<EngineResult<ChatSummar
     return { ok: false, error: NO_CHAT_BRIDGE };
   }
   try {
-    const result = await bridge.createChat(name != null && name.length > 0 ? { name } : {});
+    const trimmed = name?.trim();
+    const result = await bridge.createChat(trimmed != null && trimmed.length > 0 ? trimmed : undefined);
     if (!result.ok) {
       return { ok: false, error: failureMessage(result.error, '创建群聊失败。') };
     }
@@ -364,7 +355,7 @@ export async function renameChat(chatId: string, name: string): Promise<EngineRe
     return { ok: false, error: NO_CHAT_BRIDGE };
   }
   try {
-    const result = await bridge.renameChat({ chatId, name });
+    const result = await bridge.renameChat(chatId, name);
     if (!result.ok) {
       return { ok: false, error: failureMessage(result.error, '重命名群聊失败。') };
     }
@@ -386,7 +377,7 @@ export async function sendChatMessage(input: SendChatInput): Promise<EngineResul
     return { ok: false, error: NO_CHAT_BRIDGE };
   }
   try {
-    const result = await bridge.sendChatMessage(input);
+    const result = await bridge.sendChatMessage(input.chatId, input.summary);
     if (!result.ok) {
       return { ok: false, error: failureMessage(result.error, '发送消息失败。') };
     }
@@ -425,11 +416,7 @@ function emptyChat(chatId: string): ChatSummary {
  * Poll the active chat list. Used by the chat page to resolve the current
  * chat's name and to refresh after a rename; the sidebar owns its own view.
  */
-export function useChatList(
-  pollMs = 5_000,
-  status: ChatStatusFilter = 'active',
-  limit = 100,
-): {
+export function useChatList(pollMs = 5_000): {
   chats: ChatSummary[];
   error: string | null;
   loading: boolean;
@@ -447,7 +434,7 @@ export function useChatList(
     }
     inFlight.current = true;
     try {
-      const result = await listChatsOnce(status, limit);
+      const result = await listChatsOnce();
       if (!alive.current) {
         return;
       }
@@ -463,7 +450,7 @@ export function useChatList(
         setLoading(false);
       }
     }
-  }, [limit, status]);
+  }, []);
 
   useEffect(() => {
     alive.current = true;
@@ -523,7 +510,7 @@ export function useChatMessages(
     }
     inFlight.current = true;
     try {
-      const result = await bridge.listChatMessages({ chatId, limit });
+      const result = await bridge.listChatMessages(chatId, limit);
       if (!alive.current) {
         return;
       }

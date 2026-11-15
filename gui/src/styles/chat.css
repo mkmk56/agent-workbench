@@ -11,16 +11,24 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  height: calc(100vh - var(--topbar-height) - 64px);
-  min-height: 480px;
-  max-width: 1040px;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: 1120px;
   margin: 0 auto;
+  padding: 20px 24px 16px;
 }
 
 .chat-page--welcome,
 .chat-page--empty {
   align-items: center;
   justify-content: center;
+}
+
+@media (max-width: 900px) {
+  .chat-page {
+    padding: 16px 16px 12px;
+  }
 }
 
 /* ---------------------------------------------------------------
@@ -240,185 +248,6 @@
   color: var(--text-secondary);
 }
 
-/* ---------------------------------------------------------------
- * 3. Chat list (shell left column)
- * ------------------------------------------------------------- */
-.chat-list {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.chat-list__head {
-  padding-bottom: 8px;
-}
-
-.chat-list__new {
-  width: 100%;
-}
-
-.chat-list__items {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  overflow-y: auto;
-}
-
-.chat-list__item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px 10px;
-  border: 1px solid transparent;
-  border-left: 2px solid transparent;
-  border-radius: var(--radius-sm);
-  color: inherit;
-  text-decoration: none;
-}
-
-.chat-list__item:hover {
-  background: var(--surface-hover);
-  text-decoration: none;
-}
-
-.chat-list__item.is-active {
-  background: var(--accent-subtle);
-  border-left-color: var(--accent);
-}
-
-.chat-list__row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  min-width: 0;
-}
-
-.chat-list__name {
-  min-width: 0;
-  overflow: hidden;
-  font-size: 13px;
-  line-height: 20px;
-  font-weight: 600;
-  color: var(--text);
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.chat-list__item.is-active .chat-list__name {
-  color: var(--accent-text);
-}
-
-.chat-list__time {
-  flex: none;
-  font-size: 11px;
-  line-height: 16px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.chat-list__preview {
-  overflow: hidden;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.chat-list__activity {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 2px;
-  font-size: 11px;
-  line-height: 16px;
-}
-
-.chat-list__activity--waiting {
-  color: var(--warning-text);
-}
-
-.chat-list__activity--working {
-  color: var(--accent-text);
-}
-
-.chat-list__dot {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-.chat-list__status {
-  margin: 4px 0;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--text-secondary);
-}
-
-.chat-list__empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 24px 12px;
-  text-align: center;
-  color: var(--text-muted);
-}
-
-.chat-list__empty p {
-  margin: 0;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--text-secondary);
-}
-
-.chat-list__error {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin: 4px 0;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--error-subtle);
-  color: var(--error-text);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.chat-list__retry {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--error-text);
-  font-size: 12px;
-  font-weight: 600;
-  text-decoration: underline;
-  cursor: pointer;
-}
-
-.chat-list__stale {
-  margin: 6px 0 0;
-  font-size: 11px;
-  line-height: 16px;
-  color: var(--warning-text);
-}
-
-.chat-list__item:focus-visible,
-.chat-list__retry:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
 
 /* ---------------------------------------------------------------
  * 4. Message stream

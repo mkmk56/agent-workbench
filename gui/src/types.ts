@@ -295,6 +295,43 @@ export interface TaskLogsInput {
   limit?: number;
 }
 
+export type ChatAgentId = 'muse' | 'claude' | 'dsh';
+
+export interface ChatAgentState {
+  status: string;
+  task_id?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ChatSummary {
+  chat_id: string;
+  name: string;
+  status: 'active' | 'archived';
+  last_message_at: string | null;
+  last_message_preview: string | null;
+  needs_muse: boolean;
+  agents: Record<ChatAgentId, ChatAgentState>;
+}
+
+export interface ChatMessage {
+  message_id: string;
+  chat_id: string;
+  from: 'user' | 'muse' | 'claude' | 'dsh';
+  to: 'user' | 'muse' | 'claude' | 'dsh';
+  summary: string;
+  files: string[];
+  question?: string | null;
+  status: string;
+  created_at: string;
+  task_id?: string | null;
+}
+
+export interface ChatStatusPayload {
+  chat_id: string;
+  needs_muse: boolean;
+  agents: Record<ChatAgentId, ChatAgentState>;
+}
+
 export interface WorkbenchApi {
   getAppInfo: () => Promise<AppInfo>;
   setToken: (token: string) => Promise<OperationResult>;
@@ -311,6 +348,18 @@ export interface WorkbenchApi {
     limit?: number;
     taskId?: string;
   }) => Promise<EngineResult<EngineMessageList>>;
+  listChats: () => Promise<EngineResult<{ chats: ChatSummary[] }>>;
+  createChat: (name?: string) => Promise<EngineResult<ChatSummary>>;
+  renameChat: (chatId: string, name: string) => Promise<EngineResult<ChatSummary>>;
+  listChatMessages: (
+    chatId: string,
+    limit?: number,
+  ) => Promise<EngineResult<{ messages: ChatMessage[] }>>;
+  sendChatMessage: (input: {
+    chatId: string;
+    summary: string;
+  }) => Promise<EngineResult<{ message_id: string; chat_id: string }>>;
+  chatStatus: (chatId: string) => Promise<EngineResult<ChatStatusPayload>>;
   getHudConfig: () => Promise<HudConfig>;
   setHudConfig: (patch: Partial<HudConfig>) => Promise<HudConfig>;
   respondApproval: (input: {
@@ -333,6 +382,8 @@ export interface WorkbenchApi {
 }
 
 export type Route =
+  | { name: 'chats' }
+  | { name: 'chat'; id: string }
   | { name: 'tasks' }
   | { name: 'task'; id: string }
   | { name: 'dispatch' }
