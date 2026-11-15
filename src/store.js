@@ -2,6 +2,35 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, appendFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+const MESSAGE_COLUMNS = [
+  'id', 'thread_id', 'from_agent', 'to_agent', 'task_id', 'reply_to', 'summary', 'files_json',
+  'question', 'summary_tokens', 'summary_truncated', 'status', 'delivery_task_id', 'error',
+  'is_final', 'created_at', 'updated_at', 'chat_id'
+];
+
+// Shared DDL for the messages table. task_id is intentionally nullable so a
+// Muse coordination message belongs to a chat without pretending to be a task.
+const MESSAGES_DDL = `CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        from_agent TEXT NOT NULL,
+        to_agent TEXT NOT NULL,
+        task_id TEXT,
+        reply_to TEXT,
+        summary TEXT NOT NULL,
+        files_json TEXT,
+        question TEXT,
+        summary_tokens INTEGER NOT NULL DEFAULT 0,
+        summary_truncated INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL,
+        delivery_task_id TEXT,
+        error TEXT,
+        is_final INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        chat_id TEXT
+      )`;
+
 const TASK_COLUMNS = [
   'id', 'session_id', 'agent', 'cwd', 'prompt', 'state', 'process_state', 'turn_state',
   'blocker', 'created_at', 'updated_at', 'last_activity_at', 'exit_code', 'pid',
@@ -83,25 +112,7 @@ export class Store {
         created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_task_threads_thread ON task_threads(thread_id);
-      CREATE TABLE IF NOT EXISTS messages (
-        id TEXT PRIMARY KEY,
-        thread_id TEXT NOT NULL,
-        from_agent TEXT NOT NULL,
-        to_agent TEXT NOT NULL,
-        task_id TEXT NOT NULL,
-        reply_to TEXT,
-        summary TEXT NOT NULL,
-        files_json TEXT,
-        question TEXT,
-        summary_tokens INTEGER NOT NULL DEFAULT 0,
-        summary_truncated INTEGER NOT NULL DEFAULT 0,
-        status TEXT NOT NULL,
-        delivery_task_id TEXT,
-        error TEXT,
-        is_final INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
+      ${MESSAGES_DDL};
       CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_messages_task ON messages(task_id);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_reply_unique ON messages(reply_to) WHERE reply_to IS NOT NULL;
@@ -134,9 +145,96 @@ export class Store {
         created_at TEXT NOT NULL,
         PRIMARY KEY (thread_id, category)
       );
+      CREATE TABLE IF NOT EXISTS chats (
+        chat_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        created_at TEXT,
+        updated_at TEXT,
+        status TEXT DEFAULT 'active',
+        last_message_at TEXT,
+        last_message_preview TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_chats_status ON chats(status, updated_at);
+      CREATE TABLE IF NOT EXISTS chat_tasks (
+        chat_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        created_at TEXT,
+        PRIMARY KEY (chat_id, task_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_chat_tasks_task ON chat_tasks(task_id);
     `);
+    this.migrateMessagesForChats();
     this.taskSeq = new Map();
     this.sessionSeq = new Map();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Chat migration
+  //
+  // Old databases were created with messages.task_id NOT NULL, which cannot be
+  // relaxed with ALTER TABLE. Rebuild the table once, preserving every row, and
+  // add chat_id. Both steps are guarded so a fresh or already-migrated database
+  // is untouched. Indexes are recreated because dropping a table drops them.
+  // ---------------------------------------------------------------------------
+  migrateMessagesForChats() {
+    const info = this.db.prepare('PRAGMA table_info(messages)').all();
+    if (info.length === 0) return;
+    const taskColumn = info.find((column) => column.name === 'task_id');
+    const needsRebuild = taskColumn && Number(taskColumn.notnull) === 1;
+
+    if (needsRebuild) {
+      const existing = info.map((column) => column.name);
+      const copied = MESSAGE_COLUMNS.filter((column) => existing.includes(column));
+      this.db.exec(`
+        BEGIN;
+        CREATE TABLE messages_chat_migration (
+          id TEXT PRIMARY KEY,
+          thread_id TEXT NOT NULL,
+          from_agent TEXT NOT NULL,
+          to_agent TEXT NOT NULL,
+          task_id TEXT,
+          reply_to TEXT,
+          summary TEXT NOT NULL,
+          files_json TEXT,
+          question TEXT,
+          summary_tokens INTEGER NOT NULL DEFAULT 0,
+          summary_truncated INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL,
+          delivery_task_id TEXT,
+          error TEXT,
+          is_final INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          chat_id TEXT
+        );
+        INSERT INTO messages_chat_migration (${copied.join(', ')})
+          SELECT ${copied.join(', ')} FROM messages;
+        DROP TABLE messages;
+        ALTER TABLE messages_chat_migration RENAME TO messages;
+        COMMIT;
+      `);
+    }
+
+    const columnsAfter = this.db.prepare('PRAGMA table_info(messages)').all().map((column) => column.name);
+    if (!columnsAfter.includes('chat_id')) {
+      this.db.exec('ALTER TABLE messages ADD COLUMN chat_id TEXT');
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_messages_task ON messages(task_id);
+      CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, created_at);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_reply_unique ON messages(reply_to) WHERE reply_to IS NOT NULL;
+    `);
+
+    // Historical rows that were produced by a task already linked to a chat
+    // (chat_tasks is the only task -> chat mapping) get their chat_id backfilled.
+    this.db.exec(`
+      UPDATE messages
+         SET chat_id = (SELECT ct.chat_id FROM chat_tasks ct WHERE ct.task_id = messages.task_id LIMIT 1)
+       WHERE chat_id IS NULL
+         AND task_id IS NOT NULL
+         AND EXISTS (SELECT 1 FROM chat_tasks ct WHERE ct.task_id = messages.task_id)
+    `);
   }
 
   _now() {
@@ -296,14 +394,9 @@ export class Store {
   }
 
   insertMessage(message) {
-    const columns = [
-      'id', 'thread_id', 'from_agent', 'to_agent', 'task_id', 'reply_to', 'summary', 'files_json',
-      'question', 'summary_tokens', 'summary_truncated', 'status', 'delivery_task_id', 'error',
-      'is_final', 'created_at', 'updated_at'
-    ];
     this.db.prepare(
-      `INSERT INTO messages (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`
-    ).run(...columns.map((c) => message[c] ?? null));
+      `INSERT INTO messages (${MESSAGE_COLUMNS.join(', ')}) VALUES (${MESSAGE_COLUMNS.map(() => '?').join(', ')})`
+    ).run(...MESSAGE_COLUMNS.map((c) => message[c] ?? null));
   }
 
   updateMessage(id, patch) {
@@ -326,7 +419,7 @@ export class Store {
     return this.db.prepare('SELECT * FROM messages WHERE reply_to = ?').get(messageId) ?? null;
   }
 
-  listMessages({ threadId = null, taskId = null, from = null, to = null, replyTo = null, status = null, limit = 100 } = {}) {
+  listMessages({ threadId = null, taskId = null, from = null, to = null, replyTo = null, status = null, chatId = null, limit = 100 } = {}) {
     const clauses = [];
     const params = [];
     if (threadId) { clauses.push('thread_id = ?'); params.push(threadId); }
@@ -335,11 +428,138 @@ export class Store {
     if (to) { clauses.push('to_agent = ?'); params.push(to); }
     if (replyTo) { clauses.push('reply_to = ?'); params.push(replyTo); }
     if (status) { clauses.push('status = ?'); params.push(status); }
+    if (chatId) { clauses.push('chat_id = ?'); params.push(chatId); }
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const n = Math.max(1, Math.min(500, Number(limit) || 100));
     return this.db.prepare(
       `SELECT * FROM messages ${where} ORDER BY created_at ASC, id ASC LIMIT ?`
     ).all(...params, n);
+  }
+
+  // Chat messages are returned chronologically; `before` pages backwards from a
+  // message id or an ISO timestamp. The slice is taken newest-first and then
+  // reversed so callers always receive ascending order.
+  listChatMessages({ chatId, limit = 50, before = null } = {}) {
+    const n = Math.max(1, Math.min(500, Number(limit) || 50));
+    const clauses = ['chat_id = ?'];
+    const params = [chatId];
+    if (before) {
+      const anchor = this.db.prepare('SELECT created_at FROM messages WHERE id = ?').get(before);
+      const cursor = anchor?.created_at || String(before);
+      clauses.push('created_at < ?');
+      params.push(cursor);
+    }
+    const rows = this.db.prepare(
+      `SELECT * FROM messages WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT ?`
+    ).all(...params, n);
+    return rows.reverse();
+  }
+
+  // ------------------------------------------------------------------- chats
+  insertChat(chat) {
+    this.db.prepare(
+      `INSERT INTO chats (chat_id, name, created_at, updated_at, status, last_message_at, last_message_preview)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      chat.chat_id,
+      chat.name,
+      chat.created_at ?? this._now(),
+      chat.updated_at ?? this._now(),
+      chat.status ?? 'active',
+      chat.last_message_at ?? null,
+      chat.last_message_preview ?? null
+    );
+    return this.getChat(chat.chat_id);
+  }
+
+  getChat(chatId) {
+    return this.db.prepare('SELECT * FROM chats WHERE chat_id = ?').get(chatId) ?? null;
+  }
+
+  updateChat(chatId, patch) {
+    const allowed = ['name', 'status', 'last_message_at', 'last_message_preview'];
+    const keys = Object.keys(patch).filter((key) => allowed.includes(key));
+    if (keys.length === 0) return this.getChat(chatId);
+    const sets = keys.map((key) => `${key} = ?`).join(', ');
+    this.db.prepare(`UPDATE chats SET ${sets}, updated_at = ? WHERE chat_id = ?`).run(
+      ...keys.map((key) => patch[key] ?? null),
+      this._now(),
+      chatId
+    );
+    return this.getChat(chatId);
+  }
+
+  listChats({ status = null, limit = 50 } = {}) {
+    const n = Math.max(1, Math.min(200, Number(limit) || 50));
+    const rows = status
+      ? this.db.prepare(
+        'SELECT * FROM chats WHERE status = ? ORDER BY COALESCE(last_message_at, created_at) DESC LIMIT ?'
+      ).all(status, n)
+      : this.db.prepare(
+        'SELECT * FROM chats ORDER BY COALESCE(last_message_at, created_at) DESC LIMIT ?'
+      ).all(n);
+    return rows;
+  }
+
+  // task_id -> chat_id backfill for a task that already wrote messages before
+  // it was linked, so the chat view never loses an early row.
+  linkChatTask(chatId, taskId) {
+    this.db.prepare(
+      'INSERT OR IGNORE INTO chat_tasks (chat_id, task_id, created_at) VALUES (?, ?, ?)'
+    ).run(chatId, taskId, this._now());
+    this.db.prepare(
+      'UPDATE messages SET chat_id = ? WHERE task_id = ? AND chat_id IS NULL'
+    ).run(chatId, taskId);
+  }
+
+  getChatForTask(taskId) {
+    return this.db.prepare(
+      `SELECT c.* FROM chats c JOIN chat_tasks ct ON ct.chat_id = c.chat_id WHERE ct.task_id = ? LIMIT 1`
+    ).get(taskId) ?? null;
+  }
+
+  listChatTasks(chatId) {
+    return this.db.prepare(
+      `SELECT t.* FROM tasks t JOIN chat_tasks ct ON ct.task_id = t.id
+       WHERE ct.chat_id = ? ORDER BY t.created_at ASC`
+    ).all(chatId);
+  }
+
+  latestChatTaskForAgent(chatId, agent) {
+    return this.db.prepare(
+      `SELECT t.* FROM tasks t JOIN chat_tasks ct ON ct.task_id = t.id
+       WHERE ct.chat_id = ? AND t.agent = ?
+       ORDER BY t.created_at DESC LIMIT 1`
+    ).get(chatId, agent) ?? null;
+  }
+
+  findActiveTaskForChatAgent(chatId, agent) {
+    return this.db.prepare(
+      `SELECT t.id, t.session_id, t.state FROM tasks t JOIN chat_tasks ct ON ct.task_id = t.id
+       WHERE ct.chat_id = ? AND t.agent = ?
+         AND t.state IN ('PENDING','STARTING','WORKING','WAITING','BLOCKED')
+       ORDER BY t.created_at DESC LIMIT 1`
+    ).get(chatId, agent) ?? null;
+  }
+
+  // needs_muse is derived, never stored: there is a user message and no Muse
+  // message at or after it.
+  chatNeedsMuse(chatId) {
+    const lastUser = this.db.prepare(
+      "SELECT MAX(created_at) AS ts FROM messages WHERE chat_id = ? AND from_agent = 'user'"
+    ).get(chatId)?.ts ?? null;
+    if (!lastUser) return false;
+    const lastMuse = this.db.prepare(
+      "SELECT MAX(created_at) AS ts FROM messages WHERE chat_id = ? AND from_agent = 'muse'"
+    ).get(chatId)?.ts ?? null;
+    if (!lastMuse) return true;
+    return String(lastUser) > String(lastMuse);
+  }
+
+  lastChatMessage(chatId) {
+    return this.db.prepare(
+      'SELECT * FROM messages WHERE chat_id = ? ORDER BY created_at DESC, id DESC LIMIT 1'
+    ).get(chatId) ?? null;
   }
 
   findActiveTaskForThreadAgent(threadId, agent) {
