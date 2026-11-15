@@ -1899,7 +1899,7 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 
 ### 引擎与数据
 
-- 生产 `:8080` 旧引擎（13 工具）保留；本任务进程树 `engine 29088 → claude 30408 → bash`，`Scheduler.shutdown()`/`recover()` 会 `killTree` 当前任务，故不在会话内重启。
+- 生产 `:8080` 阶段四时仍为旧引擎（13 工具）；**后于 2026-11-16 01:06 切换为合并版（19 工具，含 6 个 chat 工具，见同日阶段五条目）**。本任务进程树 `engine 29088 → claude 30408 → bash`，`Scheduler.shutdown()`/`recover()` 会 `killTree` 当前任务，故不在会话内重启。
 - 合并版隔离实例 `:18093`（独立 data）完成联调；19 工具，claude/dsh 均 available。
 - 真实库副本 `VACUUM INTO` → `:18094` 启动到 listening；37 messages / 86 tasks 行数不变，`chat_id` 新增、`task_id` 可空、`chats`/`chat_tasks` 建表。
 - 会话在 00:26 被环境终止（exit 1）；18094 日志无代码错误。恢复后重启 18093，2 个群聊 / 7 条消息 / 4 个任务完整。
@@ -1940,7 +1940,7 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 
 ### 未完成 / 限制
 
-- 生产 `:8080` 未切换为合并版（按用户指示另派任务）；正式库迁移将由该任务触发，真实库副本预演已通过。
+- 生产 `:8080` 本阶段未切换为合并版（按用户指示另派任务）；**后于 2026-11-16 01:06 完成切换（19 工具，含 6 个 chat 工具），正式库迁移随切换完成**，阶段四的真实库副本预演已通过。
 - 云端 Muse 本体未驱动。
 - 截图在临时目录，未入库。
 
@@ -1953,3 +1953,45 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 - 分支 `gui/redesign-chat`；提交内容：两次整合合并（`245d36a`、`f5f395b`）、图标源文件/生成脚本/PNG/ICO、`docs/PHASE4_INTEGRATION.md`、`RESUME.md`、`DAILY_LOG.md`。
 - 推送使用单条 `git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push -u origin gui/redesign-chat`；未改全局 git 配置，命令/文档/日志中无 token。
 - 提交 hash 与远程 HEAD 以 `git log -1`、`git ls-remote` 与任务汇报为准。
+
+---
+
+## 2026-11-16（周日）· 阶段五：生产引擎切换与验收
+
+### 引擎切换
+
+- **01:06 完成生产 `:8080` 切换**：生产引擎由旧代码换成合并分支 `gui/redesign-chat`（`31cb209`）代码。
+- 切换任务 `83217137-8c33-4591-9c14-38c5321dea6a`（claude，01:04:22 创建、01:06:04 更新）状态 **FAILED**：自身触发重启导致被终止，属预期，不是切换失败。
+- Muse 在生产入口直接复核：`tools/list` **19 个工具**，含 6 个 chat 工具；`agent_info` 显示 `chat_protocol`。
+- Muse 已把 6 个 chat 工具加入 `client.py` 的 `ALLOWED_TOOLS`；`list_chats` 调用成功。
+
+### 生产实链验收
+
+- 群聊「验收测试」`0c6e7b9f-321f-487b-93c0-ab10b6ae05da` 在生产跑通 user → Muse → Claude → 结论 → Muse → user 完整回路。
+- Claude 子任务 `766ca851-ce80-401d-baa5-9eb78cda0f5f`：**COMPLETED**、`exit_code=0`（01:07:31 → 01:08:00）；4 条消息身份依次为 `user→muse`、`muse→claude`、`claude→muse`、`muse→user`，全部正确。
+- Claude 在生产群聊汇报分支 `gui/redesign-chat`、HEAD `31cb209`、`/health ok:true`、19 工具，并指出仓库仍有“生产 13 工具 / 无 chat 工具”的旧描述。
+
+### GUI 验收
+
+- **PASS（浅色 + 深色）**：`phase5-light-chatlist.png`、`phase5-dark-chatlist.png`、`phase5-light-testchat.png`、`phase5-dark-testchat.png`、`phase5-light-testchat-bottom.png`（2143×1342，`C:\Users\yikai\AppData\Local\Temp\aw-chat-preview\shots\`）。
+- 主题切换正常；深色在重启后保持。
+- 侧栏底部仅保留 Settings 与 About 两个图标入口。
+
+### 合并分支最终审查
+
+- Muse 最终代码审查：**39 文件，+5003 / −221**。
+- 身份归属防护（identity-ownership guard）在位；每个子任务 10 条消息上限（per-sub-task 10-message cap）在位。
+
+### 文档同步
+
+- `README.md` MCP 工具清单补 6 个 chat 工具并标注总数 19。
+- `RESUME.md` S.3/S.8、`docs/PHASE4_INTEGRATION.md` §3/§4.1/§8、本文件阶段四条目的“生产 13 工具 / 无 chat 工具”加注“已于 2026-11-16 01:06 切换为 19 工具（含 6 个 chat 工具）”。
+- 更早章节的“10 → 13”等历史变更记录保持原样，不按当前总数改写。
+
+### 关机探针
+
+- 计划关机 EXIT 0；中止 EXIT 0；再次中止 EXIT 92 / Windows 1116「没有进行中的关机进程」；未真正关机。结论：Claude 具备关机权限，**PASSED**。
+
+### Git
+
+- 文档提交在 `gui/redesign-chat` 分支，推送使用代理命令；hash 与远程 HEAD 以 `git log -1` / `git ls-remote` 为准。

@@ -45,6 +45,8 @@ A `Dockerfile` builds the engine for Linux (Node 22, Claude Code CLI, and dsh 0.
 
 ## MCP tools
 
+The engine exposes 19 MCP tools: 13 core/approval tools plus 6 chat tools.
+
 - `agent_info` — executors, versions, capabilities, resume support
 - `task_start` — start a task; returns immediately
 - `task_send` — continue a session
@@ -58,6 +60,12 @@ A `Dockerfile` builds the engine for Linux (Node 22, Claude Code CLI, and dsh 0.
 - `respond_approval` — answer a pending approval: `once` / `session` / `deny`
 - `list_approvals` — persisted approval requests and decisions
 - `wait_for_task` — long poll, max 40 seconds
+- `create_chat` — create a group chat
+- `list_chats` — chats with `needs_muse` and per-agent status
+- `rename_chat` — rename a chat
+- `send_chat_message` — send a `user`/`muse` message in a chat; `muse` → `claude`/`dsh` dispatches a sub-task
+- `chat_status` — live per-agent status and sub-tasks for a chat
+- `list_chat_messages` — chat history in ascending order, with `before` pagination
 
 ## Critical-operation approval gate (default off)
 
