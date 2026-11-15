@@ -112,10 +112,6 @@ interface ChatBridge {
 }
 
 function chatBridge(): ChatBridge | null {
-  const preview = (window as unknown as { __chatStub?: ChatBridge }).__chatStub;
-  if (preview != null) {
-    return preview;
-  }
   if (!window.workbench) {
     return null;
   }

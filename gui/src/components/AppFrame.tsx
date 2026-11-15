@@ -1,8 +1,6 @@
 import {
   Info,
-  ListTodo,
   Moon,
-  Send,
   Settings as SettingsIcon,
   Sun,
 } from 'lucide-react';
@@ -135,23 +133,6 @@ export function AppFrame({
       <AgentHud engine={status} />
 
       <aside className="sidenav" aria-label="主导航">
-        <div className="nav-section">工作台</div>
-        <a
-          className={`nav-item${selected === 'tasks' ? ' is-selected' : ''}`}
-          href="#/tasks"
-          aria-current={selected === 'tasks' ? 'page' : undefined}
-        >
-          <ListTodo size={16} className="icon" aria-hidden="true" />
-          任务
-        </a>
-        <a
-          className={`nav-item${selected === 'dispatch' ? ' is-selected' : ''}`}
-          href="#/dispatch"
-          aria-current={selected === 'dispatch' ? 'page' : undefined}
-        >
-          <Send size={16} className="icon" aria-hidden="true" />
-          派发任务
-        </a>
         <div className="nav-section">配置</div>
         <a
           className={`nav-item${selected === 'settings' ? ' is-selected' : ''}`}
