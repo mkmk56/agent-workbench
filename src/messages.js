@@ -1,8 +1,17 @@
 import { randomUUID } from 'node:crypto';
+import { appendFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const AGENTS = new Set(['claude', 'dsh']);
-const SENDERS = new Set(['claude', 'dsh', 'user']);
+const SENDERS = new Set(['claude', 'dsh', 'user', 'muse']);
 const ACTIVE_TASK_STATES = new Set(['PENDING', 'STARTING', 'WORKING', 'WAITING', 'BLOCKED']);
+
+// A chat coordination thread holds the messages that belong to no sub-task:
+// user -> Muse requests, Muse assignments and Muse replies. Its id is derived
+// from the chat so it is stable across restarts.
+export function chatThreadId(chatId) {
+  return `chat:${chatId}`;
+}
 
 function isCjk(code) {
   return code >= 0x2e80;
@@ -91,6 +100,52 @@ export function buildMessagePrompt(message) {
   return lines.join('\n');
 }
 
+// Prompt for a sub-task started by a Muse assignment inside a group chat. The
+// chat name and {{chat_id}} are rendered at launch (scheduler) and at send
+// time, so the agent can reply into the same chat.
+export function buildChatTaskPrompt(message, chat) {
+  const files = parseFiles(message.files_json);
+  const lines = [
+    '[agent-workbench group chat]',
+    `chat_id: ${message.chat_id}`,
+    `chat_name: ${chat?.name ?? '(unnamed)'}`,
+    `message_id: ${message.id}`,
+    `from: ${message.from_agent}`,
+    `to: ${message.to_agent}`,
+    'your_task_id: {{task_id}}',
+    'your_chat_id: {{chat_id}}',
+    '',
+    'You are working inside one group chat. Everything you report is shown in that chat as your own message.',
+    'Work in the chat workspace and keep technical detail in task logs, not in the report.',
+    '',
+    'Request from Muse:',
+    message.summary,
+    ''
+  ];
+  if (files.length > 0) {
+    lines.push('Files:', ...files.map((file) => `- ${file}`), '');
+  }
+  if (message.question) {
+    lines.push('Question to answer:', message.question, '');
+  }
+  lines.push(
+    'When you are done, call send_message with exactly these arguments:',
+    JSON.stringify({
+      from: message.to_agent,
+      to: 'muse',
+      task_id: '{{task_id}}',
+      chat_id: '{{chat_id}}',
+      reply_to: message.id,
+      summary: 'your conclusion for the chat',
+      files: ['...']
+    }),
+    'Then end your run. Your conclusion is delivered to the chat as a message from you.',
+    'If you cannot call the tool, end your final answer with exactly one JSON block instead:',
+    '<agent_reply>{"summary":"...","files":["..."],"question":"...","done":true}</agent_reply>'
+  );
+  return lines.join('\n');
+}
+
 export function parseAgentReply(text) {
   const raw = String(text ?? '').trim();
   let payload = null;
@@ -139,9 +194,10 @@ export class MessageService {
     return {
       message_id: row.id,
       thread_id: row.thread_id,
+      chat_id: row.chat_id ?? null,
       from: row.from_agent,
       to: row.to_agent,
-      task_id: row.task_id,
+      task_id: row.task_id ?? null,
       reply_to: row.reply_to,
       summary: row.summary,
       files: parseFiles(row.files_json),
@@ -167,33 +223,51 @@ export class MessageService {
     if (!SENDERS.has(to)) throw new Error(`invalid to: ${to}`);
     if (from === to) throw new Error('from and to must be different');
 
-    const taskId = input.task_id;
-    if (typeof taskId !== 'string' || taskId === '') throw new Error('task_id is required');
-    const task = this.store.getTask(taskId);
-    if (!task) throw new Error(`task not found: ${taskId}`);
-    if (from !== 'user' && task.agent !== from) {
+    const taskId = typeof input.task_id === 'string' && input.task_id ? input.task_id : null;
+    const task = taskId ? this.store.getTask(taskId) : null;
+    if (taskId && !task) throw new Error(`task not found: ${taskId}`);
+    // Only Muse may speak without owning a task when the message is not part
+    // of a chat, and a chat message from the user needs no task at all. The
+    // ownership check still runs whenever a task_id is given, so an agent task
+    // can never impersonate Muse by passing its own task_id.
+    if (!taskId && !input.chat_id && from !== 'muse') throw new Error('task_id is required');
+    if (task && from !== 'user' && task.agent !== from) {
       throw new Error(`task ${taskId} belongs to ${task.agent}, not ${from}`);
     }
-
-    const threadId = this.store.getThreadId(taskId);
-    let thread = this.store.getThread(threadId) || this.store.ensureThread(threadId, threadId);
 
     let reply = null;
     if (input.reply_to) {
       reply = this.store.getMessage(input.reply_to);
       if (!reply) throw new Error(`reply_to message not found: ${input.reply_to}`);
-      if (reply.thread_id !== threadId) throw new Error('reply_to message belongs to a different thread');
+    }
+
+    const chatId = this.resolveChatId({ chatId: input.chat_id, taskId, reply });
+    // A message with no task and no chat has no context to belong to.
+    if (!taskId && !chatId) throw new Error('task_id or chat_id is required');
+    // A task owns its conversation thread (one sub-task = one thread, so the
+    // exchange cap is per sub-task). A message with no task belongs to the
+    // chat's coordination thread.
+    const threadId = task ? this.store.getThreadId(taskId) : chatThreadId(chatId);
+    let thread = this.store.getThread(threadId) || this.store.ensureThread(threadId, threadId);
+
+    if (reply) {
+      // An assignment lives in the chat stream while the conclusion it
+      // produced lives in the sub-task thread. A shared chat_id is the
+      // authoritative link for that cross-thread reply.
+      const sameThread = reply.thread_id === threadId;
+      const sameChat = Boolean(chatId) && reply.chat_id === chatId;
+      if (!sameThread && !sameChat) throw new Error('reply_to message belongs to a different thread');
       if (reply.from_agent !== to) {
         throw new Error(`reply_to message is from ${reply.from_agent}, not ${to}`);
       }
       if (this.store.getReply(reply.id)) throw new Error(`message ${reply.id} already has a reply`);
     }
 
-    const toUser = to === 'user';
-    // Only agent-to-agent messages count toward the back-and-forth cap. A
-    // final report to the user is always accepted, including while the thread
-    // is waiting for the user.
-    const agentMessage = from !== 'user' && !toUser;
+    // Only agent-to-agent traffic counts toward the back-and-forth cap. A final
+    // report to the user is always accepted, and Muse coordination (assignment
+    // or conclusion) is not an agent exchange, so the chat stream is unbounded
+    // while every sub-task thread still stops at the configured limit.
+    const agentMessage = AGENTS.has(from) && AGENTS.has(to);
 
     if (from === 'user') {
       // A user message is the explicit "the human is talking again" signal:
@@ -211,7 +285,8 @@ export class MessageService {
     const agentCountBefore = Number(thread.exchange_count ?? 0);
     if (agentMessage && agentCountBefore >= limit) {
       this.store.updateThread(threadId, { state: 'WAITING_USER' });
-      this.store.appendLog(taskId, 'system', `thread ${threadId} reached exchange limit ${limit}; waiting for user input`);
+      this._log({ task_id: taskId, chat_id: chatId }, 'system',
+        `thread ${threadId} reached exchange limit ${limit}; waiting for user input`);
       throw new Error(`thread ${threadId} reached the exchange limit (${limit}); waiting for user input`);
     }
 
@@ -249,7 +324,8 @@ export class MessageService {
       error: null,
       is_final: isFinal ? 1 : 0,
       created_at: now,
-      updated_at: now
+      updated_at: now,
+      chat_id: chatId
     });
     this.store.updateThread(threadId, {
       message_count: (this.store.getThread(threadId)?.message_count ?? 0) + 1,
@@ -257,12 +333,21 @@ export class MessageService {
       exchange_count: agentMessage ? agentCountBefore + 1 : (from === 'user' ? 0 : agentCountBefore),
       ...(atLimit ? { state: 'WAITING_USER' } : {})
     });
-    this.store.appendLog(taskId, 'system',
-      `message ${id} ${from}->${to} thread=${threadId} reply_to=${reply?.id ?? 'none'} tokens=${summary.tokens}`
+    if (chatId) {
+      // The chat list is backed by these columns so list_chats never has to
+      // scan the message table; both values come from the row just written.
+      this.store.updateChat(chatId, {
+        last_message_at: now,
+        last_message_preview: summary.text.slice(0, 120)
+      });
+    }
+    const row = this.store.getMessage(id);
+    this._log(row, 'system',
+      `message ${id} ${from}->${to} thread=${threadId} chat=${chatId ?? 'none'} reply_to=${reply?.id ?? 'none'} tokens=${summary.tokens}`
       + `${summary.truncated ? ' truncated' : ''}${atLimit ? ' held=limit' : ''}`
     );
     if (atLimit) {
-      this.store.appendLog(taskId, 'system', `thread ${threadId} reached exchange limit ${limit}; waiting for user input`);
+      this._log(row, 'system', `thread ${threadId} reached exchange limit ${limit}; waiting for user input`);
     } else if (input.deliver !== false && this.config.agentAutoDeliver) {
       this.attemptDelivery(id);
     }
@@ -272,6 +357,35 @@ export class MessageService {
     if (reply && !atLimit) this.store.updateMessage(reply.id, { status: 'answered' });
 
     return this.describeMessage(this.store.getMessage(id));
+  }
+
+  // A Muse message has no task to log against, so its audit trail goes to a
+  // per-chat log file. Logging must never fail a send.
+  _log(message, stream, line) {
+    if (!message) return;
+    if (message.task_id) {
+      this.store.appendLog(message.task_id, stream, line);
+      return;
+    }
+    if (!message.chat_id) return;
+    try {
+      appendFileSync(join(this.store.dataDir, `chat-${message.chat_id}.log`),
+        `[${new Date().toISOString()}] [${stream}] ${line}\n`, 'utf8');
+    } catch { /* ignore */ }
+  }
+
+  resolveChatId({ chatId, taskId, reply }) {
+    if (chatId) {
+      const chat = this.store.getChat(chatId);
+      if (!chat) throw new Error(`chat not found: ${chatId}`);
+      return chat.chat_id;
+    }
+    if (taskId) {
+      const chat = this.store.getChatForTask(taskId);
+      if (chat) return chat.chat_id;
+    }
+    if (reply?.chat_id) return reply.chat_id;
+    return null;
   }
 
   attemptDelivery(messageId) {
@@ -304,10 +418,14 @@ export class MessageService {
       return null;
     }
 
+    // A Muse assignment belongs to a group chat: it starts a fresh sub-task in
+    // its own thread and returns its conclusion to the same chat.
+    if (message.chat_id) return this.deliverChatAssignment(message);
+
     const active = this.store.findActiveTaskForThreadAgent(message.thread_id, message.to_agent);
     if (active && ACTIVE_TASK_STATES.has(active.state)) {
       this.store.updateMessage(messageId, { status: 'queued' });
-      this.store.appendLog(message.task_id, 'system',
+      this._log(message, 'system',
         `message ${messageId} queued: ${message.to_agent} still has active task ${active.id}`);
       return null;
     }
@@ -324,12 +442,49 @@ export class MessageService {
         originMessageId: messageId
       });
       this.store.updateMessage(messageId, { status: 'delivered', delivery_task_id: created.task_id });
-      this.store.appendLog(message.task_id, 'system',
+      this._log(message, 'system',
         `message ${messageId} delivered to ${message.to_agent} task=${created.task_id}`);
       return created;
     } catch (error) {
       this.store.updateMessage(messageId, { status: 'failed', error: error.message });
-      this.store.appendLog(message.task_id, 'system', `message ${messageId} delivery failed: ${error.message}`);
+      this._log(message, 'system', `message ${messageId} delivery failed: ${error.message}`);
+      return null;
+    }
+  }
+
+  // Muse -> agent inside a group chat. The sub-task gets its own thread (so the
+  // 10-message cap is per sub-task, not per chat) and a chat_tasks link (so the
+  // conclusion can be stamped with the same chat_id). An agent that is still
+  // busy in this chat queues the assignment instead of running twice.
+  deliverChatAssignment(message) {
+    const chat = this.store.getChat(message.chat_id);
+    if (!chat) {
+      this.store.updateMessage(message.id, { status: 'failed', error: `chat not found: ${message.chat_id}` });
+      return null;
+    }
+    const active = this.store.findActiveTaskForChatAgent(message.chat_id, message.to_agent);
+    if (active && ACTIVE_TASK_STATES.has(active.state)) {
+      this.store.updateMessage(message.id, { status: 'queued' });
+      this._log(message, 'system',
+        `message ${message.id} queued: ${message.to_agent} still has active task ${active.id} in chat ${chat.chat_id}`);
+      return null;
+    }
+
+    try {
+      const created = this.scheduler.createTask({
+        agent: message.to_agent,
+        prompt: buildChatTaskPrompt(message, chat),
+        cwd: this.config.root,
+        chatId: chat.chat_id,
+        originMessageId: message.id
+      });
+      this.store.updateMessage(message.id, { status: 'delivered', delivery_task_id: created.task_id });
+      this._log(message, 'system',
+        `message ${message.id} delivered as chat sub-task ${created.task_id} chat=${chat.chat_id}`);
+      return created;
+    } catch (error) {
+      this.store.updateMessage(message.id, { status: 'failed', error: error.message });
+      this._log(message, 'system', `message ${message.id} chat delivery failed: ${error.message}`);
       return null;
     }
   }
@@ -346,6 +501,12 @@ export class MessageService {
     }
   }
 
+  processQueuedChatDeliveries(chatId) {
+    if (!chatId) return;
+    const queued = this.store.listMessages({ chatId, status: 'queued', limit: 50 });
+    for (const message of queued) this.attemptDelivery(message.id);
+  }
+
   // Called by the scheduler after a task reaches a terminal state. Delivered
   // tasks answer their originating message either by calling send_message
   // themselves (reply_to matches) or, if they did not, with a reply parsed
@@ -353,18 +514,25 @@ export class MessageService {
   onTaskFinished(taskId) {
     const link = this.store.getTaskThread(taskId);
     const threadId = link?.thread_id || this.store.getThreadId(taskId);
+    const chatId = this.store.getChatForTask(taskId)?.chat_id ?? null;
 
-    if (!link?.origin_message_id) {
+    try {
+      this._routeFinishedTask(taskId, link, threadId, chatId);
+    } finally {
+      // Whatever happened, a delivery that was queued while this task was
+      // running should be retried now that it has finished — in its own thread
+      // and, for group chats, in the chat it was assigned from.
       this.processQueuedDeliveries(threadId);
-      return;
+      this.processQueuedChatDeliveries(chatId);
     }
+  }
+
+  _routeFinishedTask(taskId, link, threadId, chatId) {
+    if (!link?.origin_message_id) return;
 
     const task = this.store.getTask(taskId);
     const origin = this.store.getMessage(link.origin_message_id);
-    if (!task || !origin) {
-      this.processQueuedDeliveries(threadId);
-      return;
-    }
+    if (!task || !origin) return;
 
     const existingReply = this.store.taskReplyFrom(taskId, origin.id);
     if (existingReply) {
@@ -376,14 +544,12 @@ export class MessageService {
       } else {
         this.store.updateMessage(origin.id, { status: 'answered' });
       }
-      this.processQueuedDeliveries(threadId);
       return;
     }
 
     if (task.state !== 'COMPLETED') {
       this.store.updateMessage(origin.id, { status: 'failed', error: `task ${task.state}` });
       this.store.appendLog(taskId, 'system', `message ${origin.id} not answered: task ${task.state}`);
-      this.processQueuedDeliveries(threadId);
       return;
     }
 
@@ -392,7 +558,6 @@ export class MessageService {
       // already done; do not spawn another turn after this task finishes.
       this.store.updateMessage(origin.id, { status: 'answered' });
       this.store.appendLog(taskId, 'system', `message ${origin.id} is final; no auto-reply`);
-      this.processQueuedDeliveries(threadId);
       return;
     }
 
@@ -402,6 +567,9 @@ export class MessageService {
         from: task.agent,
         to: origin.from_agent,
         task_id: taskId,
+        // The conclusion keeps the chat of the assignment it answers, so the
+        // group chat shows it as a message from this agent.
+        chat_id: origin.chat_id ?? chatId ?? undefined,
         reply_to: origin.id,
         summary: parsed.summary,
         files: parsed.files,
@@ -410,11 +578,11 @@ export class MessageService {
         is_final: parsed.done
       });
       this.store.appendLog(taskId, 'system',
-        `message ${reply.message_id} auto-reply to ${origin.id} done=${parsed.done}`);
+        `message ${reply.message_id} auto-reply to ${origin.id} done=${parsed.done}`
+        + ` chat=${reply.chat_id ?? 'none'}`);
     } catch (error) {
       this.store.appendLog(taskId, 'system', `auto-reply for ${origin.id} failed: ${error.message}`);
     }
-    this.processQueuedDeliveries(threadId);
   }
 
   list(filters = {}) {
@@ -431,6 +599,7 @@ export class MessageService {
       to: filters.to || null,
       replyTo: filters.reply_to || null,
       status: filters.status || null,
+      chatId: filters.chat_id || null,
       limit: filters.limit
     });
     const thread = threadId ? this.store.getThread(threadId) : null;

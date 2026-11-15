@@ -24,7 +24,7 @@ export class Scheduler {
     return new Date().toISOString();
   }
 
-  createTask({ agent, prompt, cwd, sessionId, model, timeoutMs, threadId, originMessageId }) {
+  createTask({ agent, prompt, cwd, sessionId, model, timeoutMs, threadId, originMessageId, chatId }) {
     const executor = EXECUTORS[agent];
     if (!executor) throw new Error(`unknown agent: ${agent}`);
     if (typeof prompt !== 'string' || prompt.length === 0) throw new Error('prompt must be a non-empty string');
@@ -76,7 +76,11 @@ export class Scheduler {
     };
     this.store.insertTask(task);
     this.store.setTaskThread(id, threadId || id, originMessageId || null);
-    this.store.appendLog(id, 'system', `queued agent=${agent} cwd=${dir} thread=${threadId || id}`);
+    // A chat sub-task keeps its own thread but is linked to the group chat, so
+    // its conclusion can be stamped back into that chat.
+    if (chatId) this.store.linkChatTask(chatId, id);
+    this.store.appendLog(id, 'system',
+      `queued agent=${agent} cwd=${dir} thread=${threadId || id}${chatId ? ` chat=${chatId}` : ''}`);
     this.queue.push(id);
     this.pump();
     return { task_id: id, session_id: sessionIdFinal, status: ORCH_STATE.PENDING };
@@ -158,6 +162,9 @@ export class Scheduler {
     // Agents need their own task id to call send_message; render placeholders
     // at launch time so the stored prompt stays reusable.
     const threadId = this.store.getThreadId(task.id);
+    // A chat sub-task needs its chat id in the prompt so the agent can call
+    // send_message with chat_id and land its conclusion in the right chat.
+    const taskChatId = this.store.getChatForTask(task.id)?.chat_id ?? null;
     const gateBlock = this.approvals?.promptBlock(task) || '';
     const combinedPrompt = gateBlock
       ? `${gateBlock}\n\n---\n\n${String(task.prompt)}`
@@ -166,6 +173,7 @@ export class Scheduler {
       .replaceAll('{{task_id}}', task.id)
       .replaceAll('{{session_id}}', task.session_id)
       .replaceAll('{{thread_id}}', threadId)
+      .replaceAll('{{chat_id}}', taskChatId ?? '')
       .replaceAll('{{agent}}', task.agent);
     if (gateBlock) {
       this.store.appendLog(task.id, 'system',
@@ -335,6 +343,7 @@ export class Scheduler {
       files_modified: filesModified,
       summary: task.summary,
       thread_id: thread.thread_id,
+      chat_id: this.store.getChatForTask(task.id)?.chat_id ?? null,
       thread_state: thread.state,
       waiting_for_user: thread.state === 'WAITING_USER',
       exchange_count: thread.exchange_count ?? 0,
@@ -414,6 +423,12 @@ export class Scheduler {
         exchange_limit: this.config.agentMessageLimit,
         summary_max_tokens: this.config.agentSummaryMaxTokens,
         auto_deliver: this.config.agentAutoDeliver
+      },
+      chat_protocol: {
+        senders: ['user', 'muse', 'claude', 'dsh'],
+        agent_statuses: ['idle', 'pending', 'working', 'waiting', 'blocked', 'completed', 'failed', 'cancelled'],
+        exchange_limit_per_subtask_thread: this.config.agentMessageLimit,
+        needs_muse: 'derived: a user message exists with no Muse message at or after it'
       },
       approval_gate: this.approvals?.info() ?? {
         enabled: Boolean(this.config.agentApprovalGate),

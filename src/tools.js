@@ -9,7 +9,7 @@ const asError = (message) => ({
   isError: true
 });
 
-export function registerTools(server, { scheduler, store, messages, approvals }) {
+export function registerTools(server, { scheduler, store, messages, approvals, chats }) {
   server.registerTool('agent_info', {
     description: 'List available executors (claude, dsh) with version, capabilities and resume support.'
   }, async () => asText(scheduler.agentInfo()));
@@ -134,12 +134,15 @@ export function registerTools(server, { scheduler, store, messages, approvals })
     description: 'Send a conclusion-only message from one local agent to the other. The server generates the '
       + 'message_id, persists the message and links replies with reply_to. The summary is hard-capped at 500 tokens '
       + '(configurable) and over-long summaries are truncated. When the target agent is idle the message is delivered '
-      + 'by starting a task; otherwise it is queued. Each thread stops after 10 agent messages and waits for a user '
-      + 'message unless AGENT_MESSAGE_LIMIT is changed.',
+      + 'by starting a task; otherwise it is queued. Each thread stops after 10 agent-to-agent messages and waits for a '
+      + 'user message unless AGENT_MESSAGE_LIMIT is changed. Muse may send without task_id; a message that carries '
+      + 'chat_id is shown in that group chat and a Muse message to an agent starts a sub-task for it.',
     inputSchema: {
-      from: z.enum(['claude', 'dsh', 'user']).describe('Sender; must match the task agent unless user'),
-      to: z.enum(['claude', 'dsh', 'user']).describe('Recipient agent, or user for a final report'),
-      task_id: z.string().min(1).describe('Task sending the message; {{task_id}} is rendered into agent prompts'),
+      from: z.enum(['claude', 'dsh', 'user', 'muse']).describe('Sender; must match the task agent unless user or muse'),
+      to: z.enum(['claude', 'dsh', 'user', 'muse']).describe('Recipient agent, user for a final report, or muse'),
+      task_id: z.string().min(1).optional()
+        .describe('Task sending the message; required unless from=muse. {{task_id}} is rendered into agent prompts'),
+      chat_id: z.string().optional().describe('Group chat this message belongs to; Muse->agent must set it'),
       reply_to: z.string().optional().describe('message_id this message answers'),
       summary: z.string().min(1).describe('Conclusion summary; truncated to the token cap'),
       files: z.array(z.string()).max(100).optional().describe('Files involved in the conclusion'),
@@ -147,12 +150,12 @@ export function registerTools(server, { scheduler, store, messages, approvals })
       deliver: z.boolean().optional().describe('Auto-start a task for the recipient; default true'),
       is_final: z.boolean().optional().describe('Marks that no further agent turn is expected')
     }
-  }, async ({ from, to, task_id, reply_to, summary, files, question, deliver, is_final }) => {
+  }, async ({ from, to, task_id, chat_id, reply_to, summary, files, question, deliver, is_final }) => {
     try {
       // Pass only schema fields: the internal message_id used by the approval
       // service must not be settable from an agent-facing call.
       return asText(messages.send({
-        from, to, task_id, reply_to, summary, files, question, deliver, is_final
+        from, to, task_id, chat_id, reply_to, summary, files, question, deliver, is_final
       }));
     } catch (error) {
       return asError(error.message);
@@ -160,18 +163,122 @@ export function registerTools(server, { scheduler, store, messages, approvals })
   });
 
   server.registerTool('list_messages', {
-    description: 'List persisted agent-to-agent messages and thread state. Filter by thread_id, task_id, '
+    description: 'List persisted agent-to-agent messages and thread state. Filter by thread_id, task_id, chat_id, '
       + 'from, to, reply_to or status. Includes reply_to chains, summary token counts and waiting_for_user.',
     inputSchema: {
       thread_id: z.string().optional().describe('Conversation thread id'),
       task_id: z.string().optional().describe('Task id; alone, lists that task\'s whole thread'),
-      from: z.enum(['claude', 'dsh', 'user']).optional(),
-      to: z.enum(['claude', 'dsh', 'user']).optional(),
+      chat_id: z.string().optional().describe('Group chat id'),
+      from: z.enum(['claude', 'dsh', 'user', 'muse']).optional(),
+      to: z.enum(['claude', 'dsh', 'user', 'muse']).optional(),
       reply_to: z.string().optional().describe('Only messages replying to this message_id'),
       status: z.string().optional().describe('queued|delivered|answered|held|stored|failed'),
       limit: z.number().int().min(1).max(500).optional()
     }
   }, async (filters) => asText(messages.list(filters)));
+
+  // ------------------------------------------------------------------ chats
+  server.registerTool('create_chat', {
+    description: 'Create a group chat (one chat = one independent task context). An empty name starts as "新群聊" '
+      + 'and is renamed later by Muse. Returns the new chat.',
+    inputSchema: {
+      name: z.string().max(200).optional().describe('Chat name; defaults to 新群聊')
+    }
+  }, async ({ name }) => {
+    try {
+      const chat = chats.create({ name });
+      return asText({
+        chat_id: chat.chat_id,
+        name: chat.name,
+        created_at: chat.created_at
+      });
+    } catch (error) {
+      return asError(error.message);
+    }
+  });
+
+  server.registerTool('list_chats', {
+    description: 'List group chats with their derived state: needs_muse is true when a user message has no Muse '
+      + 'reply after it, and each agent status comes from its latest real sub-task in that chat. Omitted status '
+      + 'means active chats; pass "all" to include archived ones.',
+    inputSchema: {
+      status: z.enum(['active', 'archived', 'all']).optional().describe('Chat status filter; default active'),
+      limit: z.number().int().min(1).max(200).optional()
+    }
+  }, async ({ status, limit }) => {
+    try {
+      return asText(chats.list({ status, limit }));
+    } catch (error) {
+      return asError(error.message);
+    }
+  });
+
+  server.registerTool('rename_chat', {
+    description: 'Rename a group chat and return the updated chat.',
+    inputSchema: {
+      chat_id: z.string().min(1).describe('Chat id'),
+      name: z.string().min(1).max(200).describe('New chat name')
+    }
+  }, async ({ chat_id, name }) => {
+    try {
+      return asText(chats.rename({ chat_id, name }));
+    } catch (error) {
+      return asError(error.message);
+    }
+  });
+
+  server.registerTool('send_chat_message', {
+    description: 'Post a natural-language message into a group chat. from=user must address muse (a new request). '
+      + 'from=muse may address the user or an agent; addressing an agent starts a sub-task for it with the chat '
+      + 'context in the prompt, and that agent\'s conclusion returns to this chat as its own message.',
+    inputSchema: {
+      chat_id: z.string().min(1).describe('Chat id'),
+      from: z.enum(['user', 'muse']).describe('user posts a request to Muse; muse coordinates'),
+      to: z.enum(['muse', 'user', 'claude', 'dsh']).describe('Recipient'),
+      summary: z.string().min(1).describe('Natural-language message body; truncated to the token cap'),
+      files: z.array(z.string()).max(100).optional().describe('Files involved'),
+      question: z.string().optional().describe('Question the recipient must answer'),
+      task_id: z.string().optional().describe('Only for internal callers; Muse messages need no task'),
+      reply_to: z.string().optional().describe('message_id this message answers')
+    }
+  }, async (args) => {
+    try {
+      return asText(chats.send(args));
+    } catch (error) {
+      return asError(error.message);
+    }
+  });
+
+  server.registerTool('chat_status', {
+    description: 'Derive the live status of a group chat: needs_muse, each participant status from its latest real '
+      + 'sub-task (idle|pending|working|waiting|blocked|completed|failed|cancelled), and the chat\'s sub-tasks.',
+    inputSchema: {
+      chat_id: z.string().min(1).describe('Chat id')
+    }
+  }, async ({ chat_id }) => {
+    try {
+      return asText(chats.status(chat_id));
+    } catch (error) {
+      return asError(error.message);
+    }
+  });
+
+  server.registerTool('list_chat_messages', {
+    description: 'List the natural-language message stream of one group chat, oldest first. Only summaries, files, '
+      + 'questions and statuses are returned; task logs and tool output are never included. Use `before` with a '
+      + 'message_id or ISO timestamp to page backwards.',
+    inputSchema: {
+      chat_id: z.string().min(1).describe('Chat id'),
+      limit: z.number().int().min(1).max(500).optional().describe('Page size; default 50'),
+      before: z.string().optional().describe('message_id or ISO timestamp to page backwards from')
+    }
+  }, async ({ chat_id, limit, before }) => {
+    try {
+      return asText(chats.listMessages({ chat_id, limit, before }));
+    } catch (error) {
+      return asError(error.message);
+    }
+  });
 
   server.registerTool('request_approval', {
     description: 'Ask the user, in chat, before a critical operation. Only active when AGENT_APPROVAL_GATE=1; '
