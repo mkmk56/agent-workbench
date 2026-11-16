@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { tempDir, makeServices, makeZip, uploadBuffer } from './helpers.js';
+import { tempDir, makeServices, makeZip, seedTask, uploadBuffer } from './helpers.js';
 
 function tinyPdf() {
   return Buffer.from(
@@ -150,6 +150,56 @@ test('DOCX and PDF text extraction', () => {
       chat_id: chat.chat_id, file_id: pdfMeta.file_id, actor: { master: true }
     });
     assert.match(pdfRead.text, /Hello PDF/);
+  } finally {
+    store.close();
+  }
+});
+
+test('XLSX and PPTX text extraction', () => {
+  const dir = tempDir();
+  const { store, files, chats } = makeServices(dir);
+  try {
+    const chat = chats.create({ name: 'Office' });
+    const xlsx = makeZip([
+      ['xl/sharedStrings.xml', '<sst><si><t>Hello</t></si><si><t>World</t></si></sst>'],
+      ['xl/worksheets/sheet1.xml',
+        '<worksheet><sheetData><row><c t="s"><v>0</v></c><c t="s"><v>1</v></c></row></sheetData></worksheet>']
+    ]);
+    const xlsxMeta = uploadBuffer(files, chat.chat_id, 'table.xlsx', xlsx);
+    assert.equal(xlsxMeta.parse_status, 'parsed');
+    const xlsxRead = files.readFile({
+      chat_id: chat.chat_id, file_id: xlsxMeta.file_id, actor: { master: true }
+    });
+    assert.match(xlsxRead.text, /Hello\tWorld/);
+
+    const pptx = makeZip([[
+      'ppt/slides/slide1.xml',
+      '<p:sld><a:p><a:r><a:t>Hello PPTX</a:t></a:r></a:p></p:sld>'
+    ]]);
+    const pptxMeta = uploadBuffer(files, chat.chat_id, 'deck.pptx', pptx);
+    assert.equal(pptxMeta.parse_status, 'parsed');
+    const pptxRead = files.readFile({
+      chat_id: chat.chat_id, file_id: pptxMeta.file_id, actor: { master: true }
+    });
+    assert.match(pptxRead.text, /Hello PPTX/);
+  } finally {
+    store.close();
+  }
+});
+
+test('non-chat messages also reject bare paths', () => {
+  const dir = tempDir();
+  const { store, messages } = makeServices(dir);
+  try {
+    const task = seedTask(store, { agent: 'claude', cwd: dir });
+    assert.throws(() => messages.send({
+      from: 'claude', to: 'muse', task_id: task.id,
+      summary: 'with a host path', files: ['D:\\secret\\keys.txt']
+    }), /bare host path|file_id references/i);
+    const ok = messages.send({
+      from: 'claude', to: 'muse', task_id: task.id, summary: 'no files', deliver: false
+    });
+    assert.deepEqual(ok.files, []);
   } finally {
     store.close();
   }

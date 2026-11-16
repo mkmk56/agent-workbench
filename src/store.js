@@ -893,6 +893,31 @@ export class Store {
     return Number(lastUser) > Number(lastMuse);
   }
 
+  findActiveTaskForThreadAgent(threadId, agent) {
+    return this.db.prepare(
+      `SELECT t.id, t.session_id, t.state FROM tasks t
+       JOIN task_threads tt ON tt.task_id = t.id
+       WHERE tt.thread_id = ? AND t.agent = ?
+         AND t.state IN ('PENDING','STARTING','WORKING','WAITING','BLOCKED')
+       ORDER BY t.created_at DESC LIMIT 1`
+    ).get(threadId, agent) ?? null;
+  }
+
+  findThreadSession(threadId, agent) {
+    return this.db.prepare(
+      `SELECT t.session_id, t.id, t.created_at FROM tasks t
+       JOIN task_threads tt ON tt.task_id = t.id
+       WHERE tt.thread_id = ? AND t.agent = ?
+       ORDER BY t.created_at DESC LIMIT 1`
+    ).get(threadId, agent) ?? null;
+  }
+
+  taskReplyFrom(taskId, replyTo) {
+    return this.db.prepare(
+      'SELECT id, status FROM messages WHERE task_id = ? AND reply_to = ? ORDER BY created_at DESC LIMIT 1'
+    ).get(taskId, replyTo) ?? null;
+  }
+
   lastChatMessage(chatId) {
     return this.db.prepare(
       'SELECT * FROM messages WHERE chat_id = ? ORDER BY seq DESC, created_at DESC, id DESC LIMIT 1'
