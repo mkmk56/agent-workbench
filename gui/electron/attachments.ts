@@ -109,6 +109,12 @@ export interface AttachmentEngine {
     entry?: string;
     maxBytes?: number;
   }): Promise<Record<string, unknown>>;
+  /** Original stored bytes over `GET /chats/:id/files/:fileId`. */
+  downloadChatFileRaw?(input: {
+    chatId: string;
+    fileId: string;
+    maxBytes?: number;
+  }): Promise<{ bytes: Buffer; name?: string | null; mime?: string | null }>;
   listChatFiles?(input: {
     chatId: string;
     limit?: number;
@@ -676,6 +682,49 @@ export class AttachmentService {
       mime: 'text/plain; charset=utf-8',
       kind,
       extracted: kind !== 'text' && kind !== 'code',
+    };
+  }
+
+  /**
+   * Original stored bytes for download/save.
+   *
+   * `fetchBytes` returns extracted text for documents, which is fine for
+   * preview but not for saving. This uses the engine's raw-bytes route
+   * (`GET /chats/:id/files/:fileId`) and therefore always yields the file as
+   * uploaded, so `extracted` is always false. Throws when the route is missing
+   * or the engine cannot serve the file — never falls back to text silently.
+   */
+  async fetchRawBytes(input: {
+    chatId: string;
+    fileId: string;
+    engine: AttachmentEngine;
+    maxBytes?: number;
+  }): Promise<FetchedFile> {
+    const maxBytes = input.maxBytes ?? this.maxFileBytes;
+    const download = input.engine.downloadChatFileRaw;
+    if (download == null) {
+      throw new Error('引擎客户端不支持原始字节下载。');
+    }
+    const raw = await download.call(input.engine, {
+      chatId: input.chatId,
+      fileId: input.fileId,
+      maxBytes,
+    });
+    const bytes = raw.bytes;
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
+      throw new Error('引擎未返回文件内容。');
+    }
+    if (bytes.length > maxBytes) {
+      throw new Error(`文件超过可下载上限（${formatBytes(maxBytes)}）。`);
+    }
+    const name = safeFileName(raw.name ?? input.fileId);
+    const mime = raw.mime ?? mimeFor(name);
+    return {
+      bytes,
+      name,
+      mime,
+      kind: detectKind(name, mime),
+      extracted: false,
     };
   }
 

@@ -70,6 +70,8 @@ const HEALTH_TIMEOUT_MS = 2_000;
 const CALL_TIMEOUT_MS = 20_000;
 /** Upload chunks and file reads move megabytes over the local MCP transport. */
 const UPLOAD_TIMEOUT_MS = 90_000;
+/** Raw-bytes downloads stream a whole stored file (up to the 20 MB upload cap). */
+const DOWNLOAD_TIMEOUT_MS = 60_000;
 const START_TIMEOUT_MS = 30_000;
 const MAX_LOG_TAIL = 12;
 
@@ -142,6 +144,32 @@ function readSharedToken(): string | null {
   } catch {
     return null;
   }
+}
+
+/** Pull `filename`/`filename*` out of an RFC 6266 Content-Disposition header. */
+function filenameFromDisposition(header: string | null): string | null {
+  if (header == null || header.length === 0) {
+    return null;
+  }
+  const extended = /filename\*\s*=\s*([^']*)'[^']*'([^;]+)/i.exec(header);
+  if (extended != null) {
+    try {
+      const decoded = decodeURIComponent(extended[2].trim().replace(/^"|"$/g, ''));
+      if (decoded.length > 0) {
+        return decoded;
+      }
+    } catch {
+      // Malformed percent-encoding: fall back to the plain parameter.
+    }
+  }
+  const plain = /filename\s*=\s*(?:"([^"]*)"|([^;]+))/i.exec(header);
+  if (plain != null) {
+    const value = (plain[1] ?? plain[2] ?? '').trim();
+    if (value.length > 0) {
+      return value;
+    }
+  }
+  return null;
 }
 
 export interface EngineManagerOptions {
@@ -803,6 +831,72 @@ export class EngineManager {
       };
     }
     return parsed;
+  }
+
+  /**
+   * Raw stored bytes for one uploaded file: `GET /chats/:id/files/:fileId`.
+   *
+   * `read_chat_file` only returns extracted text for documents, so the original
+   * PDF/DOCX/XLSX/PPTX/ZIP bytes are reachable only through this plain HTTP
+   * route. It answers with the stored mime plus an attachment Content-Disposition
+   * carrying the original filename, and 404 for files it does not know.
+   */
+  async downloadChatFileRaw(input: {
+    chatId: string;
+    fileId: string;
+    maxBytes?: number;
+  }): Promise<{ bytes: Buffer; name: string | null; mime: string | null }> {
+    const resolution = this.resolveToken();
+    if (!resolution.token) {
+      throw new Error(
+        '未配置引擎 Token：请在“设置 → 凭据”中保存 Token，或重启引擎以自动同步 Token，或在仓库 workbench.env 中提供 MCP_BEARER_TOKEN。',
+      );
+    }
+
+    const url =
+      `${this.baseUrl}/chats/${encodeURIComponent(input.chatId)}` +
+      `/files/${encodeURIComponent(input.fileId)}`;
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${resolution.token}`,
+          Accept: '*/*',
+        },
+        signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === 'TimeoutError') {
+        throw new Error(`引擎响应超时（${Math.round(DOWNLOAD_TIMEOUT_MS / 1000)} 秒）。`);
+      }
+      throw new Error(`无法连接本地引擎 ${this.baseUrl}；请确认引擎已启动。`);
+    }
+
+    if (response.status === 401) {
+      throw new Error('引擎拒绝了 Token（401）。请在“设置 → 凭据”中更新 Token。');
+    }
+    if (response.status === 404) {
+      throw new Error(`引擎中不存在该文件（404）：${input.fileId}。`);
+    }
+    if (!response.ok) {
+      throw new Error(`引擎返回 HTTP ${response.status}。`);
+    }
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length === 0) {
+      throw new Error('引擎返回了空的文件内容。');
+    }
+    if (input.maxBytes != null && bytes.length > input.maxBytes) {
+      throw new Error(
+        `文件超过可下载上限（${Math.round(input.maxBytes / (1_024 * 1_024))} MB）。`,
+      );
+    }
+    return {
+      bytes,
+      name: filenameFromDisposition(response.headers.get('content-disposition')),
+      mime: response.headers.get('content-type'),
+    };
   }
 
   async taskStatus(taskId: string): Promise<Record<string, unknown>> {

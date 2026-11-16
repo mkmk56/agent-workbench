@@ -21,6 +21,7 @@ import {
   MAX_FILES_PER_UPLOAD,
   type AttachmentDraft,
   type ChatFilePayload,
+  type FetchedFile,
 } from './attachments';
 import { runAttachmentVerification } from './attachment-verify';
 import {
@@ -688,16 +689,31 @@ function registerIpc(): void {
   });
 
   // Canonical download entry: main-process save dialog + write to disk.
+  //
+  // Documents cannot be saved from `read_chat_file` (it returns extracted text,
+  // not the file), so the original bytes come from the engine's raw-bytes route
+  // `GET /chats/:id/files/:fileId`. The text/base64 path stays as the fallback:
+  // it still serves images and text, and it fails loudly for everything whose
+  // only content is extracted text.
   const saveChatFile = async (input: unknown) => {
     try {
       const value = asRecord(input);
       const chatId = requireChatId(value.chatId);
       const fileId = requireFileId(value.fileId);
-      const fetched = await attachments.fetchBytes({ chatId, fileId, engine });
-      if (fetched.extracted) {
-        throw new Error(
-          '该格式目前只能预览解析出的文本；保存原始文件需要后端提供原始字节接口（待联调）。',
-        );
+      let fetched: FetchedFile;
+      try {
+        fetched = await attachments.fetchRawBytes({ chatId, fileId, engine });
+      } catch {
+        // The route is unavailable (older engine, unknown file, network): fall
+        // back to the MCP read path, which either has the real bytes (images,
+        // text) or reports that only extracted text exists.
+        const fallback = await attachments.fetchBytes({ chatId, fileId, engine });
+        if (fallback.extracted) {
+          throw new Error(
+            '该格式目前只能预览解析出的文本；保存原始文件需要后端提供原始字节接口（待联调）。',
+          );
+        }
+        fetched = fallback;
       }
       const options: Electron.SaveDialogOptions = {
         title: '保存附件',
