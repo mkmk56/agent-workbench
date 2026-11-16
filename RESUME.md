@@ -1029,3 +1029,56 @@ dsh：
 - 共享 Token 文件为逐用户明文文件（ACL 已收紧），与 `workbench.env` 的既有明文口径一致；如需更高等级，可后续改为 DPAPI/凭据管理器存储。
 - 若在引擎运行期间手动轮换 `workbench.env` 的 Token，需要等下次引擎重启同步后才与运行中的引擎一致；正常开机流程不会出现该窗口。
 - 本次未重启生产引擎（避免中断当前活跃任务）；启动链路本身通过脚本双来源实测验证。
+
+---
+
+## V 阶段六/七：群聊升级最终验收（2026-11-17）
+
+> 本节为追加记录，不回改上文历史；时间为本机 UTC+8。核查对象是运行中的生产实例（`:8080`），全程未重启引擎、未改代码；Phase 6 的原始交付记录见 `data/ops/phase6-test-report.md`。
+
+### V.1 引擎健康与工具面
+
+| 检查项 | 结果 | 证据 |
+|---|---|---|
+| `/health` | **PASS** | `GET http://127.0.0.1:8080/health` → HTTP 200，`{"ok":true,"service":"agent-workbench","version":"0.1.0","uptime_s":14993}`；引擎 PID 29268，启动于 2026-11-16 21:29:34，核查期间未重启 |
+| `tools/list` | **PASS** | 实测 **28 个工具**：Phase 5 的 19 个（13 core/approval + 6 chat）全部在位，新增 9 个：`chat_archive`、`chat_unarchive`、`chat_mark_read`、`chat_get_context`、`upload_chat_file_init`、`upload_chat_file_chunk`、`upload_chat_file_complete`、`read_chat_file`、`list_chat_files` |
+
+- 备注：`README.md` 的 MCP 工具清单仍写“19 个工具”（Phase 6 未同步），属文档漂移，不影响运行；本次按用户要求未改代码与工具清单。
+
+### V.2 验收群聊与 Phase 6 证据
+
+- 群聊「验收测试-群聊升级」`dc1aa3bc-70c4-45b3-bae6-bed4f89ea55a`：消息 **28 条，seq 1–28 连续无缺**；附件 **9 个**；9 个附件的磁盘原件 SHA-256 与库内 `chat_files.sha256`、文件大小逐项一致（9/9 OK）。
+- Test 1 三方问候：seq 1 user→muse；seq 2/3 muse→dsh/claude；seq 4 muse→user；seq 5 claude→muse；seq 8 dsh→muse。dsh 首次因额度失败，seq 6–8 为补回，最终三方均回「老大你好！有什么要吩咐！」。
+- Test 2 接力计算：seq 11 claude→muse `37 × 24 = 888`；seq 14 dsh→muse `引用 Claude 的 888，加 100 得 988`；seq 16 muse 总结确认 888/988。
+- Test 4 文件理解：seq 20/21/22 三方回复均含 `AURORA-PDF-5521`、`Project Aurora`、480 万元（CNY 4.8 million）；Claude 任务日志 `data/229f786d-a35d-46ce-b4e9-f99465e4d545.log` 保留真实 `read_chat_file` 调用与 `phase6-summary.pdf` 元数据（file_id `e4dbf66d-1668-42a6-a251-315933ae635c`，sha256 `ad109088…fccfe3`）；dsh 日志 `data/92d17fee-3d01-459f-b033-5d44f1e6920d.log` 含同一校验词。
+- 数据位置：生产库 `data/workbench.db`（`messages`、`chat_files`、`chat_participants`）；任务日志 `data/*.log`。
+
+### V.3 原始文件下载路由
+
+- `GET /chats/dc1aa3bc-70c4-45b3-bae6-bed4f89ea55a/files/e4dbf66d-1668-42a6-a251-315933ae635c`（master token）→ **HTTP 200**；响应头 `content-type: application/pdf`、`content-length: 2316`、`content-disposition: attachment; filename="phase6-summary.pdf"`、`x-content-type-options: nosniff`。
+- 取回字节以 `%PDF-1.3` 开头，SHA-256 = `ad109088dff15936148ed9175a0e27ecd508158d59dad8c2b63e104917fccfe3`，与上传记录、`data/chat-files/...` 磁盘原件、`.tmp-phase6-retest/downloads/pdf/phase6-summary.pdf`（Phase 6 GUI 真实保存件）完全一致。
+
+### V.4 GUI 安装版
+
+- 安装版 GUI 正在运行：`C:\Users\yikai\AppData\Local\Programs\agent-workbench-gui\Agent Workbench.exe`，共 4 个进程（主进程 PID 25640 + GPU/网络/渲染子进程），启动于 2026-11-16 23:55:46。
+- `resources\app.asar` 大小 68,244,802 B，mtime 2026-11-16 21:14，SHA-256 = `802F29F536FA88871C9B3514374515C26BF1D85362640D966CDE2B12357B3E0A`，即下载修复版。
+
+### V.5 Live 检查（新群聊真实运行时）
+
+- 新建群聊「最终验收-群聊升级」`798fbbab-1459-4e84-952c-f51b38fd1981`；仅由本核查以 `from=user` 发送 seq 1「最终验收：请三位各回一句话」。
+- **Muse**：17:38:02Z 派发 Claude，17:38:09Z 派发 dsh，17:38:13Z 向 user 回复「最终验收：Muse 在线，群聊升级最终验收进行中。」（seq 2/4/5）。
+- **Claude**：任务 `266d3d37-f3e6-4e02-946a-01e62cb52f16` → **COMPLETED / exit 0**（17:38:02→17:38:08），seq 3 回复「Claude 在线，消息收发与回复均正常，验收通过。」
+- **dsh**：任务 `a5c08b3c-9765-423a-a3cf-36c95b13e2db` → **COMPLETED / exit 0**（17:38:09→17:39:12，约 63 s），`<agent_reply>` 被解析并落库为 seq 6「dsh 在线，消息收发与回复均正常，验收通过。」；**未出现 quota 失败，无需重试**。
+- 群聊最终 6 条消息：`user→muse`、`muse→claude`、`claude→muse`、`muse→dsh`、`muse→user`、`dsh→muse`；claude/dsh 作为参与者在派发时自动加入。
+
+### V.6 结论
+
+| # | 核查项 | 结果 |
+|---|---|---|
+| 1 | 引擎健康 / 28 工具 | **PASS** |
+| 2 | 验收群聊 28 消息 / 9 附件 / Test 1、2、4 证据 | **PASS** |
+| 3 | 下载路由原始字节 + sha256 | **PASS** |
+| 4 | GUI 运行 + app.asar 802F29F5… | **PASS** |
+| 5 | Live 三方真实回复 | **PASS** |
+
+阶段六的既有验收记录（`data/ops/phase6-test-report.md`）：Test 1/2/4 PASS；Test 3 上传/列表/解析 5/5 + 下载复测 5/5 PASS；Test 5/6/7 PASS。阶段七本次复核未发现回归。

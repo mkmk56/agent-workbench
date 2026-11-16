@@ -2022,3 +2022,37 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 - 共享文件为逐用户明文（ACL 收紧），与 `workbench.env` 口径一致。
 - 未重启生产引擎，避免中断活跃任务；启动同步脚本已按两种 Token 来源实测。
 - 全程未输出 Token 明文，仓库变更不含 Token。
+
+---
+
+## 2026-11-17（周一）· 阶段七：群聊升级最终验收（生产实机）
+
+### 目标
+
+- 在运行中的生产实例上复核群聊升级交付状态（引擎/工具、验收群聊数据、下载路由、GUI 安装版），并做一次新群聊三方真实回复的 live 检查；结果追加到 RESUME/DAILY，不改代码、不重启引擎。
+
+### 结果
+
+| # | 核查项 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | 引擎健康 + 工具数 | **PASS** | `/health` 200（uptime_s=14993）；`tools/list` 28 个 = 旧 19 + 新 9 |
+| 2 | 验收群聊 | **PASS** | `dc1aa3bc…` 28 条消息（seq 1–28）、9 个附件；9/9 磁盘哈希与库一致；Test 1/2/4 证据在库与任务日志 |
+| 3 | 下载路由 | **PASS** | `GET /chats/…/files/e4dbf66d…` 200，2316 B，sha256 `ad109088…fccfe3` |
+| 4 | GUI | **PASS** | 安装版 4 进程运行；`app.asar` sha256 `802F29F5…` |
+| 5 | Live 三方回复 | **PASS** | 新群聊 `798fbbab…`：Muse seq 2/4/5；Claude 任务 `266d3d37…` exit 0；dsh 任务 `a5c08b3c…` exit 0（无 quota 失败） |
+
+### 明细
+
+- 引擎 PID 29268（2026-11-16 21:29:34 启动），核查期间未重启。工具 28 个，新增：`chat_archive`、`chat_unarchive`、`chat_mark_read`、`chat_get_context`、`upload_chat_file_init/chunk/complete`、`read_chat_file`、`list_chat_files`。
+- 验收群聊「验收测试-群聊升级」：28 条消息、9 个附件；Test 1 三方问候（seq 1–8，dsh 额度失败后补回）、Test 2 `37×24=888 → +100=988`（seq 9–16）、Test 4 `AURORA-PDF-5521 / Project Aurora / 480 万元`（seq 17–22）均在 DB 与 `data/*.log` 中。
+- 下载：`phase6-summary.pdf`（file_id `e4dbf66d-1668-42a6-a251-315933ae635c`）经 master token 取回 2316 字节，sha256 与上传记录/磁盘原件/Phase 6 GUI 保存件一致。
+- GUI：`%LOCALAPPDATA%\Programs\agent-workbench-gui\Agent Workbench.exe` 4 个进程在运行；`resources\app.asar` sha256 `802F29F536FA88871C9B3514374515C26BF1D85362640D966CDE2B12357B3E0A`（68,244,802 B）。
+- Live：新建「最终验收-群聊升级」`798fbbab-1459-4e84-952c-f51b38fd1981`，仅发送 user seq 1；Muse 于 17:38:02Z/17:38:09Z 派发 Claude/dsh 并在 17:38:13Z 回复；Claude 6 s 完成、dsh 63 s 完成，均 exit 0；最终 6 条消息身份正确。（时间为 UTC；本机 UTC+8）
+- 文档漂移（非阻塞）：`README.md` 仍写 19 个工具，未同步 Phase 6 的 28 个；本次未改。
+- 限制：未驱动 Muse 本体的内部实现，只验证其在生产链路中真实收消息、派发子任务并回复。
+
+### 产出
+
+- `RESUME.md` 追加 `## V 阶段六/七：群聊升级最终验收（2026-11-17）`（V.1–V.6）。
+- `DAILY_LOG.md` 追加本节（2026-11-17）。
+- 只读核查 + 一次 live 群聊；未重启引擎、未改代码、未触碰其他既有任务。
