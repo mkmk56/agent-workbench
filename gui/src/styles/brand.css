@@ -402,10 +402,12 @@ html[data-theme="dark"] .logo--dark {
   border-top: 1px solid var(--border);
 }
 
-/* The HUD capsule flows in the rail column instead of sticking on its own. */
+/* The HUD capsule flows in the rail column instead of sticking on its own.
+ * Width 62px = 44px slot + 2 × 8px padding + 2 × 1px border, so the 44px
+ * slot fits the content box exactly (see hud.css). */
 .nav-rail__hud .hud {
   position: static;
-  width: 60px;
+  width: 62px;
   align-self: center;
 }
 

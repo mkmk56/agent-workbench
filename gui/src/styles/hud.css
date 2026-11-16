@@ -14,8 +14,9 @@
   gap: 12px;
   align-self: start;
   justify-self: center;
-  /* 44px slot + 2 × 8px padding: the content box must be exactly 44px. */
-  width: 60px;
+  /* 44px slot + 2 × 8px padding + 2 × 1px border: the content box must be
+   * exactly 44px, so the 44px slot fits without overflowing. */
+  width: 62px;
   padding: 8px;
   background: var(--hud-bg);
   border: 1px solid rgba(245, 243, 238, 0.1);
@@ -140,8 +141,8 @@ html[data-theme="dark"] .hud {
 
 .hud-slot__state {
   position: absolute;
-  right: -1px;
-  bottom: -1px;
+  right: 0;
+  bottom: 0;
   z-index: 3;
   display: grid;
   place-items: center;
@@ -171,8 +172,8 @@ html[data-theme="dark"] .hud {
 
 .hud-slot__unread {
   position: absolute;
-  top: -3px;
-  right: -3px;
+  top: 0;
+  right: 0;
   z-index: 4;
   display: grid;
   place-items: center;
@@ -192,8 +193,8 @@ html[data-theme="dark"] .hud {
 
 .hud-slot__queue {
   position: absolute;
-  left: -3px;
-  bottom: -3px;
+  left: 0;
+  bottom: 0;
   z-index: 4;
   display: grid;
   place-items: center;
@@ -226,13 +227,19 @@ html[data-theme="dark"] .hud {
   }
 }
 
-/* Hover / focus detail card */
+/* Hover / focus detail card.
+ * Rendered once, via a React portal to document.body, fixed-positioned (see
+ * AgentHud): the rail has overflow-y: auto, which clips any descendant —
+ * fixed included — to the 96px rail, so a card rendered inside the rail
+ * never paints at all. The portal escapes the rail entirely; `top` is set
+ * inline from the hovered slot's bounding rect (clamped to the viewport),
+ * and the card is pointer-transparent so it never blocks clicks on the
+ * session list. Do NOT move this back inside .hud-slot. */
 .hud-popover {
-  position: absolute;
-  top: 50%;
-  left: 60px;
-  z-index: 60;
-  display: none;
+  position: fixed;
+  left: 104px;
+  z-index: 80;
+  display: block;
   width: 280px;
   max-width: calc(100vw - 120px);
   padding: 12px;
@@ -242,23 +249,7 @@ html[data-theme="dark"] .hud {
   box-shadow: var(--shadow-2);
   color: var(--text);
   transform: translateY(-50%);
-}
-
-.hud-slot:hover .hud-popover,
-.hud-slot:has(.hud-slot__button:focus-visible) .hud-popover {
-  display: block;
-}
-
-/* Keep edge cards inside the window instead of centring past the viewport. */
-.hud-slot:first-child .hud-popover {
-  top: 0;
-  transform: none;
-}
-
-.hud-slot:last-child .hud-popover {
-  top: auto;
-  bottom: 0;
-  transform: none;
+  pointer-events: none;
 }
 
 .hud-popover__head {

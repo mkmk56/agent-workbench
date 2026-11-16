@@ -1,5 +1,6 @@
 import { Circle, Hourglass, Mail, Play, TriangleAlert } from 'lucide-react';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
 import dshMark from '../assets/sidebar/dsh-mark.png';
 import claudeMark from '../assets/sidebar/claude-mark.png';
@@ -68,9 +69,19 @@ function StatusBadge({ state, label }: { state: HudState; label: string }) {
   );
 }
 
-function HudPopover({ slot, note, id }: { slot: HudSlot; note?: string; id: string }) {
+function HudPopover({
+  slot,
+  note,
+  id,
+  top,
+}: {
+  slot: HudSlot;
+  note?: string;
+  id: string;
+  top: number;
+}) {
   return (
-    <div className="hud-popover" role="tooltip" id={id}>
+    <div className="hud-popover" role="tooltip" id={id} style={{ top }}>
       <div className="hud-popover__head">
         <span className="hud-popover__icon" aria-hidden="true">
           <AgentGlyph id={slot.id} size={18} />
@@ -125,6 +136,65 @@ export function AgentHud({ engine }: { engine: EngineStatus | null }) {
     claude: 0,
     dsh: 0,
   });
+  // Hovered / focused slot for the detail card. The card is rendered once,
+  // fixed-positioned outside the rail (see hud.css): an absolutely-positioned
+  // card inside the rail would be clipped by the rail's overflow.
+  const [hovered, setHovered] = useState<{
+    slot: HudSlot;
+    queued: number;
+    note?: string;
+    top: number;
+  } | null>(null);
+  const hideTimer = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (hideTimer.current != null) {
+        window.clearTimeout(hideTimer.current);
+      }
+    },
+    [],
+  );
+
+  const slotNote = useCallback(
+    (slot: HudSlot): string | undefined => {
+      const notes: string[] = [];
+      if (slot.id === 'muse') {
+        if (messagesError != null) {
+          notes.push(`消息读取失败：${messagesError}（未读与纸飞机可能不完整）`);
+        }
+        if (messagesSaturated) {
+          notes.push(
+            '消息窗口已满（list_messages 500 条上限）：未读与纸飞机将停止更新，重启 GUI 也不能恢复。',
+          );
+        }
+      }
+      return notes.length > 0 ? notes.join(' ') : undefined;
+    },
+    [messagesError, messagesSaturated],
+  );
+
+  const showFor = useCallback(
+    (slot: HudSlot, queueCount: number, el: HTMLElement) => {
+      if (hideTimer.current != null) {
+        window.clearTimeout(hideTimer.current);
+        hideTimer.current = null;
+      }
+      const rect = el.getBoundingClientRect();
+      const center = rect.top + rect.height / 2;
+      // Keep the ~230px card inside the viewport.
+      const top = Math.min(Math.max(center, 120), window.innerHeight - 120);
+      setHovered({ slot, queued: queueCount, note: slotNote(slot), top });
+    },
+    [slotNote],
+  );
+
+  const hideSoon = useCallback(() => {
+    if (hideTimer.current != null) {
+      window.clearTimeout(hideTimer.current);
+    }
+    hideTimer.current = window.setTimeout(() => setHovered(null), 150);
+  }, []);
 
   const onArrive = useCallback((agent: HudAgentId) => {
     setFlashNonce((current) => ({ ...current, [agent]: (current[agent] ?? 0) + 1 }));
@@ -155,19 +225,15 @@ export function AgentHud({ engine }: { engine: EngineStatus | null }) {
         {slots.map((slot) => {
           const queueCount = queued[slot.id] ?? 0;
           const tipId = `hud-tip-${slot.id}`;
-          const notes: string[] = [];
-          if (slot.id === 'muse') {
-            if (messagesError != null) {
-              notes.push(`消息读取失败：${messagesError}（未读与纸飞机可能不完整）`);
-            }
-            if (messagesSaturated) {
-              notes.push(
-                '消息窗口已满（list_messages 500 条上限）：未读与纸飞机将停止更新，重启 GUI 也不能恢复。',
-              );
-            }
-          }
           return (
-            <div className="hud-slot" key={slot.id}>
+            <div
+              className="hud-slot"
+              key={slot.id}
+              onMouseEnter={(event) => showFor(slot, queueCount, event.currentTarget)}
+              onMouseLeave={hideSoon}
+              onFocus={(event) => showFor(slot, queueCount, event.currentTarget)}
+              onBlur={hideSoon}
+            >
               <button
                 type="button"
                 className={`hud-slot__button hud-slot__button--${slot.state}`}
@@ -218,15 +284,20 @@ export function AgentHud({ engine }: { engine: EngineStatus | null }) {
                   />
                 )}
               </button>
-              <HudPopover
-                id={tipId}
-                slot={{ ...slot, queued: queueCount }}
-                note={notes.length > 0 ? notes.join(' ') : undefined}
-              />
             </div>
           );
         })}
       </nav>
+      {hovered != null &&
+        createPortal(
+          <HudPopover
+            id={`hud-tip-${hovered.slot.id}`}
+            slot={{ ...hovered.slot, queued: hovered.queued }}
+            note={hovered.note}
+            top={hovered.top}
+          />,
+          document.body,
+        )}
     </>
   );
 }
