@@ -1,4 +1,5 @@
 import { describeResolution, resolveDshCommand } from '../config.js';
+import { ensureAgentMcpConfig } from '../mcp-config.js';
 import { spawnProcess, killTree } from './process.js';
 
 const MAX_HISTORY_CHARS = 12000;
@@ -39,10 +40,26 @@ export const dshExecutor = {
     }
     const prompt = task.resume ? stitchPrompt(ctx.history, task.prompt) : task.prompt;
     let out = '';
+    // dsh has no built-in MCP client today, but its scoped credential and
+    // config path are injected so a future tool bridge cannot accidentally
+    // inherit the master token.
+    let env = {};
+    try {
+      const mcpConfigPath = ensureAgentMcpConfig(ctx.config, 'dsh');
+      env = {
+        WORKBENCH_MCP_CONFIG: mcpConfigPath,
+        WORKBENCH_MCP_URL: ctx.config.mcpUrl,
+        WORKBENCH_MCP_TOKEN: ctx.config.agentTokens?.dsh ?? ''
+      };
+      ctx.log('system', `dsh scoped mcp config=${mcpConfigPath} (token injected via env)`);
+    } catch (error) {
+      ctx.log('system', `dsh scoped mcp config unavailable: ${error.message}`);
+    }
     const child = spawnProcess({
       command: resolved.command,
       prefixArgs: resolved.prefixArgs,
       args: ['--profile', 'headless', prompt],
+      env,
       cwd: task.cwd || ctx.config.root,
       onLine: (stream, line) => {
         ctx.log(stream, line);

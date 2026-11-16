@@ -1,21 +1,23 @@
 import http from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { config } from './config.js';
+import { identifyToken, extractBearer } from './auth.js';
 import { Store } from './store.js';
 import { Scheduler } from './scheduler.js';
 import { MessageService } from './messages.js';
 import { ChatService } from './chats.js';
 import { ApprovalService } from './approvals.js';
-import { ensureClaudeMcpConfig } from './mcp-config.js';
+import { FileService } from './files.js';
+import { ensureAgentMcpConfig } from './mcp-config.js';
 import { registerTools } from './tools.js';
 
 const store = new Store(config.dbPath, config.dataDir);
 const scheduler = new Scheduler(store, config);
-const messages = new MessageService({ store, scheduler, config });
+const files = new FileService({ store, config });
+const messages = new MessageService({ store, scheduler, config, files });
 const chats = new ChatService({ store, messages, config });
 const approvals = new ApprovalService({ store, config, messages, scheduler });
 scheduler.messages = messages;
@@ -52,23 +54,13 @@ function isRateLimited(req) {
   return bucket.count > rateLimitPerMinute;
 }
 
-function createMcpServer() {
+function createMcpServer(auth) {
   const server = new McpServer(
     { name: 'agent-workbench', version: '0.1.0' },
     { capabilities: { logging: {} } }
   );
-  registerTools(server, { scheduler, store, messages, approvals, chats });
+  registerTools(server, { scheduler, store, messages, approvals, chats, files, config }, auth);
   return server;
-}
-
-function authorized(req) {
-  const header = req.headers.authorization;
-  if (typeof header !== 'string') return false;
-  // Auth scheme is case-insensitive (RFC 7235); some MCP clients send "bearer" or no scheme at all.
-  const credential = header.trim().replace(/^bearer\s+/i, '').trim();
-  const provided = Buffer.from(credential);
-  const expected = Buffer.from(config.token);
-  return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
 function sendJson(res, code, payload) {
@@ -135,7 +127,9 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (!authorized(req)) {
+  // Identity comes from the credential, never from the request body.
+  const auth = identifyToken(extractBearer(req), config);
+  if (!auth) {
     const header = req.headers.authorization;
     console.error(header
       ? `401: authorization rejected (len=${header.length}, bearer_prefix=${/^\s*bearer\s/i.test(header)})`
@@ -160,9 +154,9 @@ const server = http.createServer(async (req, res) => {
     const rpcMethods = (Array.isArray(body) ? body : [body])
       .map((entry) => entry?.method)
       .filter(Boolean);
-    if (rpcMethods.length > 0) console.log(`MCP ${rpcMethods.join(',')}`);
+    if (rpcMethods.length > 0) console.log(`MCP ${rpcMethods.join(',')} auth=${auth.token_kind}:${auth.participant}`);
 
-    const mcp = createMcpServer();
+    const mcp = createMcpServer(auth);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     try {
       await mcp.connect(transport);
@@ -192,11 +186,13 @@ const server = http.createServer(async (req, res) => {
   sendJson(res, 405, { error: 'method not allowed' });
 });
 
-try {
-  const mcpConfigPath = ensureClaudeMcpConfig(config);
-  console.log(`claude mcp config: ${mcpConfigPath}`);
-} catch (error) {
-  console.error(`failed to write claude mcp config: ${error.message}`);
+for (const agent of ['claude', 'dsh']) {
+  try {
+    const mcpConfigPath = ensureAgentMcpConfig(config, agent);
+    console.log(`${agent} mcp config (scoped token): ${mcpConfigPath}`);
+  } catch (error) {
+    console.error(`failed to write ${agent} mcp config: ${error.message}`);
+  }
 }
 
 server.listen(config.port, config.bind, () => {
@@ -225,3 +221,7 @@ function shutdown(signal) {
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+// Exported for the isolated verification harness (scripts/verify-upgrade.mjs).
+// Importing this module still starts the listener; callers close `server` and
+// `store` when finished.
+export { server, store, scheduler, messages, chats, approvals, files };

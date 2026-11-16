@@ -7,7 +7,9 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node --env-file-if-exists=workbench.env src/server.js",
-    "dev": "node --env-file-if-exists=workbench.env --watch src/server.js"
+    "dev": "node --env-file-if-exists=workbench.env --watch src/server.js",
+    "test": "node --test \"test/*.test.js\"",
+    "verify:upgrade": "node scripts/verify-upgrade.mjs"
   },
   "engines": {
     "node": ">=22.5"

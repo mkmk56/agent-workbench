@@ -78,7 +78,19 @@ export class Scheduler {
     this.store.setTaskThread(id, threadId || id, originMessageId || null);
     // A chat sub-task keeps its own thread but is linked to the group chat, so
     // its conclusion can be stamped back into that chat.
-    if (chatId) this.store.linkChatTask(chatId, id);
+    if (chatId) {
+      this.store.linkChatTask(chatId, id);
+      // Running a task in a chat makes the executor a participant, which is
+      // also the unit of its token's read/dispatch scope.
+      this.store.upsertChatParticipant({
+        chat_id: chatId,
+        participant_id: agent,
+        kind: 'agent',
+        role: agent,
+        display_name: agent,
+        auto_participate: true
+      });
+    }
     this.store.appendLog(id, 'system',
       `queued agent=${agent} cwd=${dir} thread=${threadId || id}${chatId ? ` chat=${chatId}` : ''}`);
     this.queue.push(id);

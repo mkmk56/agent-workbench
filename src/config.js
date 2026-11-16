@@ -2,6 +2,7 @@ import { resolve, join, dirname } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { deriveAgentTokens } from './auth.js';
 
 const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
 
@@ -104,13 +105,38 @@ export const config = {
   claudeEnv: loadClaudeEnv(),
   mcpUrl: `http://${internalHost}:${port}/mcp`,
   claudeMcpConfigPath: resolve(dataDir, 'claude-mcp.json'),
+  dshMcpConfigPath: resolve(dataDir, 'dsh-mcp.json'),
   agentMessageLimit: intEnv('AGENT_MESSAGE_LIMIT', 10),
   agentSummaryMaxTokens: intEnv('AGENT_SUMMARY_MAX_TOKENS', 500),
   agentAutoDeliver: process.env.AGENT_AUTO_DELIVER !== '0',
   // Chat-based approval gate for merge / delete / dependency operations.
   // Off by default: the workbench keeps its fully automatic behaviour.
   agentApprovalGate: boolEnv('AGENT_APPROVAL_GATE', false),
-  approvalTimeoutMs: intEnv('APPROVAL_TIMEOUT_MS', 10 * 60 * 1000)
+  approvalTimeoutMs: intEnv('APPROVAL_TIMEOUT_MS', 10 * 60 * 1000),
+  // ---------------------------------------------------------------------
+  // Group-chat upgrade
+  // ---------------------------------------------------------------------
+  chatFilesDir: resolve(dataDir, 'chat-files'),
+  chatContextTokenBudget: intEnv('CHAT_CONTEXT_TOKEN_BUDGET', 6000),
+  chatContextMessageLimit: intEnv('CHAT_CONTEXT_MESSAGE_LIMIT', 30),
+  // Hard ceiling on executor messages inside one epoch. A real user message
+  // starts a new epoch and resets this budget.
+  chatEpochAgentBudget: intEnv('CHAT_EPOCH_AGENT_BUDGET', 20),
+  // Must stay above AGENT_MESSAGE_LIMIT (10); otherwise the causal-depth gate
+// would fire before the per-sub-task exchange cap it is meant to complement.
+  chatMaxDepth: intEnv('CHAT_MAX_CAUSAL_DEPTH', 16),
+  chatBodyMaxChars: intEnv('CHAT_BODY_MAX_CHARS', 100_000),
+  chatMaxFileBytes: intEnv('CHAT_MAX_FILE_BYTES', 20 * 1024 * 1024),
+  // The MCP JSON body limit is 8 MB. Keep one base64 chunk at 1 MB by default
+  // (about 1.4 MB of JSON) so multi-chunk uploads never hit that ceiling.
+  chatUploadChunkBytes: Math.min(intEnv('CHAT_UPLOAD_CHUNK_BYTES', 1024 * 1024), 1024 * 1024),
+  chatReadMaxBytes: intEnv('CHAT_READ_MAX_BYTES', 200_000),
+  // A terminal agent status is shown for this long and then collapses to idle.
+  chatTerminalStatusTtlMs: intEnv('CHAT_TERMINAL_STATUS_TTL_MS', 60_000),
+  executorVision: {
+    claude: boolEnv('WORKBENCH_CLAUDE_VISION', true),
+    dsh: boolEnv('WORKBENCH_DSH_VISION', false)
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -260,3 +286,8 @@ if (!config.token || config.token.length < 32) {
   console.error('MCP_BEARER_TOKEN is required and must be at least 32 characters long.');
   process.exit(1);
 }
+
+// Deterministic per-executor tokens. No plaintext agent token is persisted;
+// both the server and the executor's MCP config derive the same value from the
+// master token.
+config.agentTokens = deriveAgentTokens(config.token);

@@ -6,6 +6,7 @@ const NAME_MAX = 200;
 const CHAT_STATUSES = new Set(['active', 'archived']);
 const CHAT_SENDERS = new Set(['user', 'muse']);
 const CHAT_RECIPIENTS = new Set(['muse', 'user', 'claude', 'dsh']);
+const AGENTS = new Set(['claude', 'dsh']);
 
 // Real task states mapped to the status words a chat participant shows. The
 // raw engine state is kept next to it so a client never has to guess.
@@ -21,7 +22,9 @@ const AGENT_STATUS = {
   CANCELLED: 'cancelled'
 };
 
-function parseFiles(json) {
+const TERMINAL_ORCH = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
+
+function parseJsonArray(json) {
   try {
     const value = JSON.parse(json || '[]');
     return Array.isArray(value) ? value : [];
@@ -43,6 +46,7 @@ export class ChatService {
       chat_id: chat.chat_id,
       name: chat.name,
       status: chat.status ?? 'active',
+      epoch: Number(chat.epoch ?? 0),
       created_at: chat.created_at,
       updated_at: chat.updated_at,
       last_message_at: chat.last_message_at ?? null,
@@ -69,7 +73,17 @@ export class ChatService {
       name: trimmed || DEFAULT_CHAT_NAME,
       created_at: now,
       updated_at: now,
-      status: 'active'
+      status: 'active',
+      epoch: 0
+    });
+    // The human and the Muse coordinator belong to every chat. Executors join
+    // on their first mention/dispatch (see MessageService._ensureParticipants),
+    // which is also the unit of an agent token's access scope.
+    this.store.upsertChatParticipant({
+      chat_id: chat.chat_id, participant_id: 'user', kind: 'human', role: 'user', display_name: 'User'
+    });
+    this.store.upsertChatParticipant({
+      chat_id: chat.chat_id, participant_id: 'muse', kind: 'orchestrator', role: 'muse', display_name: 'Muse'
     });
     return this.describe(chat);
   }
@@ -79,17 +93,38 @@ export class ChatService {
     if (typeof name !== 'string' || name.trim() === '') throw new Error('name must be a non-empty string');
     const trimmed = name.trim();
     if (trimmed.length > NAME_MAX) throw new Error(`name must be at most ${NAME_MAX} characters`);
-    // Renaming does not invent activity: updated_at changes, last_message_at
-    // stays tied to the real last message.
     return this.describe(this.store.updateChat(chat.chat_id, { name: trimmed }));
   }
 
+  // Archiving only flips the list-visibility flag. Messages, files, epoch and
+  // tasks stay untouched, so restoring a chat resumes exactly where it was.
+  archive({ chat_id: chatId, archived = true } = {}) {
+    const chat = this.requireChat(chatId);
+    return this.describe(this.store.updateChat(chat.chat_id, {
+      status: archived ? 'archived' : 'active'
+    }));
+  }
+
   // The latest real sub-task of this agent in this chat decides its status.
-  // No sub-task means idle; nothing is stored as a snapshot.
+  // No sub-task means idle. A terminal status is shown for a short TTL and
+  // then collapses back to idle, so a finished run does not look forever busy.
   agentStatus(chatId, agent) {
     const task = this.store.latestChatTaskForAgent(chatId, agent);
     if (!task) return { status: 'idle', state: null, task_id: null, updated_at: null };
     const state = deriveState(task);
+    if (TERMINAL_ORCH.has(state)) {
+      const ttl = Math.max(0, Number(this.config.chatTerminalStatusTtlMs ?? 60_000));
+      const updated = Date.parse(task.updated_at || task.created_at || '');
+      if (Number.isFinite(updated) && Date.now() - updated >= ttl) {
+        return {
+          status: 'idle',
+          state: null,
+          task_id: null,
+          updated_at: task.updated_at,
+          last_terminal_state: state
+        };
+      }
+    }
     return {
       status: AGENT_STATUS[state] ?? 'idle',
       state,
@@ -100,14 +135,38 @@ export class ChatService {
 
   museStatus(chatId) {
     const needsMuse = this.store.chatNeedsMuse(chatId);
-    // "needs a reply" is a real flag derived from message rows, never a fake
-    // typing indicator.
     return {
       status: needsMuse ? 'needs_reply' : 'idle',
       state: null,
       task_id: null,
       updated_at: this.store.lastChatMessage(chatId)?.created_at ?? null
     };
+  }
+
+  participants(chatId) {
+    const deliveries = this.store.deliverySummary(chatId);
+    return this.store.listChatParticipants(chatId).map((participant) => {
+      const agent = participant.participant_id;
+      const status = AGENTS.has(agent)
+        ? this.agentStatus(chatId, agent)
+        : agent === 'muse' ? this.museStatus(chatId) : { status: 'idle' };
+      const agentDeliveries = deliveries[agent] ?? {};
+      return {
+        participant_id: agent,
+        kind: participant.kind,
+        role: participant.role,
+        display_name: participant.display_name,
+        enabled: Boolean(participant.enabled),
+        auto_participate: Boolean(participant.auto_participate),
+        last_read_seq: Number(participant.last_read_seq ?? 0),
+        joined_at: participant.joined_at,
+        status: status.status,
+        state: status.state ?? null,
+        current_task_id: status.task_id ?? null,
+        pending_deliveries: Number(agentDeliveries.pending ?? 0) + Number(agentDeliveries.queued ?? 0),
+        delivery_status: agentDeliveries
+      };
+    });
   }
 
   status(chatId) {
@@ -125,31 +184,45 @@ export class ChatService {
         summary: task.summary ?? null
       };
     });
+    const last = this.store.lastChatMessage(chat.chat_id);
     return {
       chat_id: chat.chat_id,
       name: chat.name,
       status: chat.status ?? 'active',
+      epoch: Number(chat.epoch ?? 0),
+      context_version: Number(last?.seq ?? 0),
+      paused: false,
       needs_muse: this.store.chatNeedsMuse(chat.chat_id),
       agents: {
         muse: this.museStatus(chat.chat_id),
         claude: this.agentStatus(chat.chat_id, 'claude'),
         dsh: this.agentStatus(chat.chat_id, 'dsh')
       },
+      participants: this.participants(chat.chat_id),
+      deliveries: this.store.deliverySummary(chat.chat_id),
       tasks,
       last_message_at: chat.last_message_at ?? null
     };
   }
 
-  list({ status, limit } = {}) {
-    // Omitted status means the active list the shell shows; 'all' is an
-    // explicit escape hatch for debugging archived chats too.
+  list({ status, limit, chat_ids: chatIds, include_archived: includeArchived } = {}) {
     let filter = 'active';
     if (status === 'all') filter = null;
     else if (status !== undefined && status !== null) {
       if (!CHAT_STATUSES.has(status)) throw new Error("status must be 'active', 'archived' or 'all'");
       filter = status;
+    } else if (includeArchived === true) {
+      filter = null;
     }
-    const chats = this.store.listChats({ status: filter, limit });
+    let chats = this.store.listChats({ status: filter, limit, chatIds });
+    // When archived chats are included, active chats stay first and the
+    // archived ones follow, each group preserving last-activity order.
+    if (filter === null && includeArchived === true) {
+      chats = [...chats].sort((a, b) => {
+        const rank = (chat) => (chat.status === 'archived' ? 1 : 0);
+        return rank(a) - rank(b);
+      });
+    }
     return {
       chats: chats.map((chat) => ({
         ...this.describe(chat),
@@ -162,58 +235,106 @@ export class ChatService {
     };
   }
 
-  // Natural-language message stream of one chat, oldest first. No thread state,
-  // no logs, no delivery internals.
-  listMessages({ chat_id: chatId, limit, before } = {}) {
+  // Natural-language message stream of one chat, oldest first. body is the
+  // full text; summary is the truncated preview used by the chat list.
+  listMessages({ chat_id: chatId, limit, before, after_seq: afterSeq } = {}) {
     const chat = this.requireChat(chatId);
-    const rows = this.store.listChatMessages({ chatId: chat.chat_id, limit, before });
+    const rows = this.store.listChatMessages({ chatId: chat.chat_id, limit, before, afterSeq });
     const n = Math.max(1, Math.min(500, Number(limit) || 50));
     return {
       chat_id: chat.chat_id,
-      messages: rows.map((row) => ({
-        message_id: row.id,
-        from: row.from_agent,
-        to: row.to_agent,
-        summary: row.summary,
-        files: parseFiles(row.files_json),
-        question: row.question ?? null,
-        status: row.status,
-        created_at: row.created_at,
-        ...(row.task_id ? { task_id: row.task_id } : {})
-      })),
+      epoch: Number(chat.epoch ?? 0),
+      messages: rows.map((row) => {
+        const attached = this.store.listMessageFiles(row.id);
+        return {
+          message_id: row.id,
+          seq: row.seq ?? null,
+          from: row.from_agent,
+          to: row.to_agent,
+          summary: row.summary,
+          body: row.body ?? row.summary,
+          mentions: parseJsonArray(row.mentions_json),
+          files: attached.length > 0
+            ? attached.map((file) => file.file_id)
+            : parseJsonArray(row.files_json),
+          question: row.question ?? null,
+          epoch: Number(row.epoch ?? 0),
+          depth: Number(row.depth ?? 0),
+          root_message_id: row.root_message_id ?? null,
+          status: row.status,
+          created_at: row.created_at,
+          ...(row.task_id ? { task_id: row.task_id } : {})
+        };
+      }),
       count: rows.length,
       has_more: rows.length >= n
     };
   }
 
-  send({ chat_id: chatId, from, to, summary, files, question, task_id: taskId, reply_to: replyTo } = {}) {
+  send({
+    chat_id: chatId, from, to, summary, body, files, question, task_id: taskId, reply_to: replyTo,
+    mentions, act, act_recipients: actRecipients, client_msg_id: clientMsgId, epoch, is_final: isFinal,
+    auth
+  } = {}) {
     const chat = this.requireChat(chatId);
-    if (!CHAT_SENDERS.has(from)) throw new Error("from must be 'user' or 'muse'");
-    if (!CHAT_RECIPIENTS.has(to)) throw new Error(`invalid to: ${to}`);
-    if (from === 'user' && to !== 'muse') {
-      throw new Error("a user message in a chat must be addressed to 'muse'");
+    const effectiveFrom = auth ? requireSender(auth, from) : from;
+    if (!CHAT_SENDERS.has(effectiveFrom) && !AGENTS.has(effectiveFrom)) {
+      throw new Error("from must be 'user', 'muse', 'claude' or 'dsh'");
     }
-    if (from === to) throw new Error('from and to must be different');
+    if (!CHAT_RECIPIENTS.has(to)) throw new Error(`invalid to: ${to}`);
+    // Compatibility rule: a plain user request still goes to Muse. A user may
+    // address an executor when they explicitly mention/act it.
+    const explicitAction = Array.isArray(actRecipients) || Array.isArray(act)
+      || (Array.isArray(mentions) && mentions.length > 0);
+    if (effectiveFrom === 'user' && to !== 'muse' && !explicitAction) {
+      throw new Error("a user message in a chat must be addressed to 'muse' unless it mentions an agent");
+    }
+    if (effectiveFrom === to) throw new Error('from and to must be different');
 
     const message = this.messages.send({
-      from,
+      from: effectiveFrom,
       to,
       task_id: taskId,
       reply_to: replyTo,
       summary,
+      body,
       files,
       question,
-      chat_id: chat.chat_id
+      mentions,
+      act_recipients: actRecipients ?? act,
+      client_msg_id: clientMsgId,
+      epoch,
+      is_final: isFinal,
+      chat_id: chat.chat_id,
+      auth
     });
-    // Muse -> agent is delivered by starting a sub-task; the message row and
-    // the chat link are the real record of that assignment.
     return {
       message_id: message.message_id,
       chat_id: chat.chat_id,
+      seq: message.seq,
+      epoch: message.epoch,
       created_at: message.created_at,
       to: message.to,
       status: message.status,
-      delivery_task_id: message.delivery_task_id ?? null
+      delivery_task_id: message.delivery_task_id ?? null,
+      deliveries: message.deliveries ?? [],
+      deduplicated: Boolean(message.deduplicated)
     };
   }
+}
+
+function requireSender(auth, from) {
+  // Local import-free guard mirroring auth.resolveSender; kept here so the
+  // ChatService's old callers (no auth) still work.
+  if (!auth) return from;
+  if (auth.master) {
+    if (from !== 'user' && from !== 'muse') {
+      throw new Error(`the master token may post as 'user' or 'muse', not '${from}'`);
+    }
+    return from;
+  }
+  if (auth.participant && from !== auth.participant) {
+    throw new Error(`token identifies as '${auth.participant}' but the request claims from='${from}'`);
+  }
+  return from;
 }

@@ -345,10 +345,17 @@ export class ApprovalService {
       throw new Error(`thread ${threadId} already has a pending approval: ${pending.id}`);
     }
 
-    const grant = this.store.getApprovalGrant(threadId, category);
+    // Session grants are scoped to (chat, agent, category) so one agent's
+    // approval never silently authorises another agent, and the grant survives
+    // the new sub-task thread that the next dispatch creates. Non-chat tasks
+    // keep the legacy thread-scoped grant with an empty agent key.
+    const chatId = this.store.getChatForTask(taskId)?.chat_id ?? null;
+    const grantScope = chatId || `thread:${threadId}`;
+    const grantAgent = chatId ? agent : '';
+    const grant = this.store.getApprovalGrant(grantScope, grantAgent, category);
     if (grant) {
       this._log(taskId,
-        `approval skipped: session grant for ${category} in thread ${threadId}`
+        `approval skipped: session grant for ${category} in ${grantScope} agent=${grantAgent || 'legacy'}`
         + ` source=${grant.source_approval_id ?? 'unknown'}`);
       return {
         approval_id: null,
@@ -392,6 +399,7 @@ export class ApprovalService {
       task_id: taskId,
       summary: card,
       files,
+      legacy_files: true,
       question,
       deliver: false
     });
@@ -480,6 +488,11 @@ export class ApprovalService {
   }
 
   respond(input = {}) {
+    // Defense in depth: even if a tool registration is ever widened, an agent
+    // token cannot answer its own approval.
+    if (input.auth && !input.auth.master) {
+      throw new Error('respond_approval requires the master token; agents may not approve themselves');
+    }
     if (!this.config.agentApprovalGate) {
       throw new Error('approval gate is disabled (AGENT_APPROVAL_GATE=0)');
     }
@@ -546,7 +559,10 @@ export class ApprovalService {
     });
     if (!changed) return false;
     if (decision === 'session') {
-      this.store.addApprovalGrant(approval.thread_id, approval.category, approval.id);
+      const chatId = this.store.getChatForTask(approval.task_id)?.chat_id ?? null;
+      const scope = chatId || `thread:${approval.thread_id}`;
+      const agentKey = chatId ? approval.agent : '';
+      this.store.addApprovalGrant(scope, agentKey, approval.category, approval.id);
     }
     this._log(approval.task_id,
       `approval ${approval.id} ${status} decision=${decision} source=${source}`
@@ -591,6 +607,7 @@ export class ApprovalService {
       threadId: filters.thread_id || null,
       taskId: filters.task_id || null,
       status: filters.status || null,
+      agent: filters.agent || null,
       limit: filters.limit
     });
     return {

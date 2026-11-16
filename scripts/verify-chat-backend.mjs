@@ -34,6 +34,7 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Store } from '../src/store.js';
+import { deriveAgentToken } from '../src/auth.js';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const stamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
@@ -43,6 +44,8 @@ const dbPath = join(runDir, 'workbench.db');
 const serverLogPath = join(runDir, 'server.log');
 const port = Number(process.env.VERIFY_PORT || 18092);
 const token = randomBytes(24).toString('hex');
+const claudeToken = deriveAgentToken(token, 'claude');
+const dshToken = deriveAgentToken(token, 'dsh');
 const baseUrl = `http://127.0.0.1:${port}`;
 
 mkdirSync(logDir, { recursive: true });
@@ -138,10 +141,10 @@ async function waitForHealth(timeoutMs = 20000) {
   throw new Error('engine did not become healthy');
 }
 
-async function connect() {
+async function connect(bearer = token) {
   const transport = new StreamableHTTPClientTransport(
     new URL(`${baseUrl}/mcp`),
-    { requestInit: { headers: { Authorization: `Bearer ${token}` } } }
+    { requestInit: { headers: { Authorization: `Bearer ${bearer}` } } }
   );
   const c = new Client({ name: 'aw-chat-backend-verify', version: '0.0.1' });
   await c.connect(transport);
@@ -220,6 +223,10 @@ async function main() {
   await waitForHealth();
   await installExecutorDouble();
   client = await connect();
+  const agentClients = {
+    claude: await connect(claudeToken),
+    dsh: await connect(dshToken)
+  };
 
   const toolList = await client.listTools();
   result.tools = toolList.tools.map((t) => t.name).sort();
@@ -478,8 +485,9 @@ async function main() {
   let lastReply = null;
   for (let i = 1; i <= 10; i += 1) {
     const fromClaude = i % 2 === 1;
-    const message = await call(client, 'send_message', {
-      from: fromClaude ? 'claude' : 'dsh',
+    const agentName = fromClaude ? 'claude' : 'dsh';
+    const message = await call(agentClients[agentName], 'send_message', {
+      from: agentName,
       to: fromClaude ? 'dsh' : 'claude',
       task_id: fromClaude ? capClaude : capDsh,
       ...(lastReply ? { reply_to: lastReply } : {}),
@@ -503,7 +511,7 @@ async function main() {
   assert(tenth.status === 'held', `the 10th agent message should be held, got ${tenth.status}`);
   assert(result.cap.chat_ids_are_null, 'an agent-to-agent thread message was stamped with a chat_id');
 
-  const eleventh = await callError(client, 'send_message', {
+  const eleventh = await callError(agentClients.claude, 'send_message', {
     from: 'claude', to: 'dsh', task_id: capClaude, summary: 'should be rejected', deliver: false
   });
   assert(eleventh, 'the 11th agent message was accepted');
@@ -517,11 +525,11 @@ async function main() {
   assert(unbounded.message_id, 'the chat stream was blocked by a sub-task thread limit');
 
   // ------------------------------------------------------- impersonation guard
-  const impersonation = await callError(client, 'send_message', {
+  const impersonation = await callError(agentClients.claude, 'send_message', {
     from: 'muse', to: 'user', task_id: capClaude, summary: 'an agent task must not send as muse'
   });
   result.impersonation = impersonation ? impersonation.trim() : null;
-  assert(impersonation && /belongs to/.test(impersonation),
+  assert(impersonation && /identifies as 'claude'|belongs to/.test(impersonation),
     `an agent task was allowed to send as muse: ${impersonation}`);
 
   const museNoTask = await call(client, 'send_message', {

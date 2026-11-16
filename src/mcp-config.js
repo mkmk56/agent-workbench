@@ -42,17 +42,20 @@ function restrictTokenFile(path, windowsPrincipal) {
   }
 }
 
-// Claude Code is started with --mcp-config pointing at this file so each task
-// can call the local workbench MCP server directly. The file lives under the
-// gitignored data directory and contains the bearer token.
-export function ensureClaudeMcpConfig(config) {
-  const path = config.claudeMcpConfigPath;
+// Executors are started with --mcp-config pointing at a per-agent file so each
+// one calls the local workbench with its own scoped token. The master token is
+// never written into an executor config.
+export function ensureAgentMcpConfig(config, agent = 'claude') {
+  if (agent !== 'claude' && agent !== 'dsh') throw new Error(`unknown agent: ${agent}`);
+  const path = agent === 'dsh' ? config.dshMcpConfigPath : config.claudeMcpConfigPath;
+  const token = config.agentTokens?.[agent];
+  if (!token) throw new Error(`no scoped token configured for agent ${agent}`);
   const doc = {
     mcpServers: {
       'agent-workbench': {
         type: 'http',
         url: config.mcpUrl,
-        headers: { Authorization: `Bearer ${config.token}` }
+        headers: { Authorization: `Bearer ${token}` }
       }
     }
   };
@@ -76,4 +79,10 @@ export function ensureClaudeMcpConfig(config) {
     throw error;
   }
   return path;
+}
+
+// Backwards-compatible name: Claude is still the only executor that reads an
+// MCP config file today, but the token is now Claude's scoped token.
+export function ensureClaudeMcpConfig(config) {
+  return ensureAgentMcpConfig(config, 'claude');
 }
