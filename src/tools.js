@@ -369,6 +369,57 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   });
 
+  server.registerTool('chat_mark_read', {
+    description: 'Advance one participant\'s read cursor in a group chat. Marks up to up_to_seq, the seq of '
+      + 'message_id, or the chat\'s latest seq when neither is given. Master tokens may target any participant; '
+      + 'agent tokens may only mark themselves. Returns the stored last_read_seq and the remaining unread count.',
+    inputSchema: {
+      chat_id: z.string().min(1).describe('Chat id'),
+      participant_id: z.enum(['user', 'muse', 'claude', 'dsh']).optional()
+        .describe('Participant whose cursor advances; defaults to the token identity'),
+      up_to_seq: z.number().int().min(0).optional().describe('Mark messages with seq <= this value as read'),
+      message_id: z.string().min(1).optional().describe('Mark up to this message\'s seq instead of up_to_seq')
+    }
+  }, async ({ chat_id, participant_id, up_to_seq, message_id }) => {
+    try {
+      assertChatAccess(store, auth, chat_id);
+      const participant = participant_id ?? auth.participant;
+      if (!participant) {
+        throw new Error('unauthenticated');
+      }
+      if (!master && participant !== auth.participant) {
+        throw new Error(`agent '${auth.participant}' can only mark its own read state`);
+      }
+      if (!store.getChatParticipant(chat_id, participant)) {
+        throw new Error(`participant '${participant}' is not in chat ${chat_id}`);
+      }
+
+      let targetSeq = up_to_seq;
+      if (message_id != null) {
+        const message = store.getMessage(message_id);
+        if (!message || message.chat_id !== chat_id) {
+          throw new Error(`message not found in chat ${chat_id}: ${message_id}`);
+        }
+        targetSeq = Number(message.seq) || 0;
+      } else if (targetSeq == null) {
+        targetSeq = Number(store.lastChatMessage(chat_id)?.seq) || 0;
+      }
+
+      const updated = store.updateParticipantRead(chat_id, participant, targetSeq);
+      const lastReadSeq = Number(updated.last_read_seq) || 0;
+      const unread = store.listChatMessages({ chatId: chat_id, afterSeq: lastReadSeq, limit: 500 }).length;
+      return asText({
+        ok: true,
+        chat_id,
+        participant_id: participant,
+        last_read_seq: lastReadSeq,
+        unread
+      });
+    } catch (error) {
+      return asError(error.message);
+    }
+  });
+
   // -------------------------------------------------------------- chat context
   server.registerTool('chat_get_context', {
     description: 'Read the deterministic shared context of a chat: the most recent messages within a token '
