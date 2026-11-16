@@ -77,10 +77,18 @@ export function createBrandTheme() {
       '--color-border-orange': ['#E85D26', '#E85D26'],
       '--color-icon-orange': ['#E85D26', '#E85D26'],
       '--color-text-orange': ['#C0471A', '#FF8A5C'],
-      '--color-background-blue': ['#FBE8DF', '#3A2620'],
-      '--color-border-blue': ['#E85D26', '#E85D26'],
-      '--color-icon-blue': ['#E85D26', '#E85D26'],
-      '--color-text-blue': ['#C0471A', '#FF8A5C'],
+      // Agent identity colours (group-chat upgrade, 2026-11-16). Solid
+      // identity colours only — never gradients. Text values are WCAG-checked:
+      // purple #6D28D9/#A78BFA and blue #1D4ED8/#60A5FA are ≥4.5:1 on their
+      // surfaces; --color-background-* tints keep --text legible.
+      '--color-background-purple': ['#F1EEFF', '#2A2440'],
+      '--color-border-purple': ['#8B7CFF', '#A78BFA'],
+      '--color-icon-purple': ['#6D28D9', '#A78BFA'],
+      '--color-text-purple': ['#6D28D9', '#A78BFA'],
+      '--color-background-blue': ['#EBF2FE', '#1E2C47'],
+      '--color-border-blue': ['#3B82F6', '#60A5FA'],
+      '--color-icon-blue': ['#1D4ED8', '#60A5FA'],
+      '--color-text-blue': ['#1D4ED8', '#60A5FA'],
 
       '--radius-none': '0px',
       '--radius-inner': '4px',

@@ -499,9 +499,11 @@ export interface WorkbenchApi {
     limit?: number;
     taskId?: string;
   }) => Promise<EngineResult<EngineMessageList>>;
-  listChats: () => Promise<EngineResult<{ chats: ChatSummary[] }>>;
+  listChats: (options?: { includeArchived?: boolean }) => Promise<EngineResult<{ chats: ChatSummary[] }>>;
   createChat: (name?: string) => Promise<EngineResult<ChatSummary>>;
   renameChat: (chatId: string, name: string) => Promise<EngineResult<ChatSummary>>;
+  archiveChat: (chatId: string) => Promise<EngineResult<ChatSummary>>;
+  unarchiveChat: (chatId: string) => Promise<EngineResult<ChatSummary>>;
   listChatMessages: (
     input: ChatMessageQuery,
   ) => Promise<
@@ -582,8 +584,9 @@ export interface WorkbenchApi {
 export type Route =
   | { name: 'chats' }
   | { name: 'chat'; id: string }
-  | { name: 'tasks' }
+  | { name: 'tasks'; scope?: 'history' }
   | { name: 'task'; id: string }
   | { name: 'dispatch' }
   | { name: 'settings' }
-  | { name: 'about' };
+  | { name: 'about' }
+  | { name: 'files' };

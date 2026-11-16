@@ -93,9 +93,13 @@ export interface SendChatResult {
 }
 
 interface ChatBridge {
-  listChats?: () => Promise<EngineResult<unknown>>;
+  listChats?: (options?: {
+    includeArchived?: boolean;
+  }) => Promise<EngineResult<unknown>>;
   createChat?: (name?: string) => Promise<EngineResult<unknown>>;
   renameChat?: (chatId: string, name: string) => Promise<EngineResult<unknown>>;
+  archiveChat?: (chatId: string) => Promise<EngineResult<unknown>>;
+  unarchiveChat?: (chatId: string) => Promise<EngineResult<unknown>>;
   sendChatMessage?: (input: SendChatMessageInput) => Promise<EngineResult<unknown>>;
   chatStatus?: (chatId: string) => Promise<EngineResult<unknown>>;
   chatParticipants?: (
@@ -618,7 +622,9 @@ export function applyMention(
  * Client calls
  * ------------------------------------------------------------------ */
 
-export async function listChatsOnce(): Promise<EngineResult<ChatSummary[]>> {
+export async function listChatsOnce(
+  includeArchived = false,
+): Promise<EngineResult<ChatSummary[]>> {
   if (!window.workbench) {
     return { ok: false, error: NO_MAIN };
   }
@@ -627,7 +633,7 @@ export async function listChatsOnce(): Promise<EngineResult<ChatSummary[]>> {
     return { ok: false, error: NO_CHAT_BRIDGE };
   }
   try {
-    const result = await api.listChats();
+    const result = await api.listChats(includeArchived ? { includeArchived: true } : undefined);
     if (!result.ok) {
       return { ok: false, error: failureMessage(result.error, '读取群聊列表失败。') };
     }
@@ -683,6 +689,46 @@ export async function renameChat(chatId: string, name: string): Promise<EngineRe
       : { ok: true, data: { ...emptyChat(chatId), name } };
   } catch {
     return { ok: false, error: '重命名群聊失败（主进程调用异常）。' };
+  }
+}
+
+export async function archiveChat(chatId: string): Promise<EngineResult<ChatSummary>> {
+  if (!window.workbench) {
+    return { ok: false, error: NO_MAIN };
+  }
+  const api = bridge();
+  if (!api?.archiveChat) {
+    return { ok: false, error: NO_CHAT_BRIDGE };
+  }
+  try {
+    const result = await api.archiveChat(chatId);
+    if (!result.ok) {
+      return { ok: false, error: failureMessage(result.error, '归档群聊失败。') };
+    }
+    const chat = normalizeChat(result.data);
+    return chat != null ? { ok: true, data: chat } : { ok: false, error: '引擎未返回群聊，归档结果无法确认。' };
+  } catch {
+    return { ok: false, error: '归档群聊失败（主进程调用异常）。' };
+  }
+}
+
+export async function unarchiveChat(chatId: string): Promise<EngineResult<ChatSummary>> {
+  if (!window.workbench) {
+    return { ok: false, error: NO_MAIN };
+  }
+  const api = bridge();
+  if (!api?.unarchiveChat) {
+    return { ok: false, error: NO_CHAT_BRIDGE };
+  }
+  try {
+    const result = await api.unarchiveChat(chatId);
+    if (!result.ok) {
+      return { ok: false, error: failureMessage(result.error, '恢复群聊失败。') };
+    }
+    const chat = normalizeChat(result.data);
+    return chat != null ? { ok: true, data: chat } : { ok: false, error: '引擎未返回群聊，恢复结果无法确认。' };
+  } catch {
+    return { ok: false, error: '恢复群聊失败（主进程调用异常）。' };
   }
 }
 

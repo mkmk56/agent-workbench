@@ -13,11 +13,17 @@ export function parseHash(hash: string): Route {
   }
   // Hidden debug routes: the task console is no longer in the nav,
   // but the pages still work (linked from a message's "查看执行记录").
+  if (parts[0] === 'tasks' && parts.length === 2 && parts[1] === 'history') {
+    return { name: 'tasks', scope: 'history' };
+  }
   if (parts[0] === 'tasks' && parts.length === 2) {
     return { name: 'task', id: decodeURIComponent(parts[1]) };
   }
   if (parts[0] === 'tasks') {
     return { name: 'tasks' };
+  }
+  if (parts[0] === 'files') {
+    return { name: 'files' };
   }
   if (parts[0] === 'dispatch') {
     return { name: 'dispatch' };

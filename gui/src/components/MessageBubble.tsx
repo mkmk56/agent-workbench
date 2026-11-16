@@ -1,16 +1,20 @@
 import {
   Bot,
+  Check,
+  ChevronDown,
+  ChevronUp,
   CircleAlert,
-  FileCode2,
-  ScrollText,
+  Copy,
   UserRound,
 } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import claudeMark from '../assets/sidebar/claude-mark.png';
 import dshMark from '../assets/sidebar/dsh-mark.png';
 import museMark from '../assets/sidebar/muse-mark.png';
-import { formatClock } from '../lib/labels';
+import type { ChatFile } from '../lib/chat';
 import type { ChatMessage, ChatSender } from '../lib/chat';
+import { formatClock } from '../lib/labels';
+import { FileCard } from './FileCard';
 
 const IDENTITIES: Record<
   Exclude<ChatSender, 'user' | 'unknown'>,
@@ -30,6 +34,12 @@ const DELIVERY_STATUS: Record<string, string> = {
   pending: '待处理',
   held: '等待回复',
   failed: '投递失败',
+};
+
+const MENTION_NAMES: Record<string, string> = {
+  muse: 'Muse',
+  claude: 'Claude',
+  dsh: 'dsh',
 };
 
 function identityFor(sender: ChatSender): {
@@ -62,8 +72,8 @@ function isStructuredPayload(text: string): boolean {
 
 /* ------------------------------------------------------------------
  * Lightweight Markdown: fenced code, inline code, bold, bullet and
- * numbered lists. Hand-rolled on purpose — no heavy dependency. Raw
- * HTML is never executed; React escapes every text node.
+ * numbered lists, @mentions. Hand-rolled on purpose — no heavy
+ * dependency. Raw HTML is never executed; React escapes every text node.
  * ------------------------------------------------------------------ */
 
 type Block =
@@ -141,7 +151,7 @@ function parseBlocks(text: string): Block[] {
   return blocks;
 }
 
-const INLINE = /(`[^`\n]+`|\*\*[^*\n]+\*\*)/g;
+const INLINE = /(`[^`\n]+`|\*\*[^*\n]+\*\*|@[Mm]use|@[Cc]laude|@[Dd]sh)/g;
 
 function renderInline(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
@@ -162,11 +172,18 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
           {token.slice(1, -1)}
         </code>,
       );
-    } else {
+    } else if (token.startsWith('**')) {
       nodes.push(
         <strong key={key} className="chat-md__strong">
           {token.slice(2, -2)}
         </strong>,
+      );
+    } else {
+      const name = MENTION_NAMES[token.slice(1).toLowerCase()] ?? token.slice(1);
+      nodes.push(
+        <span key={key} className="chat-mention">
+          @{name}
+        </span>,
       );
     }
     last = match.index + token.length;
@@ -177,6 +194,41 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
   return nodes;
 }
 
+function CodeBlock({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      if (navigator.clipboard != null) {
+        await navigator.clipboard.writeText(code);
+      } else if (window.workbench) {
+        await window.workbench.copyText(code);
+      } else {
+        return;
+      }
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard denied: the button just stays in its default state.
+    }
+  };
+  return (
+    <div className="chat-md__codeblock">
+      <button
+        type="button"
+        className="chat-md__copy"
+        onClick={() => void copy()}
+        aria-label="复制代码"
+      >
+        {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
+        {copied ? '已复制' : '复制'}
+      </button>
+      <pre className="chat-md__pre">
+        <code>{code}</code>
+      </pre>
+    </div>
+  );
+}
+
 export function RichText({ text }: { text: string }) {
   const blocks = parseBlocks(text);
   return (
@@ -184,11 +236,7 @@ export function RichText({ text }: { text: string }) {
       {blocks.map((block, blockIndex) => {
         const key = `block-${blockIndex}`;
         if (block.type === 'code') {
-          return (
-            <pre key={key} className="chat-md__pre">
-              <code>{block.code}</code>
-            </pre>
-          );
+          return <CodeBlock key={key} code={block.code} />;
         }
         if (block.type === 'list') {
           const items = block.items.map((item, itemIndex) => (
@@ -218,7 +266,7 @@ function Avatar({ sender }: { sender: ChatSender }) {
   const identity = identityFor(sender);
   return (
     <span
-      className={`chat-avatar chat-avatar--md chat-avatar--${identity.kind}`}
+      className={`chat-avatar chat-avatar--md chat-avatar--${identity.kind === 'agent' ? sender : identity.kind}`}
       aria-hidden="true"
       title={identity.name}
     >
@@ -233,89 +281,53 @@ function Avatar({ sender }: { sender: ChatSender }) {
   );
 }
 
-function FileChips({ files }: { files: string[] }) {
+function MessageFiles({
+  files,
+  chatId,
+}: {
+  files: ChatFile[];
+  chatId: string;
+}) {
   if (files.length === 0) {
     return null;
   }
   return (
-    <ul className="conv-files" aria-label="涉及文件">
+    <div className="chat-msg__files">
       {files.map((file) => (
-        <li key={file} className="conv-file">
-          <FileCode2 size={12} aria-hidden="true" />
-          <span className="mono">{file}</span>
-        </li>
+        <FileCard key={file.file_id} file={file} chatId={chatId} />
       ))}
-    </ul>
-  );
-}
-
-function ExecutionLink({ taskId }: { taskId: string }) {
-  return (
-    <a
-      className="chat-card__link"
-      href={`#/tasks/${encodeURIComponent(taskId)}`}
-      title="进入隐藏的任务详情调试页"
-    >
-      <ScrollText size={12} aria-hidden="true" />
-      查看执行记录
-    </a>
-  );
-}
-
-function StructuredNotice({ taskId }: { taskId: string | null }) {
-  return (
-    <div className="chat-structured" role="note">
-      <CircleAlert size={14} aria-hidden="true" />
-      <span>引擎返回了结构化内容，聊天流不展示原始 JSON、工具参数或日志。</span>
-      {taskId != null && <ExecutionLink taskId={taskId} />}
     </div>
   );
 }
 
-function ConclusionCard({ message }: { message: ChatMessage }) {
-  const structured = isStructuredPayload(message.summary);
-  const statusLabel = message.status != null ? DELIVERY_STATUS[message.status] : null;
-  const failed = message.status === 'failed';
+function StructuredNotice() {
   return (
-    <article
-      className={`chat-card${failed ? ' chat-card--failed' : ''}`}
-      aria-label="Agent 结论"
-    >
-      <header className="chat-card__head">
-        <span className="chat-card__eyebrow">结论</span>
-        {statusLabel != null && (
-          <span className={`chat-card__status${failed ? ' is-error' : ''}`}>{statusLabel}</span>
-        )}
-      </header>
-      {message.summary.length > 0 &&
-        (structured ? (
-          <StructuredNotice taskId={message.task_id ?? null} />
-        ) : (
-          <RichText text={message.summary} />
-        ))}
-      <FileChips files={message.files.map((file) => file.name)} />
-      {message.question != null && (
-        <div className="conv-question">
-          <strong>需要回答</strong>
-          <p>{message.question}</p>
-        </div>
-      )}
-      {message.task_id != null && (
-        <footer className="chat-card__footer">
-          <ExecutionLink taskId={message.task_id} />
-        </footer>
-      )}
-    </article>
+    <div className="chat-structured" role="note">
+      <CircleAlert size={14} aria-hidden="true" />
+      <span>引擎返回了结构化内容，聊天流不展示原始 JSON、工具参数或日志。</span>
+    </div>
   );
 }
 
-export function MessageBubble({ message }: { message: ChatMessage }) {
+const FOLD_CHARS = 1200;
+const FOLD_LINES = 30;
+
+export function MessageBubble({
+  message,
+  chatId,
+}: {
+  message: ChatMessage;
+  chatId: string;
+}) {
   const identity = identityFor(message.from);
   const isUser = identity.kind === 'user';
-  // Only executor reports become conclusion cards; Muse coordinates in plain
-  // language and must not be dressed up as an agent result.
-  const isConclusion = message.from === 'claude' || message.from === 'dsh';
   const structured = isStructuredPayload(message.summary);
+  const statusLabel = message.status != null ? DELIVERY_STATUS[message.status] : null;
+  const failed = message.status === 'failed';
+  const long =
+    message.summary.length > FOLD_CHARS ||
+    message.summary.split('\n').length > FOLD_LINES;
+  const [folded, setFolded] = useState(long);
 
   return (
     <article
@@ -329,31 +341,45 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
           {message.created_at.length > 0 && (
             <time dateTime={message.created_at}>{formatClock(message.created_at)}</time>
           )}
+          {statusLabel != null && (
+            <span className={`chat-msg__status${failed ? ' is-error' : ''}`}>{statusLabel}</span>
+          )}
         </div>
-        {isConclusion ? (
-          <ConclusionCard message={message} />
-        ) : (
-          <div className="chat-bubble">
-            {message.summary.length === 0 ? (
-              <span className="chat-bubble__empty">（这条消息没有文字摘要）</span>
-            ) : structured ? (
-              <StructuredNotice taskId={message.task_id ?? null} />
+        <div className={`chat-bubble${failed ? ' chat-bubble--failed' : ''}${folded ? ' chat-bubble--folded' : ''}`}>
+          {message.summary.length === 0 ? (
+            <span className="chat-bubble__empty">（这条消息没有文字摘要）</span>
+          ) : structured ? (
+            <StructuredNotice />
+          ) : (
+            <RichText text={message.summary} />
+          )}
+          <MessageFiles files={message.files} chatId={chatId} />
+          {message.question != null && (
+            <div className="conv-question">
+              <strong>需要回答</strong>
+              <p>{message.question}</p>
+            </div>
+          )}
+        </div>
+        {long && (
+          <button
+            type="button"
+            className="chat-msg__fold"
+            onClick={() => setFolded(!folded)}
+            aria-expanded={!folded}
+          >
+            {folded ? (
+              <>
+                <ChevronDown size={13} aria-hidden="true" />
+                展开全文
+              </>
             ) : (
-              <RichText text={message.summary} />
+              <>
+                <ChevronUp size={13} aria-hidden="true" />
+                收起
+              </>
             )}
-            <FileChips files={message.files.map((file) => file.name)} />
-            {message.question != null && (
-              <div className="conv-question">
-                <strong>需要回答</strong>
-                <p>{message.question}</p>
-              </div>
-            )}
-            {message.task_id != null && (
-              <div className="chat-bubble__footer">
-                <ExecutionLink taskId={message.task_id} />
-              </div>
-            )}
-          </div>
+          </button>
         )}
       </div>
     </article>

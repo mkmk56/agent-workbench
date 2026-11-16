@@ -24,8 +24,10 @@ import {
   proportional,
 } from '../ui/astryx';
 
-type StatusFilter = 'all' | TaskStatus;
+type StatusFilter = 'all' | 'history' | TaskStatus;
 type ExecutorFilter = 'all' | Executor;
+
+const TERMINAL_STATUSES: TaskStatus[] = ['success', 'failed', 'cancelled'];
 
 const STATUS_TONE = {
   running: 'running',
@@ -51,8 +53,8 @@ function displayStatus(task: TaskRow): {
   return { tone: STATUS_TONE[task.status], label: STATUS_LABELS[task.status] };
 }
 
-export function TasksPage() {
-  const [filter, setFilter] = useState<StatusFilter>('all');
+export function TasksPage({ scope }: { scope?: 'history' }) {
+  const [filter, setFilter] = useState<StatusFilter>(scope === 'history' ? 'history' : 'all');
   const [executor, setExecutor] = useState<ExecutorFilter>('all');
   const [query, setQuery] = useState('');
   const [starting, setStarting] = useState(false);
@@ -66,13 +68,21 @@ export function TasksPage() {
     for (const task of tasksState.tasks) {
       result[task.status] = (result[task.status] ?? 0) + 1;
     }
+    result.history = TERMINAL_STATUSES.reduce(
+      (sum, status) => sum + (result[status] ?? 0),
+      0,
+    );
     return result;
   }, [tasksState.tasks]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return tasksState.tasks.filter((task) => {
-      if (filter !== 'all' && task.status !== filter) {
+      if (filter === 'history') {
+        if (!TERMINAL_STATUSES.includes(task.status)) {
+          return false;
+        }
+      } else if (filter !== 'all' && task.status !== filter) {
         return false;
       }
       if (executor !== 'all' && task.executor !== executor) {
@@ -116,6 +126,7 @@ export function TasksPage() {
   const segments = [
     { value: 'all', label: `全部 ${counts.all ?? 0}` },
     { value: 'running', label: `运行中 ${counts.running ?? 0}` },
+    { value: 'history', label: `历史 ${counts.history ?? 0}` },
     { value: 'success', label: `成功 ${counts.success ?? 0}` },
     { value: 'failed', label: `失败 ${counts.failed ?? 0}` },
     { value: 'cancelled', label: `已取消 ${counts.cancelled ?? 0}` },
@@ -139,7 +150,7 @@ export function TasksPage() {
   return (
     <>
       <PageHead
-        title="任务"
+        title={scope === 'history' ? '任务记录' : '任务'}
         subtitle={
           tasksState.error
             ? `引擎数据读取失败：${tasksState.error}`

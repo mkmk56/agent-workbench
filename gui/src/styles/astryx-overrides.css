@@ -540,7 +540,7 @@ html[data-theme="dark"] .astryx-button[data-variant="destructive"]:hover {
 }
 
 .settings .section {
-  scroll-margin-top: calc(var(--topbar-height) + 16px);
+  scroll-margin-top: 16px;
 }
 
 .radio-hidden {

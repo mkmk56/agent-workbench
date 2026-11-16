@@ -1,14 +1,55 @@
-import { CircleAlert, Send } from 'lucide-react';
+import { CircleAlert, Paperclip, Send, Smile } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { sendChatMessage } from '../lib/chat';
+import { sendChatMessage, uploadChatFiles } from '../lib/chat';
+import type { ChatAgentId } from '../types';
+import { AttachmentBar, type AttachmentDraft } from './AttachmentBar';
 
 const MAX_HEIGHT = 160;
+const MAX_FILES = 10;
+
+const EMOJIS = [
+  '👍', '👏', '🙏', '😀', '😄', '😂', '🤔', '😮',
+  '😢', '😡', '❤️', '🔥', '🎉', '🚀', '✅', '❌',
+  '👀', '💡', '⚠️', '📌', '📎', '☕', '👌', '🙌',
+];
+
+const MENTIONABLES: { id: ChatAgentId; name: string }[] = [
+  { id: 'muse', name: 'Muse' },
+  { id: 'claude', name: 'Claude' },
+  { id: 'dsh', name: 'dsh' },
+];
+
+let draftCounter = 0;
+function nextDraftId(): string {
+  draftCounter += 1;
+  return `draft-${Date.now()}-${draftCounter}`;
+}
+
+function nextClientMsgId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function parseMentions(text: string): ChatAgentId[] {
+  const found: ChatAgentId[] = [];
+  for (const match of text.matchAll(/@(muse|claude|dsh)/gi)) {
+    const id = match[1].toLowerCase() as ChatAgentId;
+    if (!found.includes(id)) {
+      found.push(id);
+    }
+  }
+  return found;
+}
 
 /**
- * Chat composer. Enter sends, Shift+Enter inserts a newline, and an empty
- * draft never reaches the engine. Nothing is drawn optimistically: the message
- * enters the stream only after `send_chat_message` confirms it, via onSent().
+ * Chat composer (Muse, group-chat upgrade). Enter sends, Shift+Enter inserts
+ * a newline. Attach button / drag-drop / paste stage files in the bar above
+ * the input; files upload when the message is sent, and a failed send keeps
+ * both the text and the staged files. @ opens the member picker; the picked
+ * members travel as mentions, otherwise all three agents respond.
  */
 export function Composer({
   chatId,
@@ -20,8 +61,16 @@ export function Composer({
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<AttachmentDraft[]>([]);
+  const [dragOver, setDragOver] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [showEmoji, setShowEmoji] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textRef = useRef(text);
+  const draftsRef = useRef(drafts);
+  draftsRef.current = drafts;
 
   useEffect(() => {
     textRef.current = text;
@@ -36,32 +85,178 @@ export function Composer({
     element.style.height = `${Math.min(element.scrollHeight, MAX_HEIGHT)}px`;
   }, [text]);
 
+  const addFiles = (files: FileList | File[]) => {
+    const incoming = Array.from(files);
+    if (incoming.length === 0) {
+      return;
+    }
+    setDrafts((current) => {
+      const room = MAX_FILES - current.length;
+      const accepted = incoming.slice(0, Math.max(0, room));
+      if (accepted.length < incoming.length) {
+        setError(`一次最多 ${MAX_FILES} 个附件，多余的未添加。`);
+      }
+      return [
+        ...current,
+        ...accepted.map((file) => ({
+          id: nextDraftId(),
+          file,
+          progress: 0,
+          status: 'ready' as const,
+        })),
+      ];
+    });
+  };
+
+  const removeDraft = (id: string) => {
+    setDrafts((current) => current.filter((draft) => draft.id !== id));
+  };
+
+  const updateDraft = (id: string, patch: Partial<AttachmentDraft>) => {
+    setDrafts((current) =>
+      current.map((draft) => (draft.id === id ? { ...draft, ...patch } : draft)),
+    );
+  };
+
+  const updateMention = (value: string, caret: number) => {
+    const before = value.slice(0, caret);
+    const match = /@([A-Za-z]*)$/.exec(before);
+    if (match == null) {
+      setMentionQuery(null);
+      return;
+    }
+    setMentionQuery(match[1].toLowerCase());
+    setMentionIndex(0);
+  };
+
+  const mentionMatches = MENTIONABLES.filter(
+    (agent) =>
+      mentionQuery != null && agent.name.toLowerCase().startsWith(mentionQuery),
+  );
+
+  const applyMention = (agent: { id: ChatAgentId; name: string }) => {
+    const element = textareaRef.current;
+    const value = textRef.current;
+    const caret = element?.selectionStart ?? value.length;
+    const before = value.slice(0, caret);
+    const match = /@([A-Za-z]*)$/.exec(before);
+    if (match == null) {
+      return;
+    }
+    const next = `${before.slice(0, match.index)}@${agent.name} ${value.slice(caret)}`;
+    setText(next);
+    setMentionQuery(null);
+    requestAnimationFrame(() => {
+      element?.focus();
+      const pos = match.index + agent.name.length + 2;
+      element?.setSelectionRange(pos, pos);
+    });
+  };
+
+  const insertEmoji = (emoji: string) => {
+    const element = textareaRef.current;
+    const value = textRef.current;
+    const caret = element?.selectionStart ?? value.length;
+    const next = `${value.slice(0, caret)}${emoji}${value.slice(caret)}`;
+    setText(next);
+    setShowEmoji(false);
+    requestAnimationFrame(() => {
+      element?.focus();
+      const pos = caret + emoji.length;
+      element?.setSelectionRange(pos, pos);
+    });
+  };
+
   const send = async () => {
     const draft = textRef.current.trim();
-    if (draft.length === 0 || sending) {
+    const staged = draftsRef.current;
+    if ((draft.length === 0 && staged.length === 0) || sending) {
       return;
     }
     setSending(true);
     setError(null);
+    const mentions = parseMentions(draft);
+    const summary =
+      draft.length > 0
+        ? draft
+        : `发送了 ${staged.length} 个附件：${staged.map((item) => item.file.name).join('、')}`;
+
+    // Upload staged files first; already-uploaded drafts are reused on retry.
+    let fileIds = staged
+      .filter((item) => item.status === 'done' && item.fileId != null)
+      .map((item) => item.fileId as string);
+    const toUpload = staged.filter((item) => item.status === 'ready' || item.status === 'failed');
+    if (toUpload.length > 0) {
+      for (const item of toUpload) {
+        updateDraft(item.id, { status: 'uploading', progress: 0, error: undefined });
+      }
+      const result = await uploadChatFiles(
+        toUpload.map((item) => item.file),
+        (index, progress) => updateDraft(toUpload[index].id, { progress }),
+        chatId,
+      );
+      if (!result.ok) {
+        for (const item of toUpload) {
+          updateDraft(item.id, { status: 'failed', error: result.error });
+        }
+        setError(result.error);
+        setSending(false);
+        return;
+      }
+      result.data.file_ids.forEach((fileId, index) => {
+        updateDraft(toUpload[index].id, { status: 'done', progress: 1, fileId });
+      });
+      fileIds = [...fileIds, ...result.data.file_ids];
+    }
+
     const result = await sendChatMessage({
       chatId,
       from: 'user',
       to: 'muse',
-      summary: draft,
+      summary,
+      files: fileIds.length > 0 ? fileIds : undefined,
+      mentions: mentions.length > 0 ? mentions : undefined,
+      clientMsgId: nextClientMsgId(),
     });
     setSending(false);
     if (!result.ok) {
+      // Text and staged files are kept: retry reuses the uploaded file_ids.
       setError(result.error);
       return;
     }
-    // Keep anything typed while the request was in flight.
     if (textRef.current.trim() === draft) {
       setText('');
     }
+    setDrafts([]);
+    setMentionQuery(null);
     await onSent();
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mentionQuery != null && mentionMatches.length > 0) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setMentionIndex((index) => (index + 1) % mentionMatches.length);
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setMentionIndex(
+          (index) => (index - 1 + mentionMatches.length) % mentionMatches.length,
+        );
+        return;
+      }
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        applyMention(mentionMatches[mentionIndex] ?? mentionMatches[0]);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setMentionQuery(null);
+        return;
+      }
+    }
     if (event.key !== 'Enter' || event.shiftKey) {
       return;
     }
@@ -72,21 +267,33 @@ export function Composer({
     void send();
   };
 
-  const onChange = (value: string) => {
+  const onChange = (value: string, caret: number) => {
     setText(value);
+    updateMention(value, caret);
     if (error != null) {
       setError(null);
     }
   };
 
-  const canSend = text.trim().length > 0 && !sending;
+  const canSend =
+    (text.trim().length > 0 || drafts.length > 0) && !sending;
 
   return (
     <form
-      className="chat-composer"
+      className={`chat-composer${dragOver ? ' chat-composer--drag-over' : ''}`}
       onSubmit={(event) => {
         event.preventDefault();
         void send();
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragOver(false);
+        addFiles(event.dataTransfer.files);
       }}
     >
       {error != null && (
@@ -98,7 +305,32 @@ export function Composer({
           </button>
         </div>
       )}
+      <AttachmentBar items={drafts} onRemove={removeDraft} />
       <div className="chat-composer__field">
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="sr-only"
+          aria-label="选择附件"
+          tabIndex={-1}
+          onChange={(event) => {
+            if (event.target.files != null) {
+              addFiles(event.target.files);
+            }
+            event.target.value = '';
+          }}
+        />
+        <button
+          type="button"
+          className="chat-composer__attach"
+          title="添加附件（可多选；也可直接拖入或粘贴图片）"
+          aria-label="添加附件"
+          disabled={sending}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <Paperclip size={16} aria-hidden="true" />
+        </button>
         <label className="sr-only" htmlFor="chat-composer-input">
           发消息给 Muse
         </label>
@@ -108,15 +340,34 @@ export function Composer({
           className="chat-composer__input"
           value={text}
           rows={1}
-          placeholder="发消息给 Muse，描述你想让 Agent 做的事…"
-          onChange={(event) => onChange(event.target.value)}
+          placeholder="发消息给 Muse，描述你想让 Agent 做的事…（@ 可指定成员）"
+          onChange={(event) =>
+            onChange(event.target.value, event.target.selectionStart ?? event.target.value.length)
+          }
           onKeyDown={onKeyDown}
-          aria-describedby="chat-composer-hint"
+          onPaste={(event) => {
+            const files = event.clipboardData?.files;
+            if (files != null && files.length > 0) {
+              event.preventDefault();
+              addFiles(files);
+            }
+          }}
           disabled={sending}
         />
         <button
+          type="button"
+          className="chat-composer__emoji"
+          title="插入表情"
+          aria-label="插入表情"
+          aria-expanded={showEmoji}
+          disabled={sending}
+          onClick={() => setShowEmoji(!showEmoji)}
+        >
+          <Smile size={16} aria-hidden="true" />
+        </button>
+        <button
           type="submit"
-          className="btn btn-primary chat-composer__send"
+          className="chat-composer__send"
           disabled={!canSend}
           aria-label={sending ? '正在发送' : '发送'}
         >
@@ -124,9 +375,41 @@ export function Composer({
           {sending ? '发送中…' : '发送'}
         </button>
       </div>
-      <div className="chat-composer__foot" id="chat-composer-hint">
-        <span className="chat-composer__hint">Enter 发送 · Shift+Enter 换行 · 空白消息不会发送</span>
-      </div>
+      {mentionQuery != null && mentionMatches.length > 0 && (
+        <ul className="chat-composer__mentions" role="listbox" aria-label="@ 成员">
+          {mentionMatches.map((agent, index) => (
+            <li key={agent.id} role="option" aria-selected={index === mentionIndex}>
+              <button
+                type="button"
+                className={`chat-mention-item${index === mentionIndex ? ' is-active' : ''}`}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  applyMention(agent);
+                }}
+              >
+                @{agent.name}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {showEmoji && (
+        <div className="chat-composer__emoji-panel" role="dialog" aria-label="选择表情">
+          {EMOJIS.map((emoji) => (
+            <button
+              key={emoji}
+              type="button"
+              aria-label={`插入表情 ${emoji}`}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                insertEmoji(emoji);
+              }}
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+      )}
     </form>
   );
 }

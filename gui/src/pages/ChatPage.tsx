@@ -22,12 +22,17 @@ import '../styles/chat.css';
 export function ChatPage({ chatId }: { chatId: string | null }) {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const { setActiveChat, refreshActive, fetchChats } = useChatStore();
 
   useEffect(() => {
     setActiveChat(chatId);
     return () => setActiveChat(null);
   }, [chatId, setActiveChat]);
+
+  useEffect(() => {
+    setSearchQuery('');
+  }, [chatId]);
 
   const { chats } = useChatListView();
   const {
@@ -39,6 +44,12 @@ export function ChatPage({ chatId }: { chatId: string | null }) {
   const { status, error: statusError, loading: statusLoading } = useChatStatusView(chatId);
 
   const chat = chatId != null ? (chats.find((item) => item.chat_id === chatId) ?? null) : null;
+
+  const needle = searchQuery.trim().toLowerCase();
+  const searchMatchCount =
+    needle.length === 0
+      ? 0
+      : messages.filter((message) => message.summary.toLowerCase().includes(needle)).length;
 
   const onSent = useCallback(async () => {
     await refreshActive();
@@ -75,7 +86,7 @@ export function ChatPage({ chatId }: { chatId: string | null }) {
             disabled={creating}
           >
             <Plus size={14} aria-hidden="true" />
-            {creating ? '正在创建…' : '新建群聊'}
+            {creating ? '正在创建…' : '新建会话'}
           </button>
           {createError != null && (
             <p className="chat-empty__error" role="alert">
@@ -96,13 +107,18 @@ export function ChatPage({ chatId }: { chatId: string | null }) {
         status={status}
         statusLoading={statusLoading}
         statusError={statusError}
+        searchQuery={searchQuery}
+        searchMatchCount={searchMatchCount}
+        onSearchChange={setSearchQuery}
         onRenamed={() => void fetchChats()}
       />
       <MessageList
         chatId={chatId}
         messages={messages}
+        status={status}
         loading={messagesLoading}
         error={messagesError}
+        searchQuery={searchQuery}
         onRetry={() => void refreshMessages()}
       />
       <Composer chatId={chatId} onSent={onSent} />
