@@ -5,6 +5,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
+import { deriveAgentToken } from '../src/auth.js';
 import { tempDir } from './helpers.js';
 
 // The route lives in src/server.js, so this test boots the real engine on a
@@ -196,6 +197,14 @@ test('download without a token returns 401', async () => {
   const res = await request(`/chats/${CHAT_A}/files/${FILE_A}`, { token: null });
   assert.equal(res.status, 401);
   assert.deepEqual(await res.json(), { error: 'unauthorized' });
+});
+
+test('a valid agent token is not the master token and returns 403', async () => {
+  const res = await request(`/chats/${CHAT_A}/files/${FILE_A}`, {
+    token: deriveAgentToken(TOKEN, 'claude')
+  });
+  assert.equal(res.status, 403);
+  assert.deepEqual(await res.json(), { error: 'forbidden' });
 });
 
 test('path traversal attempts are rejected with 404', async () => {

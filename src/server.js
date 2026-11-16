@@ -161,10 +161,15 @@ const server = http.createServer(async (req, res) => {
 
   const downloadMatch = /^\/chats\/([^/]+)\/files\/([^/]+)$/.exec(url.pathname);
   if (downloadMatch && req.method === 'GET') {
-    // Same bearer-token identity check as /mcp.
+    // Same bearer-token identity check as /mcp, then the master check: this
+    // route is the GUI's raw download path and has no per-chat agent scope.
     const auth = identifyToken(extractBearer(req), config);
     if (!auth) {
       sendJson(res, 401, { error: 'unauthorized' });
+      return;
+    }
+    if (!auth.master) {
+      sendJson(res, 403, { error: 'forbidden' });
       return;
     }
     const chatId = decodeIdSegment(downloadMatch[1]);
