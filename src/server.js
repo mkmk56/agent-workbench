@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -76,6 +76,48 @@ function rpcError(res, code, message) {
   sendJson(res, 200, { jsonrpc: '2.0', error: { code, message }, id: null });
 }
 
+// ---------------------------------------------------------------------------
+// Raw file download: GET /chats/:id/files/:fileId
+//
+// The GUI can preview extracted text for every supported format, but saving the
+// original bytes (PDF/DOCX/XLSX/ZIP) needs this route. Lookup goes through
+// chat_files — client-supplied paths are never used — and the stored path is
+// resolved strictly inside data/chat-files/<chat_id>/.
+// ---------------------------------------------------------------------------
+
+function decodeIdSegment(value) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+  // Chat/file ids are opaque tokens. Anything that looks like a path (separator,
+  // dot segments, NUL) is rejected before it can reach the filesystem.
+  if (!decoded || decoded === '.' || decoded === '..' || /[/\\\u0000]/.test(decoded)) return null;
+  return decoded;
+}
+
+function safeContentType(value) {
+  const clean = String(value ?? '').trim().toLowerCase().replace(/[\u0000-\u001f\u007f]/g, '');
+  return /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*(?:\s*;\s*[a-z0-9!#$&^_.+-]+=[^;]*)*$/.test(clean)
+    ? clean
+    : 'application/octet-stream';
+}
+
+function contentDisposition(name) {
+  const clean = String(name ?? 'download')
+    .replace(/[\u0000-\u001f\u007f"\\]/g, '_') || 'download';
+  if (/^[\x20-\x7e]+$/.test(clean)) return `attachment; filename="${clean}"`;
+  // RFC 5987: an ASCII fallback for old clients plus the UTF-8 name. The extra
+  // replace covers ' ( ) * which encodeURIComponent leaves literal but
+  // RFC 5987 attr-char does not allow.
+  const fallback = clean.replace(/[^\x20-\x7e]/g, '_');
+  const encoded = encodeURIComponent(clean)
+    .replace(/['()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
+
 function readBody(req, limit = 8 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -114,6 +156,46 @@ const server = http.createServer(async (req, res) => {
       version: '0.1.0',
       uptime_s: Math.floor((Date.now() - startedAt) / 1000)
     });
+    return;
+  }
+
+  const downloadMatch = /^\/chats\/([^/]+)\/files\/([^/]+)$/.exec(url.pathname);
+  if (downloadMatch && req.method === 'GET') {
+    // Same bearer-token identity check as /mcp.
+    const auth = identifyToken(extractBearer(req), config);
+    if (!auth) {
+      sendJson(res, 401, { error: 'unauthorized' });
+      return;
+    }
+    const chatId = decodeIdSegment(downloadMatch[1]);
+    const fileId = decodeIdSegment(downloadMatch[2]);
+    let download = null;
+    if (chatId && fileId) {
+      try {
+        download = files.resolveDownload({ chatId, fileId });
+      } catch {
+        // A stored path outside data/chat-files/<chat_id>/ is never served.
+        download = null;
+      }
+    }
+    if (!download) {
+      sendJson(res, 404, { error: 'file not found' });
+      return;
+    }
+    let body;
+    try {
+      body = readFileSync(download.path);
+    } catch {
+      sendJson(res, 404, { error: 'file not found' });
+      return;
+    }
+    res.writeHead(200, {
+      'content-type': safeContentType(download.row.mime),
+      'content-length': body.length,
+      'content-disposition': contentDisposition(download.row.original_name),
+      'x-content-type-options': 'nosniff'
+    });
+    res.end(body);
     return;
   }
 

@@ -686,6 +686,20 @@ export class FileService {
     return this.store.listChatFiles(chatId, limit).map((row) => this.describe(row));
   }
 
+  // Resolve a registered chat file for a raw download. Returns null when the
+  // file is not registered for this chat or is no longer present on disk; a
+  // stored path that escapes data/chat-files/<chat_id>/ throws (treated as
+  // "not found" by the HTTP route, never served).
+  resolveDownload({ chatId, fileId }) {
+    const row = this.store.getChatFile(fileId);
+    if (!row || row.chat_id !== chatId) return null;
+    const path = this._resolveStored(row);
+    if (!existsSync(path)) return null;
+    const info = statSync(path);
+    if (!info.isFile()) return null;
+    return { row, path, size: info.size };
+  }
+
   // ------------------------------------------------------------------
   // Tool-facing aliases. The MCP layer uses snake_case arguments and keeps
   // the vision decision here so every caller (including future embedders)
