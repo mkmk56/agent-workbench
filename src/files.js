@@ -139,7 +139,7 @@ export function readZipEntries(buffer) {
   return { entries, buffer };
 }
 
-function zipEntryData(buffer, entry) {
+function zipEntryData(buffer, entry, maxOutputLength = 25 * 1024 * 1024) {
   const local = entry.localOffset;
   if (local + 30 > buffer.length || buffer.readUInt32LE(local) !== ZIP_LOCAL) {
     throw new Error(`corrupt ZIP archive: bad local header for ${entry.name}`);
@@ -150,8 +150,24 @@ function zipEntryData(buffer, entry) {
   const end = start + entry.compressedSize;
   if (end > buffer.length) throw new Error(`corrupt ZIP archive: data for ${entry.name} out of range`);
   const raw = buffer.subarray(start, end);
-  if (entry.method === 0) return Buffer.from(raw);
-  if (entry.method === 8) return inflateRawSync(raw);
+  if (entry.method === 0) {
+    if (raw.length > maxOutputLength) {
+      throw new Error(`ZIP entry ${entry.name} exceeds the decompressed size limit`);
+    }
+    return Buffer.from(raw);
+  }
+  if (entry.method === 8) {
+    // maxOutputLength is the zip-bomb guard: it stops inflation even when the
+    // central directory lies about the uncompressed size.
+    try {
+      return inflateRawSync(raw, { maxOutputLength });
+    } catch (error) {
+      if (/maxOutputLength|buffer/i.test(error.message)) {
+        throw new Error(`ZIP entry ${entry.name} exceeds the decompressed size limit`);
+      }
+      throw error;
+    }
+  }
   throw new Error(`unsupported ZIP compression method ${entry.method} for ${entry.name}`);
 }
 
@@ -637,7 +653,7 @@ export class FileService {
       if (total > this.maxZipTotalBytes) {
         throw new Error(`ZIP expands beyond the ${this.maxZipTotalBytes}-byte total limit`);
       }
-      const data = zipEntryData(buffer, entry);
+      const data = zipEntryData(buffer, entry, this.maxZipEntryBytes);
       if (data.length > this.maxZipEntryBytes) {
         throw new Error(`ZIP entry ${entry.name} exceeds the per-file limit after decompression`);
       }

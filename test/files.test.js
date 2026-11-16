@@ -128,6 +128,26 @@ test('ZIP path traversal is rejected at parse time', () => {
   }
 });
 
+test('ZIP per-entry decompression limit is enforced', () => {
+  const dir = tempDir();
+  const { store, files, chats } = makeServices(dir, {
+    config: { chatZipMaxEntryBytes: 16 }
+  });
+  try {
+    const chat = chats.create({ name: 'ZipLimit' });
+    const meta = uploadBuffer(files, chat.chat_id, 'limit.zip', makeZip([
+      ['big.txt', 'x'.repeat(100)]
+    ]));
+    assert.equal(meta.parse_status, 'failed');
+    assert.match(meta.parse.error, /per-file limit|decompressed size limit/i);
+    assert.throws(() => files.readFile({
+      chat_id: chat.chat_id, file_id: meta.file_id, actor: { master: true }
+    }), /cannot read .*limit/i);
+  } finally {
+    store.close();
+  }
+});
+
 test('DOCX and PDF text extraction', () => {
   const dir = tempDir();
   const { store, files, chats } = makeServices(dir);

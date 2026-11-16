@@ -161,7 +161,7 @@
 | ZIP | 安全解压后返回文件树；`entry=<相对路径>` 读取成员 |
 | 其他二进制 | `parse_status=unsupported`，`read_chat_file` 返回明确错误 |
 
-ZIP 安全限制：拒绝绝对路径、`..`、符号链接、ZIP64/加密包；最多 200 个文件、嵌套深度 5、解压总量 50 MB、单文件 10 MB。超限导致 `parse_status=failed`，读取时返回原始错误原因。
+ZIP 安全限制：拒绝绝对路径、`..`、符号链接、ZIP64/加密包；最多 200 个文件、嵌套深度 5、解压总量 50 MB、单文件 10 MB；inflate 使用 `maxOutputLength`，即使中央目录伪造 uncompressedSize 也不会被 ZIP 炸弹撑爆。超限导致 `parse_status=failed`，读取时返回原始错误原因。
 
 ### 5.3 裸路径政策
 
@@ -230,7 +230,7 @@ ZIP 安全限制：拒绝绝对路径、`..`、符号链接、ZIP64/加密包；
 
 ```bash
 npm test
-# 38 tests / 38 pass / 0 fail
+# 39 tests / 39 pass / 0 fail
 ```
 
 覆盖：
@@ -242,7 +242,7 @@ npm test
 - epoch 不符派发被拒且不落消息；
 - 可见性/行动分离、每 epoch 预算、10 条线程上限；
 - 分片上传、20 MB/1 MB 限制、sha256；
-- TXT/DOCX/XLSX/PPTX/PDF 解析、图片视觉分流、ZIP 树/entry/路径穿越拒绝；
+- TXT/DOCX/XLSX/PPTX/PDF 解析、图片视觉分流、ZIP 树/entry/路径穿越拒绝、ZIP 解压上限；
 - 裸路径拒绝、跨群文件拒绝、message_files 关联；
 - 归档默认隐藏、include_archived 顺序、消息/文件保留、恢复。
 
