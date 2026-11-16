@@ -348,7 +348,9 @@ export function TasksPage() {
                 {engine.status?.tokenConfigured
                   ? engine.status.tokenSource === 'stored'
                     ? '已保存（safeStorage）'
-                    : '来自环境 / workbench.env'
+                    : engine.status.tokenSource === 'file'
+                      ? '来自引擎同步文件'
+                      : '来自环境 / workbench.env'
                   : '未配置'}
               </dd>
             </dl>

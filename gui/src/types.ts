@@ -45,7 +45,7 @@ export interface EngineStatus {
   version: string | null;
   uptimeSeconds: number | null;
   tokenConfigured: boolean;
-  tokenSource: 'stored' | 'environment' | 'none';
+  tokenSource: 'stored' | 'environment' | 'file' | 'none';
   lastError: string | null;
   checkedAt: string;
   engineRoot: string;

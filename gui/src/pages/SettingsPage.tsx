@@ -537,7 +537,9 @@ export function SettingsPage() {
                     {engine.status?.tokenConfigured
                       ? engine.status.tokenSource === 'stored'
                         ? 'safeStorage（已保存）'
-                        : '环境变量 / workbench.env'
+                        : engine.status.tokenSource === 'file'
+                          ? '引擎启动时自动同步'
+                          : '环境变量 / workbench.env'
                       : '未配置'}
                     。生命周期：
                     {engine.status?.managed

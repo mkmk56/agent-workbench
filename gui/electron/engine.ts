@@ -14,7 +14,7 @@ export interface EngineStatus {
   version: string | null;
   uptimeSeconds: number | null;
   tokenConfigured: boolean;
-  tokenSource: 'stored' | 'environment' | 'none';
+  tokenSource: 'stored' | 'environment' | 'file' | 'none';
   lastError: string | null;
   checkedAt: string;
   engineRoot: string;
@@ -65,7 +65,7 @@ const MAX_LOG_TAIL = 12;
 
 type TokenResolution = {
   token: string | null;
-  source: 'stored' | 'environment' | 'none';
+  source: 'stored' | 'environment' | 'file' | 'none';
 };
 
 function sleep(ms: number): Promise<void> {
@@ -115,6 +115,25 @@ function resolveEngineRoot(): string {
   return path.resolve(__dirname, '..', '..');
 }
 
+/**
+ * Per-user token file written by scripts/sync-engine-token.mjs at engine
+ * startup. This is the only token location shared by the packaged GUI and the
+ * externally started engine.
+ */
+function sharedTokenFile(): string {
+  const appData = process.env.APPDATA?.trim() || app.getPath('appData');
+  return path.join(appData, 'agent-workbench', 'credentials', 'engine-token');
+}
+
+function readSharedToken(): string | null {
+  try {
+    const value = fs.readFileSync(sharedTokenFile(), 'utf8').trim();
+    return value.length > 0 && value.length <= 8192 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface EngineManagerOptions {
   /** Overrides the port only for isolated lifecycle tests; defaults to 8080. */
   port?: number;
@@ -157,6 +176,10 @@ export class EngineManager {
     const fromEnv = process.env.MCP_BEARER_TOKEN?.trim();
     if (fromEnv) {
       return { token: fromEnv, source: 'environment' };
+    }
+    const fromSharedFile = readSharedToken();
+    if (fromSharedFile) {
+      return { token: fromSharedFile, source: 'file' };
     }
     const envFile = readEnvFile(path.join(this.engineRoot, 'workbench.env'));
     const fromFile = envFile.MCP_BEARER_TOKEN?.trim();
@@ -253,7 +276,7 @@ export class EngineManager {
     const resolution = this.resolveToken();
     if (!resolution.token) {
       this.lastError =
-        '未配置引擎 Token：请在“设置 → 凭据”中保存 Token，或在仓库 workbench.env 中提供 MCP_BEARER_TOKEN。';
+        '未配置引擎 Token：请在“设置 → 凭据”中保存 Token，或重启引擎以自动同步 Token，或在仓库 workbench.env 中提供 MCP_BEARER_TOKEN。';
       throw new Error(this.lastError);
     }
 
@@ -435,7 +458,7 @@ export class EngineManager {
     const resolution = this.resolveToken();
     if (!resolution.token) {
       throw new Error(
-        '未配置引擎 Token：请在“设置 → 凭据”中保存 Token，或在仓库 workbench.env 中提供 MCP_BEARER_TOKEN。',
+        '未配置引擎 Token：请在“设置 → 凭据”中保存 Token，或重启引擎以自动同步 Token，或在仓库 workbench.env 中提供 MCP_BEARER_TOKEN。',
       );
     }
 

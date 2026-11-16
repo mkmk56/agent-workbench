@@ -993,3 +993,39 @@ dsh：
 
 - 计划关机 → EXIT 0；中止 → EXIT 0；再次中止 → EXIT 92 / Windows 1116「没有进行中的关机进程」，证明无遗留计划；未真正关机。
 - 结论：Claude 具备关机权限，探针 **PASSED**。
+
+---
+
+## U 阶段五补丁：GUI Token 自动同步（2026-11-16）
+
+> 本节为追加记录，不回改上文历史；时间为本机 UTC+8。全程未打印、记录或提交 Token 明文。
+
+### U.1 根因
+
+- 打包版 GUI（`%LOCALAPPDATA%\Programs\agent-workbench-gui`）的引擎根目录是 `resources\engine`，安装包不包含 `workbench.env`；GUI 自身由 Explorer 启动，进程环境也没有 `MCP_BEARER_TOKEN`；`%APPDATA%\agent-workbench\credentials\token.enc` 不存在。
+- 因此 `EngineManager.resolveToken()` 只得到一个空结果，新建群聊时 `create_chat` 直接报「未配置引擎 Token」。
+- 引擎本身由 `AgentWorkbench.vbs → start-workbench.cmd` 启动，能读到 Token，但 GUI 与引擎之间没有共享 Token 的通道。
+
+### U.2 修复
+
+- 新增 `scripts/sync-engine-token.mjs`：按 `process.env.MCP_BEARER_TOKEN` → 仓库 `workbench.env` 的顺序取有效 Token，原子写入 `%APPDATA%\agent-workbench\credentials\engine-token`（逐用户 ACL，仅当前用户可读）；Token 只在内存与目标文件中出现，不打印、不写入仓库。内容未变化时只做 ACL 加固。
+- `start-workbench.cmd` 在启动引擎前调用上述脚本；开机自启链路 `AgentWorkbench.vbs → start-workbench.cmd` 不变，因此每次开机/看门狗重启都会重新同步。脚本失败不阻断引擎启动。
+- `gui/electron/engine.ts` 新增共享 Token 文件读取，解析优先级为：safeStorage 已保存 → 进程环境变量 → 启动同步文件 → `workbench.env`；状态新增 `tokenSource=file`。
+- `gui/src/types.ts`、`gui/src/pages/TasksPage.tsx`、`gui/src/pages/SettingsPage.tsx` 增加「引擎启动时自动同步 / 来自引擎同步文件」来源文案；错误提示补充“重启引擎以自动同步 Token”。
+
+### U.3 验证
+
+- 两种来源分别实测：带 `MCP_BEARER_TOKEN` 环境变量时脚本记录 `source=environment`；删除目标文件并清除环境变量后，脚本从 `workbench.env` 重建，记录 `source=workbench.env`。
+- 用共享文件中的 Token 调用生产引擎 `:8080` 的 `list_chats`：HTTP 200。
+- `cd gui && npm run typecheck` 与 `npm run build` 通过；`npm run dist` 生成 `gui/release/AgentWorkbench-Setup-0.1.0.exe`，静默 `/S` 安装 EXIT 0。
+- 重启安装版 GUI 后引擎状态为「引擎在线」；在 GUI 中实际新建群聊「Token 自动同步验证」成功，群聊列表与空会话界面正常，无 Token 错误。截图：`C:\Users\yikai\AppData\Local\Temp\agent-workbench-token-autosync.png`（2143×1342）。
+
+### U.4 开机行为
+
+- 是。用户登录后 Startup 中的 `AgentWorkbench.vbs` 调起 `start-workbench.cmd`；脚本先同步 Token 再启动引擎。GUI 每次调用引擎时都会重新解析 Token 文件，不需要手动配置。
+
+### U.5 遗留
+
+- 共享 Token 文件为逐用户明文文件（ACL 已收紧），与 `workbench.env` 的既有明文口径一致；如需更高等级，可后续改为 DPAPI/凭据管理器存储。
+- 若在引擎运行期间手动轮换 `workbench.env` 的 Token，需要等下次引擎重启同步后才与运行中的引擎一致；正常开机流程不会出现该窗口。
+- 本次未重启生产引擎（避免中断当前活跃任务）；启动链路本身通过脚本双来源实测验证。

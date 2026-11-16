@@ -1995,3 +1995,30 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 ### Git
 
 - 文档提交在 `gui/redesign-chat` 分支，推送使用代理命令；hash 与远程 HEAD 以 `git log -1` / `git ls-remote` 为准。
+
+---
+
+## 2026-11-16（周日）· 阶段五补丁：GUI Token 自动同步
+
+### 根因
+
+- 打包版 GUI 的引擎根目录为 `resources\engine`，不含 `workbench.env`；GUI 进程环境无 `MCP_BEARER_TOKEN`，`credentials\token.enc` 也不存在，`resolveToken()` 返回空，新建群聊报「未配置引擎 Token」。
+- 引擎由 `AgentWorkbench.vbs → start-workbench.cmd` 启动，能读到 Token；GUI 与引擎之间缺少共享 Token 的通道。
+
+### 改动
+
+- 新增 `scripts/sync-engine-token.mjs`：按进程环境 → 仓库 `workbench.env` 取有效 Token，原子写入 `%APPDATA%\agent-workbench\credentials\engine-token`，并尽力收紧为当前用户 ACL；不打印、不写入仓库。
+- `start-workbench.cmd` 在启动引擎前执行同步脚本；开机自启与看门狗链路不变。
+- `gui/electron/engine.ts` 增加共享文件解析（safeStorage → 环境变量 → 同步文件 → `workbench.env`），新增 `tokenSource=file`；Tasks/Settings 页与类型定义补充来源文案，错误提示补充自动同步说明。
+
+### 验证
+
+- 环境变量来源与 `workbench.env` 来源分别重建成功；共享文件 Token 调用生产 `:8080` `list_chats` 返回 HTTP 200。
+- `npm run typecheck`、`npm run build`、`npm run dist` 均通过；安装包静默 `/S` 安装 EXIT 0。
+- 重启安装版 GUI 后成功新建群聊「Token 自动同步验证」，界面无 Token 错误；截图 `C:\Users\yikai\AppData\Local\Temp\agent-workbench-token-autosync.png`。
+
+### 限制
+
+- 共享文件为逐用户明文（ACL 收紧），与 `workbench.env` 口径一致。
+- 未重启生产引擎，避免中断活跃任务；启动同步脚本已按两种 Token 来源实测。
+- 全程未输出 Token 明文，仓库变更不含 Token。
