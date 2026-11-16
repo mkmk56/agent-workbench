@@ -1,98 +1,39 @@
 import { Info, Plus, RefreshCw, Settings as SettingsIcon } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import logoInverse from '@brand/logo/logo-inverse.svg';
 import logoPrimary from '@brand/logo/logo-primary.svg';
+import { createChat } from '../lib/chat';
+import { useChatListView } from '../lib/chat-store';
 import { formatRelative } from '../lib/labels';
 import { navigate } from '../lib/router';
-import type { ChatSummary, Route } from '../types';
+import type { Route } from '../types';
 import { AppButton, AppEmptyState, AppIconButton } from '../ui/astryx';
 
 /**
  * Chat sidebar (Muse). The chat LIST lives here; the center chat view is
- * Claude's ChatPage. Lists real chats from the engine (listChats); no mock data.
+ * Claude's ChatPage. The list is read from the single ChatStore (no local
+ * polling) so the sidebar and the chat page share one fetch cadence.
  */
 export function ChatSidebar({ route }: { route: Route }) {
-  const [chats, setChats] = useState<ChatSummary[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { chats, error, loading, refresh } = useChatListView();
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
   const [creating, setCreating] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
-  const inFlight = useRef(false);
-  const alive = useRef(true);
 
-  const refresh = useCallback(async () => {
-    if (!window.workbench) {
-      if (alive.current) {
-        setError('主进程未连接（浏览器预览）。');
-        setLoading(false);
-      }
-      return;
-    }
-    if (inFlight.current) {
-      return;
-    }
-    inFlight.current = true;
-    try {
-      const result = await window.workbench.listChats();
-      if (!alive.current) {
-        return;
-      }
-      if (!result.ok) {
-        setError(result.error);
-        return;
-      }
-      setChats(result.data.chats);
-      setError(null);
-    } catch {
-      if (alive.current) {
-        setError('读取群聊列表失败。');
-      }
-    } finally {
-      inFlight.current = false;
-      if (alive.current) {
-        setLoading(false);
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    alive.current = true;
-    void refresh();
-    const timer = setInterval(() => {
-      void refresh();
-    }, 5_000);
-    return () => {
-      alive.current = false;
-      clearInterval(timer);
-    };
-  }, [refresh]);
-
-  const createChat = async () => {
-    if (!window.workbench) {
-      setFormError('主进程未连接（浏览器预览）。');
-      return;
-    }
+  const submitCreate = async () => {
     setCreating(true);
     setFormError(null);
-    try {
-      const result = await window.workbench.createChat(
-        name.trim().length > 0 ? name.trim() : undefined,
-      );
-      if (!result.ok) {
-        setFormError(result.error);
-        return;
-      }
-      setName('');
-      setShowForm(false);
-      await refresh();
-      navigate(`/chats/${result.data.chat_id}`);
-    } catch {
-      setFormError('创建群聊失败。');
-    } finally {
-      setCreating(false);
+    const result = await createChat(name.trim().length > 0 ? name.trim() : undefined);
+    setCreating(false);
+    if (!result.ok) {
+      setFormError(result.error);
+      return;
     }
+    setName('');
+    setShowForm(false);
+    await refresh();
+    navigate(`/chats/${result.data.chat_id}`);
   };
 
   const selectedId = route.name === 'chat' ? route.id : null;
@@ -118,7 +59,7 @@ export function ChatSidebar({ route }: { route: Route }) {
               onChange={(event) => setName(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') {
-                  void createChat();
+                  void submitCreate();
                 }
                 if (event.key === 'Escape') {
                   setShowForm(false);
@@ -134,7 +75,7 @@ export function ChatSidebar({ route }: { route: Route }) {
                 size="sm"
                 isLoading={creating}
                 isDisabled={creating}
-                onClick={() => void createChat()}
+                onClick={() => void submitCreate()}
               />
               <AppButton
                 label="取消"

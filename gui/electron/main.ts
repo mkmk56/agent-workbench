@@ -2,6 +2,7 @@ import {
   app,
   BrowserWindow,
   clipboard,
+  dialog,
   ipcMain,
   Menu,
   safeStorage,
@@ -12,6 +13,21 @@ import {
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import {
+  AttachmentService,
+  formatBytes,
+  normalizeChatFile,
+  MAX_FILE_BYTES,
+  MAX_FILES_PER_UPLOAD,
+  type AttachmentDraft,
+  type ChatFilePayload,
+} from './attachments';
+import { runAttachmentVerification } from './attachment-verify';
+import {
+  attachmentUrl,
+  installChatAttachmentProtocol,
+  registerChatAttachmentPrivileges,
+} from './chat-protocol';
 import { EngineManager, errorMessage } from './engine';
 import { UpdateManager, type UpdateChannel, type UpdateState } from './update';
 
@@ -31,6 +47,17 @@ const DATA_DIR = app.getPath('userData');
 const CREDENTIALS_DIR = path.join(DATA_DIR, 'credentials');
 const TOKEN_FILE = path.join(CREDENTIALS_DIR, 'token.enc');
 const HUD_CONFIG_FILE = path.join(DATA_DIR, 'hud.json');
+const ATTACHMENTS_TEMP_DIR = path.join(DATA_DIR, 'attachments', 'pending');
+const ATTACHMENTS_CACHE_DIR = path.join(DATA_DIR, 'attachments', 'cache');
+
+// The renderer never handles host paths: drafts are opaque ids in this service.
+const attachments = new AttachmentService({
+  tempDir: ATTACHMENTS_TEMP_DIR,
+  cacheDir: ATTACHMENTS_CACHE_DIR,
+});
+
+// Scheme privileges must be registered before the app is ready.
+registerChatAttachmentPrivileges();
 
 type Result = { ok: boolean; error?: string };
 
@@ -93,6 +120,8 @@ let updateManager: UpdateManager | null = null;
 
 const VERIFY_MODE = process.argv.includes('--update-verify');
 const PRINT_VERSION_MODE = process.argv.includes('--print-version');
+/** Headless end-to-end check of the attachment pipeline (see docs). */
+const ATTACH_VERIFY_MODE = process.argv.includes('--attachment-verify');
 
 function ensureDataDir(): void {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -184,6 +213,19 @@ function handle<T>(channel: string, handler: (...args: unknown[]) => T): void {
       throw new Error('Blocked IPC call from an untrusted origin');
     }
     return handler(...args);
+  });
+}
+
+/** Same trusted-origin gate, but streams progress back to the calling window. */
+function handleWithEvent<T>(
+  channel: string,
+  handler: (event: IpcMainInvokeEvent, ...args: unknown[]) => T,
+): void {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!isTrustedSender(event)) {
+      throw new Error('Blocked IPC call from an untrusted origin');
+    }
+    return handler(event, ...args);
   });
 }
 
@@ -398,28 +440,287 @@ function registerIpc(): void {
   );
 
   handle('engine:chat-message-list', (input) =>
-    engineResult(() => {
-      const value = asRecord(input);
-      return engine.listChatMessages(
-        requireChatId(value.chatId),
-        optionalInteger(value.limit, 1, 500, 200),
-      );
-    }),
+    engineResult(() => readChatMessageQuery(input)),
   );
+
+  // Canonical name from the frozen contract; the legacy channel above stays as
+  // an alias so older renderers keep working during the migration.
+  handle('engine:chat-messages', (input) => engineResult(() => readChatMessageQuery(input)));
 
   handle('engine:chat-send', (input) =>
     engineResult(() => {
       const value = asRecord(input);
-      return engine.sendChatMessage(
-        requireChatId(value.chatId),
-        requireText(value.summary, '消息', 20_000),
-      );
+      const from = value.from == null ? 'user' : value.from;
+      if (from !== 'user' && from !== 'muse') {
+        throw new Error('发送者必须是 user 或 muse。');
+      }
+      const to = optionalRecipient(value.to, from === 'user' ? 'muse' : 'user');
+      return engine.sendChatMessage({
+        chatId: requireChatId(value.chatId),
+        from,
+        to,
+        summary: requireText(value.summary, '消息', 20_000),
+        files: optionalIdArray(value.files, '附件', MAX_FILES_PER_UPLOAD),
+        mentions: optionalMentionArray(value.mentions),
+        replyTo:
+          value.replyTo == null || value.replyTo === ''
+            ? undefined
+            : requireMessageId(value.replyTo, '回复目标'),
+        clientMsgId:
+          value.clientMsgId == null || value.clientMsgId === ''
+            ? undefined
+            : requireMessageId(value.clientMsgId, '客户端消息 ID'),
+        question:
+          value.question == null || value.question === ''
+            ? undefined
+            : requireText(value.question, '问题', 4_000),
+        taskId:
+          value.taskId == null || value.taskId === ''
+            ? undefined
+            : requireTaskId(value.taskId),
+      });
     }),
   );
 
   handle('engine:chat-status', (chatId) =>
     engineResult(() => engine.chatStatus(requireChatId(chatId))),
   );
+
+  handle('engine:chat-participants', (chatId) =>
+    engineResult(() => engine.chatParticipants(requireChatId(chatId))),
+  );
+
+  handle('engine:chat-mark-read', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      const upToSeq =
+        value.upToSeq == null || value.upToSeq === ''
+          ? undefined
+          : optionalInteger(value.upToSeq, 0, Number.MAX_SAFE_INTEGER, 0);
+      const messageId =
+        value.messageId == null || value.messageId === ''
+          ? undefined
+          : requireMessageId(value.messageId, '消息 ID');
+      if (upToSeq == null && messageId == null) {
+        throw new Error('标记已读需要 upToSeq 或 messageId。');
+      }
+      return engine.chatMarkRead({ chatId: requireChatId(value.chatId), upToSeq, messageId });
+    }),
+  );
+
+  // ---- Attachment intake (main-process dialog / drop / paste) ----
+
+  handle('chat:pick-files', () => pickChatFiles());
+
+  handle('chat:register-dropped', async (input) => {
+    try {
+      const value = asRecord(input);
+      const source = value.source === 'paste' ? 'paste' : 'drop';
+      const drafts = await attachments.registerPaths(value.paths, source);
+      return { ok: true, data: { drafts } };
+    } catch (error) {
+      return { ok: false, error: errorMessage(error) };
+    }
+  });
+
+  handle('chat:register-buffers', async (input) => {
+    try {
+      const value = asRecord(input);
+      const items = Array.isArray(value.items) ? value.items : [];
+      if (items.length === 0) {
+        return { ok: false, error: '没有可上传的内容。' };
+      }
+      if (items.length > MAX_FILES_PER_UPLOAD) {
+        return { ok: false, error: `一次最多上传 ${MAX_FILES_PER_UPLOAD} 个文件。` };
+      }
+      const source = value.source === 'paste' ? 'paste' : 'drop';
+      const drafts: AttachmentDraft[] = [];
+      const errors: Array<{ name: string; error: string }> = [];
+      for (const item of items) {
+        const record = asRecord(item);
+        const raw = record.data;
+        const buffer =
+          raw instanceof Uint8Array ? Buffer.from(raw) : Buffer.isBuffer(raw) ? raw : null;
+        if (buffer == null) {
+          errors.push({ name: String(record.name ?? '未知文件'), error: '内容为空或格式无效。' });
+          continue;
+        }
+        try {
+          drafts.push(
+            await attachments.registerBuffer({
+              name: record.name,
+              mime: record.mime,
+              data: buffer,
+              source,
+            }),
+          );
+        } catch (error) {
+          errors.push({
+            name: String(record.name ?? '未知文件'),
+            error: errorMessage(error),
+          });
+        }
+      }
+      return { ok: true, data: { drafts, errors } };
+    } catch (error) {
+      return { ok: false, error: errorMessage(error) };
+    }
+  });
+
+  handle('chat:draft-discard', (draftIds) => {
+    attachments.removeDrafts(draftIds);
+    return { ok: true };
+  });
+
+  // ---- Chunked upload: 1 MB chunks through the engine tools ----
+
+  handleWithEvent('engine:chat-upload', async (event, input) => {
+    let chatId: string | null = null;
+    try {
+      const value = asRecord(input);
+      chatId = requireChatId(value.chatId);
+      const uploadId = requireMessageId(value.uploadId, '上传 ID');
+      const result = await attachments.upload({
+        chatId,
+        draftIds: value.draftIds,
+        uploadId,
+        engine,
+        onProgress: (progress) => {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('chat:upload-progress', progress);
+          }
+        },
+      });
+      return { ok: true, data: result };
+    } catch (error) {
+      return { ok: false, error: errorMessage(error) };
+    }
+  });
+
+  // ---- File read / open / save (file_id only, never a host path) ----
+
+  handle('engine:chat-file-read', async (input) => {
+    try {
+      const value = asRecord(input);
+      const chatId = requireChatId(value.chatId);
+      const fileId = requireFileId(value.fileId);
+      const maxBytes =
+        value.limit == null || value.limit === ''
+          ? undefined
+          : optionalInteger(value.limit, 1, 2_000_000, 200 * 1_024);
+      const entry =
+        value.entry == null || value.entry === '' ? undefined : requireText(value.entry, 'ZIP 路径', 1_024);
+      const raw = await engine.readChatFile({ chatId, fileId, entry, maxBytes });
+      const text = typeof raw.text === 'string' ? raw.text : '';
+      // Normalized shape for the renderer: `text`/`truncated` are the frozen
+      // contract; `content`/`mode`/`encoding` keep the older preview caller
+      // working during the migration.
+      return {
+        ok: true,
+        data: {
+          ...raw,
+          file_id: typeof raw.file_id === 'string' ? raw.file_id : fileId,
+          mode: 'text',
+          encoding: 'utf8',
+          content: text,
+          text,
+          truncated: raw.truncated === true,
+          offset: 0,
+          next_offset: null,
+        },
+      };
+    } catch (error) {
+      return { ok: false, error: errorMessage(error) };
+    }
+  });
+
+  // ---- File listing / preview URL / download (file_id only) ----
+
+  handle('engine:chat-files', (input) =>
+    engineResult(async () => {
+      const value = asRecord(input);
+      const chatId = requireChatId(value.chatId);
+      const limit =
+        value.limit == null || value.limit === ''
+          ? undefined
+          : optionalInteger(value.limit, 1, 500, 200);
+      const result = await engine.listChatFiles({ chatId, limit });
+      const files = (Array.isArray(result.files) ? result.files : [])
+        .map((file) => normalizeChatFile(file, chatId))
+        .filter((file): file is ChatFilePayload => file != null);
+      return { chat_id: chatId, files };
+    }),
+  );
+
+  handle('engine:chat-file-preview', (input) => {
+    try {
+      const value = asRecord(input);
+      const chatId = requireChatId(value.chatId);
+      const fileId = requireFileId(value.fileId);
+      // A narrow custom-protocol URL; no host path and no localhost file server.
+      return { ok: true, data: { url: attachmentUrl(chatId, fileId) } };
+    } catch (error) {
+      return { ok: false, error: errorMessage(error) };
+    }
+  });
+
+  handle('engine:chat-file-open', async (input) => {
+    try {
+      const value = asRecord(input);
+      const chatId = requireChatId(value.chatId);
+      const fileId = requireFileId(value.fileId);
+      const fetched = await attachments.fetchBytes({ chatId, fileId, engine });
+      const target = await attachments.cacheToDisk({
+        chatId,
+        fileId,
+        name: fetched.name,
+        bytes: fetched.bytes,
+      });
+      if (value.action === 'reveal') {
+        shell.showItemInFolder(target);
+        return { ok: true };
+      }
+      const error = await shell.openPath(target);
+      return error ? { ok: false, error } : { ok: true };
+    } catch (error) {
+      return { ok: false, error: errorMessage(error) };
+    }
+  });
+
+  // Canonical download entry: main-process save dialog + write to disk.
+  const saveChatFile = async (input: unknown) => {
+    try {
+      const value = asRecord(input);
+      const chatId = requireChatId(value.chatId);
+      const fileId = requireFileId(value.fileId);
+      const fetched = await attachments.fetchBytes({ chatId, fileId, engine });
+      if (fetched.extracted) {
+        throw new Error(
+          '该格式目前只能预览解析出的文本；保存原始文件需要后端提供原始字节接口（待联调）。',
+        );
+      }
+      const options: Electron.SaveDialogOptions = {
+        title: '保存附件',
+        defaultPath: fetched.name,
+      };
+      const owner = mainWindow;
+      const result =
+        owner != null && !owner.isDestroyed()
+          ? await dialog.showSaveDialog(owner, options)
+          : await dialog.showSaveDialog(options);
+      if (result.canceled || result.filePath == null || result.filePath.length === 0) {
+        return { ok: true, data: { savedPath: '' } };
+      }
+      await attachments.writeTo(result.filePath, fetched.bytes);
+      return { ok: true, data: { savedPath: result.filePath } };
+    } catch (error) {
+      return { ok: false, error: errorMessage(error) };
+    }
+  };
+
+  handle('engine:chat-file-download', (input) => saveChatFile(input));
+  // Legacy alias kept for the first renderer build during the migration.
+  handle('engine:chat-file-save', (input) => saveChatFile(input));
 
   handle('engine:respond-approval', (input) =>
     engineResult(() => {
@@ -525,6 +826,121 @@ function requireChatId(value: unknown): string {
   return value;
 }
 
+function requireFileId(value: unknown): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
+    throw new Error('附件 ID 无效。');
+  }
+  return value;
+}
+
+function requireMessageId(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/.test(value)) {
+    throw new Error(`${label} 无效。`);
+  }
+  return value;
+}
+
+function optionalRecipient(value: unknown, fallback: string): string {
+  if (value == null || value === '') {
+    return fallback;
+  }
+  if (value !== 'user' && value !== 'muse' && value !== 'claude' && value !== 'dsh') {
+    throw new Error('收件人必须是 user、muse、claude 或 dsh。');
+  }
+  return value;
+}
+
+function optionalIdArray(value: unknown, label: string, maxItems: number): string[] | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} 必须是数组。`);
+  }
+  if (value.length > maxItems) {
+    throw new Error(`${label} 最多 ${maxItems} 项。`);
+  }
+  return value.map((item) => requireFileId(item));
+}
+
+function optionalMentionArray(value: unknown): string[] | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error('@提及必须是数组。');
+  }
+  if (value.length > 8) {
+    throw new Error('单条消息最多提及 8 个参与者。');
+  }
+  const allowed = new Set(['user', 'muse', 'claude', 'dsh']);
+  const mentions = value.map((item) => {
+    if (typeof item !== 'string' || !allowed.has(item)) {
+      throw new Error('@提及只能包含 user、muse、claude、dsh。');
+    }
+    return item;
+  });
+  return [...new Set(mentions)];
+}
+
+function readChatMessageQuery(input: unknown): Promise<{
+  messages: Array<Record<string, unknown>>;
+  has_more?: boolean;
+  next_seq?: number;
+}> {
+  const value = asRecord(input);
+  const before =
+    value.before == null || value.before === ''
+      ? undefined
+      : requireText(value.before, '翻页游标', 200);
+  const afterSeq =
+    value.afterSeq == null || value.afterSeq === ''
+      ? undefined
+      : optionalInteger(value.afterSeq, 0, Number.MAX_SAFE_INTEGER, 0);
+  return engine.listChatMessages({
+    chatId: requireChatId(value.chatId),
+    limit: optionalInteger(value.limit, 1, 500, 200),
+    before,
+    afterSeq,
+  });
+}
+
+async function pickChatFiles(): Promise<
+  { ok: true; data: { drafts: AttachmentDraft[] } } | { ok: false; error: string }
+> {
+  try {
+    const options: Electron.OpenDialogOptions = {
+      title: '选择要发送给群聊的文件',
+      buttonLabel: '加入待发送',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        {
+          name: '常用文件',
+          extensions: [
+            'png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'docx', 'doc', 'xlsx', 'xls', 'pptx',
+            'zip', 'txt', 'md', 'csv', 'json', 'ts', 'tsx', 'js', 'py', 'sh', 'log',
+          ],
+        },
+        { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] },
+        { name: '文档', extensions: ['pdf', 'docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt'] },
+        { name: '全部文件', extensions: ['*'] },
+      ],
+    };
+    const owner = mainWindow;
+    const result =
+      owner != null && !owner.isDestroyed()
+        ? await dialog.showOpenDialog(owner, options)
+        : await dialog.showOpenDialog(options);
+    if (result.canceled || result.filePaths.length === 0) {
+      return { ok: true, data: { drafts: [] } };
+    }
+    const drafts = await attachments.registerPaths(result.filePaths, 'dialog');
+    return { ok: true, data: { drafts } };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
 function optionalInteger(value: unknown, min: number, max: number, fallback: number): number {
   if (value == null || value === '') {
     return fallback;
@@ -547,11 +963,13 @@ async function engineResult<T>(
 }
 
 function applySessionPolicy(): void {
+  // Attachment previews use one narrow custom scheme, and only for images.
+  // Both CSP variants stay in sync: dev must not be looser than production.
   const devCsp = [
     "default-src 'self'",
     "script-src 'self' 'unsafe-inline'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data:",
+    "img-src 'self' data: chat-attachment:",
     "font-src 'self' data:",
     `connect-src 'self' ${DEV_URL} ws://127.0.0.1:5173`,
     "object-src 'none'",
@@ -564,7 +982,7 @@ function applySessionPolicy(): void {
     "default-src 'self'",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data:",
+    "img-src 'self' data: chat-attachment:",
     "font-src 'self' data:",
     "connect-src 'self'",
     "object-src 'none'",
@@ -689,6 +1107,8 @@ if (!hasSingleInstanceLock) {
     }
 
     applySessionPolicy();
+    installChatAttachmentProtocol({ service: attachments, engine });
+    void attachments.sweepTemp();
     updateManager = new UpdateManager((state) => {
       if (mainWindow != null && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('update:state', state);
@@ -703,6 +1123,11 @@ if (!hasSingleInstanceLock) {
 
     Menu.setApplicationMenu(null);
     createWindow();
+
+    if (ATTACH_VERIFY_MODE) {
+      void runAttachmentVerification({ window: mainWindow, engine, attachments });
+      return;
+    }
 
     // Attach to an already running engine, otherwise start one that this
     // process owns. Failures are surfaced through engine:status and the UI.

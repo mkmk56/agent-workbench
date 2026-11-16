@@ -1,5 +1,130 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { UpdateChannel, UpdateState } from './update';
+
+/**
+ * Preload is the only place that touches dropped/pasted `File` objects: it maps
+ * a real filesystem drop to an opaque path, asks the main process to register
+ * it, and hands the renderer a draft id. Clipboard-only content (no path) is
+ * forwarded as bytes with a size cap. The renderer never receives a host path
+ * and never imports `fs`.
+ *
+ * Wire types live in `src/types.ts`; the electron tsconfig keeps its rootDir at
+ * `electron/`, so the few shapes used here are mirrored locally on purpose.
+ */
+const MAX_BUFFER_INTAKE_BYTES = 16 * 1_024 * 1_024;
+
+type IntakeSource = 'drop' | 'paste';
+
+interface ChatUploadDraft {
+  draftId: string;
+  name: string;
+  size: number;
+  mime: string;
+  ext: string;
+  kind: string;
+  source: IntakeSource;
+}
+
+interface ChatUploadProgress {
+  uploadId: string;
+  draftId: string;
+  fileId: string | null;
+  name: string;
+  size: number;
+  uploaded: number;
+  percent: number;
+  phase: string;
+  error?: string;
+}
+
+interface ChatMessageQuery {
+  chatId: string;
+  limit?: number;
+  before?: string;
+  afterSeq?: number;
+}
+
+interface SendChatMessageInput {
+  chatId: string;
+  from?: 'user' | 'muse';
+  to?: string;
+  summary: string;
+  files?: string[];
+  mentions?: string[];
+  replyTo?: string;
+  clientMsgId?: string;
+  question?: string;
+  taskId?: string;
+}
+
+interface ChatFileQuery {
+  chatId: string;
+  fileId: string;
+  offset?: number;
+  limit?: number;
+  mode?: 'text' | 'base64';
+}
+
+interface IntakeResult {
+  ok: boolean;
+  data?: { drafts: ChatUploadDraft[] };
+  error?: string;
+}
+
+async function registerChatFiles(files: File[], source: IntakeSource): Promise<IntakeResult> {
+  const list = Array.isArray(files) ? files : [];
+  if (list.length === 0) {
+    return { ok: false, error: '没有可上传的文件。' };
+  }
+  const paths: string[] = [];
+  const items: Array<{ name: string; mime: string; data: Uint8Array }> = [];
+  const rejected: string[] = [];
+
+  for (const file of list) {
+    let path = '';
+    try {
+      path = webUtils.getPathForFile(file);
+    } catch {
+      path = '';
+    }
+    if (path.length > 0) {
+      paths.push(path);
+      continue;
+    }
+    if (file.size > MAX_BUFFER_INTAKE_BYTES) {
+      rejected.push(`${file.name || '剪贴板内容'} 超过 16MB，无法通过剪贴板上传。`);
+      continue;
+    }
+    const data = new Uint8Array(await file.arrayBuffer());
+    items.push({ name: file.name || 'pasted-file', mime: file.type || '', data });
+  }
+
+  const drafts: ChatUploadDraft[] = [];
+  if (paths.length > 0) {
+    const result = (await ipcRenderer.invoke('chat:register-dropped', {
+      paths,
+      source,
+    })) as IntakeResult;
+    if (!result.ok) {
+      return result;
+    }
+    drafts.push(...(result.data?.drafts ?? []));
+  }
+  if (items.length > 0) {
+    const result = (await ipcRenderer.invoke('chat:register-buffers', {
+      items,
+      source,
+    })) as IntakeResult;
+    if (!result.ok) {
+      return result;
+    }
+    drafts.push(...(result.data?.drafts ?? []));
+  }
+  if (drafts.length === 0) {
+    return { ok: false, error: rejected[0] ?? '没有可上传的文件。' };
+  }
+  return { ok: true, data: { drafts } };
+}
 
 const workbench = {
   getAppInfo: () => ipcRenderer.invoke('app:info'),
@@ -20,11 +145,41 @@ const workbench = {
     ipcRenderer.invoke('engine:chat-create', name == null ? {} : { name }),
   renameChat: (chatId: string, name: string) =>
     ipcRenderer.invoke('engine:chat-rename', { chatId, name }),
-  listChatMessages: (chatId: string, limit?: number) =>
-    ipcRenderer.invoke('engine:chat-message-list', { chatId, limit }),
-  sendChatMessage: (chatId: string, summary: string) =>
-    ipcRenderer.invoke('engine:chat-send', { chatId, summary }),
+  listChatMessages: (input: ChatMessageQuery) =>
+    ipcRenderer.invoke('engine:chat-messages', input),
+  sendChatMessage: (input: SendChatMessageInput) =>
+    ipcRenderer.invoke('engine:chat-send', input),
   chatStatus: (chatId: string) => ipcRenderer.invoke('engine:chat-status', chatId),
+  chatParticipants: (chatId: string) =>
+    ipcRenderer.invoke('engine:chat-participants', chatId),
+  chatMarkRead: (input: { chatId: string; upToSeq?: number; messageId?: string }) =>
+    ipcRenderer.invoke('engine:chat-mark-read', input),
+  pickChatFiles: () => ipcRenderer.invoke('chat:pick-files'),
+  registerChatFiles: (files: File[], source?: IntakeSource) =>
+    registerChatFiles(files, source ?? 'drop'),
+  uploadChatFiles: (input: { chatId: string; uploadId: string; draftIds: string[] }) =>
+    ipcRenderer.invoke('engine:chat-upload', input),
+  discardChatDrafts: (draftIds: string[]) =>
+    ipcRenderer.invoke('chat:draft-discard', draftIds),
+  readChatFile: (input: ChatFileQuery) => ipcRenderer.invoke('engine:chat-file-read', input),
+  listChatFiles: (input: { chatId: string; limit?: number }) =>
+    ipcRenderer.invoke('engine:chat-files', input),
+  previewChatFile: (chatId: string, fileId: string) =>
+    ipcRenderer.invoke('engine:chat-file-preview', { chatId, fileId }),
+  downloadChatFile: (chatId: string, fileId: string) =>
+    ipcRenderer.invoke('engine:chat-file-download', { chatId, fileId }),
+  openChatFile: (input: { chatId: string; fileId: string; action?: 'open' | 'reveal' }) =>
+    ipcRenderer.invoke('engine:chat-file-open', input),
+  saveChatFile: (input: { chatId: string; fileId: string }) =>
+    ipcRenderer.invoke('engine:chat-file-save', input),
+  onChatUploadProgress: (callback: (progress: ChatUploadProgress) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: ChatUploadProgress) =>
+      callback(progress);
+    ipcRenderer.on('chat:upload-progress', listener);
+    return () => {
+      ipcRenderer.removeListener('chat:upload-progress', listener);
+    };
+  },
   getTaskStatus: (taskId: string) => ipcRenderer.invoke('engine:task-status', taskId),
   getTaskLogs: (input: { taskId: string; cursor?: number; limit?: number }) =>
     ipcRenderer.invoke('engine:task-logs', input),

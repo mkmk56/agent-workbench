@@ -46,9 +46,17 @@ interface HealthPayload {
   uptime_s?: number;
 }
 
+interface JsonRpcContentBlock {
+  type?: string;
+  text?: string;
+  /** Image blocks returned by `read_chat_file` for vision-capable callers. */
+  data?: string;
+  mimeType?: string;
+}
+
 interface JsonRpcResponse {
   result?: {
-    content?: Array<{ type?: string; text?: string }>;
+    content?: JsonRpcContentBlock[];
     isError?: boolean;
   };
   error?: { code?: number; message?: string };
@@ -60,6 +68,8 @@ const HOST = '127.0.0.1';
 const DEFAULT_PORT = 8080;
 const HEALTH_TIMEOUT_MS = 2_000;
 const CALL_TIMEOUT_MS = 20_000;
+/** Upload chunks and file reads move megabytes over the local MCP transport. */
+const UPLOAD_TIMEOUT_MS = 90_000;
 const START_TIMEOUT_MS = 30_000;
 const MAX_LOG_TAIL = 12;
 
@@ -454,7 +464,33 @@ export class EngineManager {
     this.managed = false;
   }
 
-  private async callTool<T>(name: string, args: Record<string, unknown>): Promise<T> {
+  private async callTool<T>(
+    name: string,
+    args: Record<string, unknown>,
+    timeoutMs = CALL_TIMEOUT_MS,
+  ): Promise<T> {
+    const result = await this.callToolRaw(name, args, timeoutMs);
+    const raw = this.extractText(result);
+    if (raw.length === 0) {
+      return undefined as T;
+    }
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return raw as T;
+    }
+  }
+
+  /**
+   * Raw JSON-RPC result. `read_chat_file` returns image content blocks for
+   * vision-capable callers, so the bytes cannot be recovered from the text
+   * block alone; the attachment service needs the whole content array.
+   */
+  private async callToolRaw(
+    name: string,
+    args: Record<string, unknown>,
+    timeoutMs = CALL_TIMEOUT_MS,
+  ): Promise<JsonRpcResponse['result']> {
     const resolution = this.resolveToken();
     if (!resolution.token) {
       throw new Error(
@@ -478,11 +514,11 @@ export class EngineManager {
           method: 'tools/call',
           params: { name, arguments: args },
         }),
-        signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       if (error instanceof Error && error.name === 'TimeoutError') {
-        throw new Error(`引擎响应超时（${CALL_TIMEOUT_MS / 1000} 秒）。`);
+        throw new Error(`引擎响应超时（${Math.round(timeoutMs / 1000)} 秒）。`);
       }
       throw new Error(`无法连接本地引擎 ${this.baseUrl}；请确认引擎已启动。`);
     }
@@ -503,16 +539,7 @@ export class EngineManager {
       const detail = this.extractText(payload.result).replace(/^Error:\s*/i, '');
       throw new Error(detail || '引擎工具调用失败。');
     }
-
-    const raw = this.extractText(payload.result);
-    if (raw.length === 0) {
-      return undefined as T;
-    }
-    try {
-      return JSON.parse(raw) as T;
-    } catch {
-      return raw as T;
-    }
+    return payload.result;
   }
 
   private parseJsonRpc(text: string): JsonRpcResponse {
@@ -570,24 +597,212 @@ export class EngineManager {
     return this.callTool('rename_chat', { chat_id: chatId, name });
   }
 
-  async listChatMessages(
-    chatId: string,
-    limit = 200,
-  ): Promise<{ messages: Array<Record<string, unknown>> }> {
-    return this.callTool('list_chat_messages', { chat_id: chatId, limit });
+  /**
+   * Message stream for one chat. `before` pages backwards; `afterSeq` is the
+   * incremental cursor the ChatStore uses (only messages with seq > afterSeq).
+   */
+  async listChatMessages(input: {
+    chatId: string;
+    limit?: number;
+    before?: string;
+    afterSeq?: number;
+  }): Promise<{
+    messages: Array<Record<string, unknown>>;
+    has_more?: boolean;
+    next_seq?: number;
+  }> {
+    const args: Record<string, unknown> = {
+      chat_id: input.chatId,
+      limit: input.limit ?? 200,
+    };
+    if (input.before != null) {
+      args.before = input.before;
+    }
+    if (input.afterSeq != null) {
+      args.after_seq = input.afterSeq;
+    }
+    return this.callTool('list_chat_messages', args);
   }
 
-  async sendChatMessage(chatId: string, summary: string): Promise<Record<string, unknown>> {
-    return this.callTool('send_chat_message', {
-      chat_id: chatId,
-      from: 'user',
-      to: 'muse',
-      summary,
-    });
+  /**
+   * Send a chat message. Previously this hard-coded from:'user', to:'muse' and
+   * dropped files/question/replyTo; the full contract now crosses the bridge.
+   */
+  async sendChatMessage(input: {
+    chatId: string;
+    from?: 'user' | 'muse';
+    to?: string;
+    summary: string;
+    files?: string[];
+    mentions?: string[];
+    replyTo?: string;
+    clientMsgId?: string;
+    question?: string;
+    taskId?: string;
+  }): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = {
+      chat_id: input.chatId,
+      from: input.from ?? 'user',
+      to: input.to ?? 'muse',
+      summary: input.summary,
+    };
+    if (input.files != null && input.files.length > 0) {
+      args.files = input.files;
+    }
+    if (input.mentions != null && input.mentions.length > 0) {
+      args.mentions = input.mentions;
+    }
+    if (input.replyTo != null) {
+      args.reply_to = input.replyTo;
+    }
+    if (input.clientMsgId != null) {
+      args.client_msg_id = input.clientMsgId;
+    }
+    if (input.question != null) {
+      args.question = input.question;
+    }
+    if (input.taskId != null) {
+      args.task_id = input.taskId;
+    }
+    return this.callTool('send_chat_message', args);
   }
 
   async chatStatus(chatId: string): Promise<Record<string, unknown>> {
     return this.callTool('chat_status', { chat_id: chatId });
+  }
+
+  /**
+   * Participants + presence for the four-person group chat header.
+   *
+   * The backend exposes membership through `chat_status` (there is no separate
+   * `chat_participants` tool), so this derives the list from that one call.
+   */
+  async chatParticipants(chatId: string): Promise<Record<string, unknown>> {
+    const status = await this.callTool<Record<string, unknown>>('chat_status', { chat_id: chatId });
+    const participants = Array.isArray(status?.participants) ? status.participants : [];
+    return { chat_id: chatId, participants };
+  }
+
+  /**
+   * Mark the chat read up to a seq / message id.
+   *
+   * Backend tool: `chat_mark_read` (store.updateParticipantRead). A backend
+   * error surfaces instead of faking a local read state.
+   */
+  async chatMarkRead(input: {
+    chatId: string;
+    upToSeq?: number;
+    messageId?: string;
+  }): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = { chat_id: input.chatId };
+    if (input.upToSeq != null) {
+      args.up_to_seq = input.upToSeq;
+    }
+    if (input.messageId != null) {
+      args.message_id = input.messageId;
+    }
+    return this.callTool('chat_mark_read', args);
+  }
+
+  // ---- Chunked upload (backend tool contract: init → chunk×N → complete) ----
+
+  async uploadChatFileInit(input: {
+    chatId: string;
+    name: string;
+    size: number;
+    mime: string;
+  }): Promise<Record<string, unknown>> {
+    return this.callTool(
+      'upload_chat_file_init',
+      {
+        chat_id: input.chatId,
+        name: input.name,
+        size: input.size,
+        mime: input.mime,
+      },
+      UPLOAD_TIMEOUT_MS,
+    );
+  }
+
+  async uploadChatFileChunk(input: {
+    uploadId: string;
+    index: number;
+    dataBase64: string;
+  }): Promise<Record<string, unknown>> {
+    return this.callTool(
+      'upload_chat_file_chunk',
+      {
+        upload_id: input.uploadId,
+        index: input.index,
+        data: input.dataBase64,
+      },
+      UPLOAD_TIMEOUT_MS,
+    );
+  }
+
+  async uploadChatFileComplete(input: {
+    uploadId: string;
+    sha256?: string;
+  }): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = { upload_id: input.uploadId };
+    if (input.sha256 != null) {
+      args.sha256 = input.sha256;
+    }
+    return this.callTool('upload_chat_file_complete', args, UPLOAD_TIMEOUT_MS);
+  }
+
+  /** All files uploaded to one chat; metadata only, never a host path. */
+  async listChatFiles(input: {
+    chatId: string;
+    limit?: number;
+  }): Promise<{ files: Array<Record<string, unknown>> }> {
+    const args: Record<string, unknown> = { chat_id: input.chatId };
+    if (input.limit != null) {
+      args.limit = input.limit;
+    }
+    return this.callTool('list_chat_files', args);
+  }
+
+  /**
+   * Read one file by file_id. Text/code/PDF/DOCX/XLSX/PPTX/ZIP return extracted
+   * text; images come back as an MCP image block, so the raw result is parsed
+   * and the image bytes are preserved next to the metadata.
+   */
+  async readChatFile(input: {
+    chatId: string;
+    fileId: string;
+    entry?: string;
+    maxBytes?: number;
+  }): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = {
+      chat_id: input.chatId,
+      file_id: input.fileId,
+    };
+    if (input.entry != null) {
+      args.entry = input.entry;
+    }
+    if (input.maxBytes != null) {
+      args.max_bytes = input.maxBytes;
+    }
+    const result = await this.callToolRaw('read_chat_file', args, UPLOAD_TIMEOUT_MS);
+    const image = result?.content?.find((item) => item.type === 'image' && item.data != null);
+    const raw = this.extractText(result);
+    let parsed: Record<string, unknown> = {};
+    if (raw.length > 0) {
+      try {
+        const value = JSON.parse(raw);
+        parsed = value != null && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+      } catch {
+        parsed = { text: raw };
+      }
+    }
+    if (image?.data != null) {
+      return {
+        ...parsed,
+        image: { data: image.data, mimeType: image.mimeType ?? 'application/octet-stream' },
+      };
+    }
+    return parsed;
   }
 
   async taskStatus(taskId: string): Promise<Record<string, unknown>> {

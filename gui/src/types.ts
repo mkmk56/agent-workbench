@@ -297,30 +297,96 @@ export interface TaskLogsInput {
 
 export type ChatAgentId = 'muse' | 'claude' | 'dsh';
 
+/** Four real participants of a group chat: the user plus the three agents. */
+export type ChatParticipantId = 'user' | 'muse' | 'claude' | 'dsh';
+
 export interface ChatAgentState {
   status: string;
   task_id?: string | null;
   updated_at?: string | null;
 }
 
+export interface ChatParticipant {
+  id: ChatParticipantId;
+  name: string;
+  role: 'user' | 'agent';
+  /** Engine-derived status: idle | pending | working | waiting | blocked | completed | failed | cancelled | needs_reply. */
+  status: string;
+  /** Raw engine state when the engine exposes one (COMPLETED, WORKING, …). */
+  state: string | null;
+  task_id: string | null;
+  updated_at: string | null;
+  unread?: number;
+}
+
 export interface ChatSummary {
   chat_id: string;
   name: string;
   status: 'active' | 'archived';
+  created_at?: string | null;
   last_message_at: string | null;
   last_message_preview: string | null;
   needs_muse: boolean;
-  agents: Record<ChatAgentId, ChatAgentState>;
+  unread?: number;
+  participants?: ChatParticipant[];
+  /** Engine returns plain status strings per agent (CHAT_BACKEND §3.2). */
+  agents: Record<ChatAgentId, string>;
+}
+
+/**
+ * Attachment metadata. `file_id` is the only handle the renderer ever sees;
+ * bytes live in the engine's per-chat file area and are reached through the
+ * main process (IPC read / `chat-attachment:` protocol).
+ */
+export type ChatFileKind =
+  | 'image'
+  | 'pdf'
+  | 'docx'
+  | 'xlsx'
+  | 'pptx'
+  | 'zip'
+  | 'code'
+  | 'text'
+  | 'other';
+
+export interface ChatFile {
+  file_id: string;
+  chat_id?: string | null;
+  name: string;
+  size: number;
+  mime: string;
+  kind: ChatFileKind;
+  sha256?: string | null;
+  /** parsed | pending | failed | unsupported — server-side parse state. */
+  status: string;
+  preview_text?: string | null;
+  preview_truncated?: boolean;
+  uploader?: ChatParticipantId | null;
+  created_at: string;
+  /** Set only on upload results: which pending draft produced this file. */
+  draft_id?: string | null;
+}
+
+export interface ChatMention {
+  id: ChatParticipantId;
+  label: string;
+  offset: number;
+  length: number;
 }
 
 export interface ChatMessage {
   message_id: string;
-  chat_id: string;
-  from: 'user' | 'muse' | 'claude' | 'dsh';
-  to: 'user' | 'muse' | 'claude' | 'dsh';
+  chat_id?: string | null;
+  /** Monotonic cursor assigned by the engine; used for incremental polling. */
+  seq: number;
+  from: ChatParticipantId | 'unknown';
+  to: ChatParticipantId | 'unknown';
   summary: string;
-  files: string[];
+  files: ChatFile[];
+  mentions: ChatParticipantId[];
   question?: string | null;
+  reply_to?: string | null;
+  client_msg_id?: string | null;
   status: string;
   created_at: string;
   task_id?: string | null;
@@ -329,7 +395,92 @@ export interface ChatMessage {
 export interface ChatStatusPayload {
   chat_id: string;
   needs_muse: boolean;
-  agents: Record<ChatAgentId, ChatAgentState>;
+  agents: Record<ChatAgentId, string>;
+  participants?: ChatParticipant[];
+}
+
+/** Draft returned by the main process after a dialog / drop / paste intake. */
+export interface ChatUploadDraft {
+  draftId: string;
+  name: string;
+  size: number;
+  mime: string;
+  ext: string;
+  kind: ChatFileKind;
+  source: 'dialog' | 'drop' | 'paste';
+}
+
+export type ChatUploadPhase = 'init' | 'chunk' | 'complete' | 'done' | 'error';
+
+export interface ChatUploadProgress {
+  uploadId: string;
+  draftId: string;
+  fileId: string | null;
+  name: string;
+  size: number;
+  uploaded: number;
+  percent: number;
+  phase: ChatUploadPhase;
+  error?: string;
+}
+
+export interface ChatUploadResult {
+  files: ChatFile[];
+  errors: Array<{ draftId: string; name: string; error: string }>;
+}
+
+export interface ChatFileReadResult {
+  file_id: string;
+  name: string;
+  mime: string;
+  kind: ChatFileKind;
+  size: number;
+  mode: 'text' | 'base64';
+  content: string;
+  encoding: 'utf8' | 'base64';
+  offset: number;
+  next_offset: number | null;
+  truncated: boolean;
+  /** Document text, mirrored from `content` for the frozen helper contract. */
+  text?: string;
+  /** Image bytes, only present when the file is an image. */
+  image?: { data: string; mimeType: string } | null;
+  preview_text?: string | null;
+}
+
+export interface SendChatMessageInput {
+  chatId: string;
+  from?: 'user' | 'muse';
+  to?: ChatParticipantId;
+  summary: string;
+  /** file_id values returned by engine:chat-upload. */
+  files?: string[];
+  mentions?: ChatParticipantId[];
+  replyTo?: string;
+  clientMsgId?: string;
+  question?: string;
+  taskId?: string;
+}
+
+export interface ChatMessageQuery {
+  chatId: string;
+  limit?: number;
+  /** Forward-paging cursor: message_id or ISO timestamp (exclusive). */
+  before?: string;
+  /** Incremental cursor: only messages with seq > afterSeq. */
+  afterSeq?: number;
+}
+
+export interface ChatFileQuery {
+  chatId: string;
+  fileId: string;
+  /** ZIP member path when reading inside an archive. */
+  entry?: string;
+  /** Maximum text bytes the backend may return (default 200 KB, cap 2 MB). */
+  limit?: number;
+  /** Legacy fields kept for the first preview caller during the migration. */
+  offset?: number;
+  mode?: 'text' | 'base64';
 }
 
 export interface WorkbenchApi {
@@ -352,14 +503,61 @@ export interface WorkbenchApi {
   createChat: (name?: string) => Promise<EngineResult<ChatSummary>>;
   renameChat: (chatId: string, name: string) => Promise<EngineResult<ChatSummary>>;
   listChatMessages: (
-    chatId: string,
-    limit?: number,
-  ) => Promise<EngineResult<{ messages: ChatMessage[] }>>;
-  sendChatMessage: (input: {
-    chatId: string;
-    summary: string;
-  }) => Promise<EngineResult<{ message_id: string; chat_id: string }>>;
+    input: ChatMessageQuery,
+  ) => Promise<
+    EngineResult<{ messages: ChatMessage[]; has_more?: boolean; next_seq?: number }>
+  >;
+  sendChatMessage: (
+    input: SendChatMessageInput,
+  ) => Promise<
+    EngineResult<{ message_id: string; chat_id: string; created_at?: string; seq?: number }>
+  >;
   chatStatus: (chatId: string) => Promise<EngineResult<ChatStatusPayload>>;
+  chatParticipants: (
+    chatId: string,
+  ) => Promise<EngineResult<{ chat_id: string; participants: ChatParticipant[] }>>;
+  chatMarkRead: (input: {
+    chatId: string;
+    upToSeq?: number;
+    messageId?: string;
+  }) => Promise<EngineResult<{ chat_id: string; last_read_seq: number; unread: number }>>;
+  pickChatFiles: () => Promise<EngineResult<{ drafts: ChatUploadDraft[] }>>;
+  registerChatFiles: (
+    files: File[],
+    source?: 'drop' | 'paste',
+  ) => Promise<EngineResult<{ drafts: ChatUploadDraft[] }>>;
+  uploadChatFiles: (input: {
+    chatId: string;
+    uploadId: string;
+    draftIds: string[];
+  }) => Promise<EngineResult<ChatUploadResult>>;
+  discardChatDrafts: (draftIds: string[]) => Promise<OperationResult>;
+  readChatFile: (input: ChatFileQuery) => Promise<EngineResult<ChatFileReadResult>>;
+  /** Files uploaded to one chat (metadata only). */
+  listChatFiles: (input: {
+    chatId: string;
+    limit?: number;
+  }) => Promise<EngineResult<{ chat_id: string; files: ChatFile[] }>>;
+  /** Narrow `chat-attachment://` URL for image / document previews. */
+  previewChatFile: (
+    chatId: string,
+    fileId: string,
+  ) => Promise<EngineResult<{ url: string }>>;
+  /** Save-as through the main-process dialog; returns the chosen path. */
+  downloadChatFile: (
+    chatId: string,
+    fileId: string,
+  ) => Promise<EngineResult<{ savedPath: string }>>;
+  openChatFile: (input: {
+    chatId: string;
+    fileId: string;
+    action?: 'open' | 'reveal';
+  }) => Promise<OperationResult>;
+  saveChatFile: (input: {
+    chatId: string;
+    fileId: string;
+  }) => Promise<EngineResult<{ savedPath: string }>>;
+  onChatUploadProgress: (callback: (progress: ChatUploadProgress) => void) => () => void;
   getHudConfig: () => Promise<HudConfig>;
   setHudConfig: (patch: Partial<HudConfig>) => Promise<HudConfig>;
   respondApproval: (input: {

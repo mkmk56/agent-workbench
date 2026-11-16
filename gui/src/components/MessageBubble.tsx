@@ -289,11 +289,11 @@ function ConclusionCard({ message }: { message: ChatMessage }) {
       </header>
       {message.summary.length > 0 &&
         (structured ? (
-          <StructuredNotice taskId={message.task_id} />
+          <StructuredNotice taskId={message.task_id ?? null} />
         ) : (
           <RichText text={message.summary} />
         ))}
-      <FileChips files={message.files} />
+      <FileChips files={message.files.map((file) => file.name)} />
       {message.question != null && (
         <div className="conv-question">
           <strong>需要回答</strong>
@@ -337,11 +337,11 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
             {message.summary.length === 0 ? (
               <span className="chat-bubble__empty">（这条消息没有文字摘要）</span>
             ) : structured ? (
-              <StructuredNotice taskId={message.task_id} />
+              <StructuredNotice taskId={message.task_id ?? null} />
             ) : (
               <RichText text={message.summary} />
             )}
-            <FileChips files={message.files} />
+            <FileChips files={message.files.map((file) => file.name)} />
             {message.question != null && (
               <div className="conv-question">
                 <strong>需要回答</strong>
