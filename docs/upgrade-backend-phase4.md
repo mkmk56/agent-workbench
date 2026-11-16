@@ -35,6 +35,9 @@
 | `src/scheduler.js` | 群聊任务创建时确保执行器成为参与者 |
 | `src/approvals.js` | 授权按 `(chat_id, agent, category)`；`respond_approval` 服务层二次拒绝 agent token；审批卡片路径不再当作聊天附件 |
 | `scripts/verify-upgrade.mjs`（新） | 独立端口 + 临时库的端到端验证 |
+| `scripts/verify-chat-files.mjs`（新） | 文件服务独立子进程验证（PDF/DOCX/XLSX/ZIP/图片/三方读取/跨群隔离） |
+| `scripts/verify-db-copy.mjs`（新） | 真实数据库只读副本迁移验证，确保行数不丢 |
+| `scripts/lib/chat-file-fixtures.mjs`（新） | PDF/DOCX/XLSX/PPTX/ZIP/图片测试夹具 |
 | `scripts/check-syntax.mjs`（新） | 全仓库后端 JS 语法检查（`npm run typecheck`） |
 | `scripts/verify-chat-backend.mjs` | 旧验证脚本改用 scoped claude/dsh token，继续覆盖 10 条上限与持久化 |
 | `test/*.test.js`（新） | `node:test` 数据模型/迁移/安全/文件/归档/消息流测试 |
@@ -278,7 +281,42 @@ node scripts/verify-upgrade.mjs
 | 归档后文件/消息仍可读 | 通过 |
 | DB：reply 索引删除、幂等唯一、投递、message_files | 通过 |
 
-### 9.3 旧链路回归
+### 9.3 真实数据库副本迁移
+
+```bash
+node scripts/verify-db-copy.mjs
+# ok: true
+```
+
+对 `data/workbench.db` 的**只读副本**执行迁移，生产库未写入：
+
+| 表 | 迁移前 | 迁移后 |
+|---|---:|---:|
+| messages | 44 | 44 |
+| chats | 3 | 3 |
+| chat_tasks | 1 | 1 |
+| tasks | 110 | 110 |
+| approvals | 0 | 0 |
+| approval_grants | 0 | 0 |
+
+检查全部通过：新列存在、`idx_messages_reply_unique` 已删、`chats.epoch` 存在、参与者/文件/投递表可读。
+
+### 9.4 文件服务独立验证
+
+```bash
+VERIFY_PORT=18096 node scripts/verify-chat-files.mjs
+# errors: []
+```
+
+真实子进程引擎（独立端口/数据目录/token）验证：
+
+- PDF / DOCX / XLSX / ZIP 样例均 `parse_status=parsed`；2.6 MB 文本分 3 片上传成功；
+- `read_chat_file` 返回文本；ZIP 返回文件树并可读成员；PNG 返回 MCP image 内容；
+- master / claude / dsh 三方均可读取同一文件；
+- 换一个 `chat_id` 读取返回明确跨群错误；
+- 1 MB 分片上限、乱序分片、20 MB 单文件上限均有断言。
+
+### 9.5 旧链路回归
 
 ```bash
 VERIFY_PORT=18094 node scripts/verify-chat-backend.mjs
@@ -287,7 +325,7 @@ VERIFY_PORT=18094 node scripts/verify-chat-backend.mjs
 
 保留通过的关键点：10 条 agent-to-agent 上限（第 10 条 held、第 11 条拒绝）、群聊消息流不受线程上限影响、agent 任务不能冒充 muse、重启后消息与状态不变。
 
-### 9.4 语法/构建检查
+### 9.6 语法/构建检查
 
 ```bash
 npm run typecheck
@@ -296,7 +334,7 @@ npm run typecheck
 
 仓库没有 TypeScript 后端工程；该脚本用 `node --check` 对所有 `src/`、`src/executors/`、`scripts/` 的 JS/MJS 做解析检查。
 
-### 9.5 生产环境安全
+### 9.7 生产环境安全
 
 - 未向 8080 端口发送任何写请求，未重启生产引擎。
 - 所有验证引擎使用独立端口与临时数据库；验证结束后进程已关闭。
