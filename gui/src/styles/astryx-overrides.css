@@ -340,7 +340,7 @@ html[data-theme="dark"] .astryx-button[data-variant="destructive"]:hover {
 .astryx-badge[data-variant="success"],
 .astryx-badge[data-variant="green"] {
   background: var(--success-subtle);
-  color: var(--success-text);
+  color: var(--badge-success-text);
 }
 
 .astryx-badge[data-variant="warning"],

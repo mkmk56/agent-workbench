@@ -57,6 +57,11 @@
   --success: #4a7d64;
   --success-text: #2f5d46;
   --success-subtle: #e3f1ea;
+  /* Badge text sits on the --success-subtle fill, not on a page surface, so
+   * it gets its own value: --success-text is chosen against --bg/--surface.
+   * Paper white already passes on the subtle fill (6.50:1); the dark theme
+   * needs a lighter green (see below). */
+  --badge-success-text: #2f5d46;
   --warning: #b98a3e;
   --warning-text: #8a5e14;
   --warning-subtle: #fcf0dc;
@@ -169,6 +174,11 @@ html[data-theme="dark"] {
   --success: #5a9a7a;
   --success-text: #5a9a7a;
   --success-subtle: #1f3a2f;
+  /* Same 12px/600 badge text on the same dark fill: --success-text measures
+   * 3.72:1 there (it is tuned for --bg/--surface, where it is 4.93–5.47:1),
+   * below AA 4.5 for small text. This lighter green measures 5.11:1 and the
+   * fill is unchanged, so the chip keeps its look and only the label reads. */
+  --badge-success-text: #6ab690;
   --warning: #c99a4b;
   --warning-text: #c99a4b;
   --warning-subtle: #3a2e1b;
