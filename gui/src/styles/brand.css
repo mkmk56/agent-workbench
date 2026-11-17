@@ -32,7 +32,13 @@
 
   --text: #1e2126;
   --text-secondary: #5f656e;
-  --text-muted: #8a8f98;
+  /* Aux text tier, WCAG AA: the old #8a8f98 measured 2.93:1 on --bg and
+   * 2.54:1 on --surface-hover, so every 10–13px muted label (timestamps,
+   * delivery status, hints) failed 1.4.3. #62656b measures 4.56:1 on
+   * --surface-hover, 4.82:1 on --error-subtle, 4.86:1 on --surface-subtle,
+   * 5.27:1 on --bg, 5.84:1 on --surface. Still just below --text-secondary
+   * (5.30:1) and far below --text (14.6:1); only the token value changes. */
+  --text-muted: #62656b;
   --text-disabled: #b9bdc4;
 
   --accent: #5f656e;
@@ -134,7 +140,13 @@ html[data-theme="dark"] {
 
   --text: #f2f3f4;
   --text-secondary: #9298a1;
-  --text-muted: #686f78;
+  /* Aux text tier, WCAG AA: the old #686f78 measured 3.90:1 on --bg,
+   * 3.57:1 on --surface and 3.22:1 on --surface-hover. #88919c measures
+   * 4.56:1 on --error-subtle (worst case: failed bubble / attachment meta),
+   * 5.12:1 on --surface-hover, 5.35:1 on --surface-subtle, 5.68:1 on
+   * --surface, 6.21:1 on --bg. Still below --text-secondary (6.82:1) and
+   * far below --text (17.8:1), so the aux tier keeps its weight. */
+  --text-muted: #88919c;
   --text-disabled: #4b5159;
 
   --accent: #c5cbd3;
