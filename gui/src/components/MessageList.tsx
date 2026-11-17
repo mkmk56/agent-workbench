@@ -18,7 +18,8 @@ const THINKING_NAMES: Record<(typeof THINKING_AGENTS)[number], string> = {
  * Message stream for one chat. Keeps the viewport pinned to the newest message
  * only while the reader is already near the bottom, so reading history is not
  * interrupted by the store's polling. Messages carry their attachments as
- * full ChatFile objects, so bubbles render FileCards directly.
+ * full ChatFile objects (already merged with `list_chat_files` by the page), so
+ * each bubble renders one "Edited files" card below it.
  */
 export function MessageList({
   chatId,

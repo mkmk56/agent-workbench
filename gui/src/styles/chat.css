@@ -1177,11 +1177,273 @@
 }
 
 /* Message files: FileCard rows inside a bubble. */
-.chat-msg__files {
+/* ------------------------------------------------------------------
+ * "Edited files" card (P0-5 scheme B, task §3)
+ * Flat rows inside one panel: no card-in-card, no truncated paths.
+ * ------------------------------------------------------------------ */
+.edited-card {
+  margin-top: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+}
+
+.edited-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.edited-card__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.edited-card__count {
+  color: var(--text-secondary);
+}
+
+.edited-card__meta {
+  margin-left: auto;
+  color: var(--text-secondary);
+}
+
+.edited-card__rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.edited-card__row {
+  padding: 8px 12px;
+}
+
+.edited-card__row + .edited-card__row {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.edited-card__line {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.edited-card__path {
+  flex: 1 1 320px;
+  min-width: 0;
+  /* Size/family come from .mono (12px mono, same as other path chips); this
+   * rule only owns wrapping. */
+  line-height: 20px;
+  color: var(--text);
+  /* Wrap at the separators rendered by pathSegments(); a single very long
+   * segment may still break here rather than overflow the card. */
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.edited-card__segment {
+  display: inline;
+}
+
+.edited-card__summary {
+  flex: 0 1 auto;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--text-secondary);
+}
+
+.edited-card__status {
+  flex: none;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--text-secondary);
+}
+
+.edited-card__status.is-success {
+  color: var(--success-text);
+}
+
+.edited-card__status.is-warning {
+  color: var(--warning-text);
+}
+
+.edited-card__status.is-error {
+  color: var(--error-text);
+}
+
+.edited-card__actions {
+  display: inline-flex;
+  flex: none;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.edited-card__action {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 18px;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.edited-card__action:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.edited-card__action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.edited-card__action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.edited-card__note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-secondary);
+}
+
+.edited-card__error {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--error-text);
+}
+
+.edited-card__text {
+  max-height: 240px;
+  margin: 8px 0 0;
+  padding: 8px;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------------
+ * Queue chips (task §2): text moved out of the composer with Tab.
+ * ------------------------------------------------------------------ */
+.chat-queue {
   display: flex;
   flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.chat-queue__chip {
+  display: flex;
+  align-items: center;
   gap: 8px;
-  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.chat-queue__icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--text-secondary);
+}
+
+.chat-queue__label {
+  flex: none;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.chat-queue__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.chat-queue__hint {
+  flex: none;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-secondary);
+}
+
+.chat-queue__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  flex: none;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 18px;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.chat-queue__action:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.chat-queue__action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.chat-queue__action--danger {
+  padding: 0 6px;
+}
+
+.chat-queue__action--danger:hover {
+  color: var(--error-text);
+}
+
+.chat-queue__notice {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--warning-text);
 }
 
 .file-card {
@@ -1223,9 +1485,10 @@
 }
 
 .file-card__name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* Task §5: names/paths are shown in full — the line wraps instead of being
+   * cut with an ellipsis (no text-overflow, no nowrap). */
+  overflow-wrap: anywhere;
+  white-space: normal;
   font-size: 13px;
   line-height: 20px;
   font-weight: 600;
@@ -1590,6 +1853,12 @@
   }
 
   .chat-item__archive {
+    transition: none;
+  }
+
+  .edited-card__action,
+  .chat-queue__action,
+  .file-card__action {
     transition: none;
   }
 }

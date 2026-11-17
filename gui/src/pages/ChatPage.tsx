@@ -1,5 +1,5 @@
 import { CircleAlert, MessagesSquare, Plus } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChatHeader } from '../components/ChatHeader';
 import { Composer } from '../components/Composer';
 import { MessageList } from '../components/MessageList';
@@ -10,6 +10,8 @@ import {
   useChatStore,
 } from '../lib/chat-store';
 import { createChat } from '../lib/chat';
+import { invalidateChatFileIndex, useChatFileIndex } from '../lib/chat-file-index';
+import { mergeMessageFiles } from '../lib/chat-files';
 import { navigate } from '../lib/router';
 import '../styles/chat.css';
 
@@ -43,6 +45,15 @@ export function ChatPage({ chatId }: { chatId: string | null }) {
   } = useChatMessagesView(chatId);
   const { status, error: statusError, loading: statusLoading } = useChatStatusView(chatId);
 
+  // P0-5 scheme B: merge the chat's attachment list into the message objects so
+  // every attachment row can show a real name, size and parse status. The index
+  // is cached per chat and invalidated after a send/upload.
+  const fileIndex = useChatFileIndex(chatId);
+  const mergedMessages = useMemo(
+    () => mergeMessageFiles(messages, fileIndex.files),
+    [messages, fileIndex.files],
+  );
+
   const chat = chatId != null ? (chats.find((item) => item.chat_id === chatId) ?? null) : null;
 
   const needle = searchQuery.trim().toLowerCase();
@@ -52,8 +63,11 @@ export function ChatPage({ chatId }: { chatId: string | null }) {
       : messages.filter((message) => message.summary.toLowerCase().includes(needle)).length;
 
   const onSent = useCallback(async () => {
+    // New uploads/sends change the attachment list: drop the cached index so
+    // the next render reads the authoritative rows again.
+    invalidateChatFileIndex(chatId);
     await refreshActive();
-  }, [refreshActive]);
+  }, [chatId, refreshActive]);
 
   const createNewChat = async () => {
     setCreating(true);
@@ -114,14 +128,19 @@ export function ChatPage({ chatId }: { chatId: string | null }) {
       />
       <MessageList
         chatId={chatId}
-        messages={messages}
+        messages={mergedMessages}
         status={status}
         loading={messagesLoading}
         error={messagesError}
         searchQuery={searchQuery}
         onRetry={() => void refreshMessages()}
       />
-      <Composer chatId={chatId} onSent={onSent} />
+      {/*
+        key={chatId}: switching chats remounts the composer so the draft and the
+        queue are re-read from that chat's own storage instead of one chat's
+        queue being written under another chat's key.
+      */}
+      <Composer key={chatId} chatId={chatId} status={status} onSent={onSent} />
     </section>
   );
 }

@@ -16,6 +16,8 @@
     "build": "npm run theme:build && npm run build:main && npm run build:renderer",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
     "test:layout": "node --test --experimental-strip-types --experimental-test-isolation=none test/chat-sidebar-layout.test.ts test/window-state.test.ts",
+    "test:chat": "node --test --experimental-strip-types --experimental-test-isolation=none test/chat-queue.test.ts test/chat-files.test.ts test/agent-status.test.ts",
+    "test": "npm run test:layout && npm run test:chat",
     "start": "electron .",
     "preview": "npm run build && electron .",
     "dist": "npm run build && electron-builder --win nsis --publish never",

@@ -39,6 +39,7 @@ import { formatRelative } from '../lib/labels';
 import { navigate } from '../lib/router';
 import type { ChatSummary, Route } from '../types';
 import { AppButton, AppEmptyState } from '../ui/astryx';
+import { SidebarStatusStrip } from './SidebarStatusStrip';
 
 const MARKS: Record<string, string> = {
   muse: museMark,
@@ -149,11 +150,29 @@ export function ChatSidebar({ route }: { route: Route }) {
     return () => window.removeEventListener('resize', onViewportResize);
   }, [applyLayout]);
 
-  const toggleCollapsed = () => {
+  const toggleCollapsed = useCallback(() => {
     autoCollapsedRef.current = false;
     const current = layoutRef.current;
     applyLayout({ width: current.width, collapsed: !current.collapsed }, true);
-  };
+  }, [applyLayout]);
+
+  // ⌘B / Ctrl+B toggles the column from anywhere in the app (task §6). The
+  // shortcut is a view preference only: nothing is sent to the engine, and the
+  // previous width is restored on expand because the width lives in the layout.
+  useEffect(() => {
+    const onShortcut = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented || event.altKey || event.shiftKey) {
+        return;
+      }
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'b') {
+        return;
+      }
+      event.preventDefault();
+      toggleCollapsed();
+    };
+    window.addEventListener('keydown', onShortcut);
+    return () => window.removeEventListener('keydown', onShortcut);
+  }, [toggleCollapsed]);
 
   const resetWidth = () => {
     applyLayout({ width: CHAT_SIDEBAR_DEFAULT_WIDTH, collapsed: false }, true);
@@ -218,6 +237,8 @@ export function ChatSidebar({ route }: { route: Route }) {
   };
 
   const selectedId = route.name === 'chat' ? route.id : null;
+  const activeChat =
+    selectedId != null ? (chats.find((chat) => chat.chat_id === selectedId) ?? null) : null;
 
   const refresh = useCallback(async () => {
     if (filter === 'archived') {
@@ -351,13 +372,18 @@ export function ChatSidebar({ route }: { route: Route }) {
     // Collapsed: a 12px clickable strip is all that is left of the column. The
     // rail keeps its place and the chat area takes the freed width.
     return (
-      <aside className="chat-sidebar chat-sidebar--collapsed" aria-label="群聊列表（已收起）">
+      <aside
+        id="chat-sidebar-column"
+        className="chat-sidebar chat-sidebar--collapsed"
+        aria-label="群聊列表（已收起）"
+      >
         <button
           type="button"
           className="chat-sidebar__strip"
           aria-label="展开会话列表"
           aria-expanded={false}
-          title="展开会话列表"
+          aria-keyshortcuts="Control+B Meta+B"
+          title="展开会话列表（⌘B / Ctrl+B）"
           onClick={toggleCollapsed}
         >
           <PanelLeftOpen size={12} aria-hidden="true" />
@@ -367,7 +393,7 @@ export function ChatSidebar({ route }: { route: Route }) {
   }
 
   return (
-    <aside className="chat-sidebar" aria-label="群聊列表">
+    <aside id="chat-sidebar-column" className="chat-sidebar" aria-label="群聊列表">
       <div className="chat-sidebar__head">
         <button
           type="button"
@@ -436,6 +462,12 @@ export function ChatSidebar({ route }: { route: Route }) {
         )}
       </div>
 
+      {/*
+        Status strip: one row per agent with the live state text from
+        `chat_status`, always visible at the foot of the list column (task §4).
+      */}
+      <SidebarStatusStrip chatId={selectedId} chat={activeChat} />
+
       <div className="chat-sidebar__new">
         {showForm ? (
           <div className="chat-new-form">
@@ -492,6 +524,25 @@ export function ChatSidebar({ route }: { route: Route }) {
           </button>
         )}
       </div>
+
+      {/*
+        Collapse button on the divider itself (design preview: the chevron sits
+        in the middle of the sash and appears on hover/focus). It is a sibling
+        of the separator, not a child, so it never starts a drag and the
+        separator keeps a clean role="separator" widget.
+      */}
+      <button
+        type="button"
+        className="chat-sidebar__sash-collapse"
+        aria-label="收起会话列表"
+        aria-expanded={true}
+        aria-controls="chat-sidebar-column"
+        aria-keyshortcuts="Control+B Meta+B"
+        title="收起会话列表（⌘B / Ctrl+B）"
+        onClick={toggleCollapsed}
+      >
+        <PanelLeftClose size={12} aria-hidden="true" />
+      </button>
 
       {/*
         Resize separator: an 8px hit area inside the sidebar's right edge with a

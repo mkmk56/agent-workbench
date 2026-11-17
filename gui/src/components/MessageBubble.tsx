@@ -11,10 +11,9 @@ import { useState, type ReactNode } from 'react';
 import claudeMark from '../assets/sidebar/claude-mark.png';
 import dshMark from '../assets/sidebar/dsh-mark.png';
 import museMark from '../assets/sidebar/muse-mark.png';
-import type { ChatFile } from '../lib/chat';
 import type { ChatMessage, ChatSender } from '../lib/chat';
 import { formatClock } from '../lib/labels';
-import { FileCard } from './FileCard';
+import { EditedFilesCard } from './EditedFilesCard';
 
 const IDENTITIES: Record<
   Exclude<ChatSender, 'user' | 'unknown'>,
@@ -281,23 +280,25 @@ function Avatar({ sender }: { sender: ChatSender }) {
   );
 }
 
+/**
+ * Attachments of one message, rendered as the "Edited files" card (P0-5
+ * scheme B): one flat row per file with its full path, a real summary and the
+ * parse status. The file objects have already been merged with
+ * `list_chat_files` by the page.
+ */
 function MessageFiles({
   files,
   chatId,
+  from,
 }: {
-  files: ChatFile[];
+  files: ChatMessage['files'];
   chatId: string;
+  from: 'user' | 'agent';
 }) {
   if (files.length === 0) {
     return null;
   }
-  return (
-    <div className="chat-msg__files">
-      {files.map((file) => (
-        <FileCard key={file.file_id} file={file} chatId={chatId} />
-      ))}
-    </div>
-  );
+  return <EditedFilesCard files={files} chatId={chatId} from={from} />;
 }
 
 function StructuredNotice() {
@@ -353,7 +354,6 @@ export function MessageBubble({
           ) : (
             <RichText text={message.summary} />
           )}
-          <MessageFiles files={message.files} chatId={chatId} />
           {message.question != null && (
             <div className="conv-question">
               <strong>需要回答</strong>
@@ -361,6 +361,15 @@ export function MessageBubble({
             </div>
           )}
         </div>
+        {/*
+          The attachment/edit card sits under the bubble, not inside it: a panel
+          inside a bubble would be a card inside a card (VISUAL_SCHEME.md §5).
+        */}
+        <MessageFiles
+          files={message.files}
+          chatId={chatId}
+          from={isUser ? 'user' : 'agent'}
+        />
         {long && (
           <button
             type="button"

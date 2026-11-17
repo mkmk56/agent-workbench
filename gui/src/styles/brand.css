@@ -506,9 +506,246 @@ html[data-theme="dark"] .logo--dark {
   background: var(--text-muted);
 }
 
+/* --- Agent avatars + status cards on the rail (task §1) --------------
+ * A separate rail section below the HUD. Nothing here targets .hud, the
+ * capsule, the working ring or the portal: the HUD keeps its own geometry.
+ * Identity is the mark glyph + the name; no identity colours are added. */
+.nav-rail__agents {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  align-self: stretch;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.nav-agent {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  /* The mark PNGs are white glyphs on transparency → ink tile (VISUAL_SCHEME
+   * §3: neutral tile + glyph, no per-agent colour). */
+  background: var(--avatar-ink);
+  cursor: pointer;
+  transition:
+    transform var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.nav-agent:hover,
+.nav-agent.is-open {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
+.nav-agent:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.nav-agent img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+
+.nav-agent__dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--surface);
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+
+.nav-agent__dot--success {
+  background: var(--success);
+}
+
+.nav-agent__dot--error {
+  background: var(--error);
+}
+
+.nav-agent__dot--neutral {
+  background: var(--text-secondary);
+}
+
+/* Status card. `position: fixed` on purpose: the rail scrolls (overflow-y:
+ * auto), so an absolutely positioned card would be clipped by the column. The
+ * coordinates come from the avatar's bounding rect in NavAgentStatus.tsx. */
+.agent-card {
+  position: fixed;
+  z-index: 60;
+  width: 288px;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-float);
+  box-shadow: var(--shadow-3);
+  color: var(--text);
+  animation: agent-card-in var(--duration-normal) var(--ease-out);
+}
+
+@keyframes agent-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.agent-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-card__avatar {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--avatar-ink);
+}
+
+.agent-card__avatar img {
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+}
+
+.agent-card__ident {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-card__name {
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.agent-card__tag {
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--text-secondary);
+}
+
+.agent-card__dot {
+  margin-left: auto;
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+
+.agent-card__dot--success {
+  background: var(--success);
+}
+
+.agent-card__dot--error {
+  background: var(--error);
+}
+
+.agent-card__dot--neutral {
+  background: var(--text-secondary);
+}
+
+.agent-card__state {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.agent-card__latest {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.agent-card__latest-meta {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-secondary);
+}
+
+.agent-card__latest-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  margin: 2px 0 0;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text);
+}
+
+/* 完成 / 阻塞 / 中性: icon + wording carry the meaning; colour is a second
+ * channel only. No tinted background (keeps AA contrast on both themes). */
+.agent-card__activity {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-secondary);
+}
+
+.agent-card__activity--done {
+  color: var(--success-text);
+}
+
+.agent-card__activity--blocked {
+  color: var(--error-text);
+}
+
+.agent-card__activity--neutral {
+  color: var(--text-secondary);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .nav-rail__item {
     transition: none;
+  }
+
+  .nav-agent {
+    transition: none;
+  }
+
+  .nav-agent:hover,
+  .nav-agent.is-open {
+    transform: none;
+  }
+
+  .agent-card {
+    animation: none;
   }
 }
 
@@ -2314,6 +2551,154 @@ html.is-resizing-chat-sidebar * {
   outline-offset: 1px;
 }
 
+/* Collapse control on the divider (design preview: the chevron appears in the
+ * middle of the sash on hover/focus). A sibling of the separator, never a
+ * child: it cannot start a drag and the separator keeps its separator role.
+ * It stays inside the column's box because the column is overflow: hidden. */
+.chat-sidebar__sash-collapse {
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.chat-sidebar:has(.chat-sidebar__splitter:hover) .chat-sidebar__sash-collapse,
+.chat-sidebar:has(.chat-sidebar__splitter:focus-visible) .chat-sidebar__sash-collapse,
+.chat-sidebar__sash-collapse:hover,
+.chat-sidebar__sash-collapse:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.chat-sidebar__sash-collapse:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.chat-sidebar__sash-collapse:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* --- Persistent Agent status strip at the foot of the list (task §4) ---
+ * One row per agent: glyph + name + live state text. Always visible (flex:
+ * none, after the scrolling list), keyboard focusable. No quota bar: the
+ * engine has no quota data, so the strip shows state text only. */
+.status-strip {
+  flex: none;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.status-strip__title {
+  margin: 0 0 6px;
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.status-strip__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.status-strip__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-secondary);
+  cursor: default;
+}
+
+.status-strip__row:hover {
+  background: var(--surface-hover);
+}
+
+.status-strip__row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.status-strip__avatar {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--avatar-ink);
+}
+
+.status-strip__avatar img {
+  width: 11px;
+  height: 11px;
+  object-fit: contain;
+}
+
+.status-strip__glyph {
+  font-size: 10px;
+  line-height: 12px;
+  font-weight: 600;
+  color: var(--on-accent);
+}
+
+.status-strip__name {
+  flex: none;
+  width: 46px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* AppStatus is nowrap by default; inside the narrow column it clips with an
+ * ellipsis and the row's title carries the full text. */
+.status-strip__row .status {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.status-strip__row .status > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-strip__note {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-secondary);
+}
+
+.status-strip__note--error {
+  color: var(--error-text);
+}
+
 .chat-sidebar__brand {
   display: flex;
   align-items: center;
@@ -2684,6 +3069,10 @@ html.is-resizing-chat-sidebar * {
 
 @media (prefers-reduced-motion: reduce) {
   .chat-item {
+    transition: none;
+  }
+
+  .chat-sidebar__sash-collapse {
     transition: none;
   }
 }

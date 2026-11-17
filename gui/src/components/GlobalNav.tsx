@@ -12,6 +12,7 @@ import type { AppTheme } from '../lib/theme';
 import type { AppInfo, EngineStatus, Route } from '../types';
 import { AppIconButton } from '../ui/astryx';
 import { AgentHud } from './AgentHud';
+import { NavAgentStatus } from './NavAgentStatus';
 
 type NavEntry = {
   key: string;
@@ -117,6 +118,12 @@ export function GlobalNav({
       <div className="nav-rail__hud">
         <AgentHud engine={engine} />
       </div>
+
+      {/*
+        Agent avatars with hover/focus status cards (task §1). Kept outside
+        .nav-rail__hud so the HUD — its capsule, ring and portal — is untouched.
+      */}
+      <NavAgentStatus chatId={route.name === 'chat' ? route.id : null} />
 
       <div className="nav-rail__spacer" />
 
