@@ -68,6 +68,11 @@
   --error: #a85a52;
   --error-text: #8f443c;
   --error-subtle: #f9e5e2;
+  /* Same treatment as the success badge: --error-text is tuned against the
+   * page surfaces, so the badge that paints on the --error-subtle fill gets
+   * its own value. Paper white already passes on the subtle fill (5.66:1),
+   * so this is identical to --error-text and the light chip is unchanged. */
+  --badge-error-text: #8f443c;
   --info: #6b8ca8;
   --info-text: #4a6a80;
   --info-subtle: #e8eff3;
@@ -187,6 +192,12 @@ html[data-theme="dark"] {
    * text passes WCAG AA (5.60:1); #a85a52 stays the fill/icon value. */
   --error-text: #c07a72;
   --error-subtle: #3a2321;
+  /* Same 12px/600 badge text on the same dark fill: --error-text measures
+   * 4.35:1 there (below AA 4.5), so the chip gets a dedicated value. It keeps
+   * the exact hue/saturation of --error-text and only lifts the lightness
+   * (L 60% -> 65%), which measures 5.19:1; the fill and every other error
+   * usage (page surfaces: 4.82–5.60:1) are untouched. */
+  --badge-error-text: #c88b84;
   --info: #6b8ca8;
   --info-text: #6b8ca8;
   --info-subtle: #1c2833;
