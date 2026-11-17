@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { config } from './config.js';
@@ -11,7 +12,8 @@ import { MessageService } from './messages.js';
 import { ChatService } from './chats.js';
 import { ApprovalService } from './approvals.js';
 import { FileService } from './files.js';
-import { ensureAgentMcpConfig } from './mcp-config.js';
+import { removeLegacyAgentMcpConfigs } from './mcp-config.js';
+import { hardenPath } from './security.js';
 import { registerTools } from './tools.js';
 
 const store = new Store(config.dbPath, config.dataDir);
@@ -29,6 +31,38 @@ const startedAt = Date.now();
 mkdirSync(config.logDir, { recursive: true });
 const pidFile = join(config.logDir, 'server.pid');
 
+// ---------------------------------------------------------------------------
+// P0-1 filesystem hygiene
+//
+// Executors run in a workspace that contains no credentials. The credential
+// env file and chat attachments are restricted to SYSTEM/Administrators/the
+// current user (the same ACL as the old token file). Static data/*-mcp.json
+// files are removed: each task now gets its own short-lived config outside the
+// repository. ACLs cannot isolate processes running as the same Windows user,
+// so the env allow-list and cwd change are the primary controls.
+// ---------------------------------------------------------------------------
+mkdirSync(config.executorWorkspace, { recursive: true });
+mkdirSync(config.chatFilesDir, { recursive: true });
+mkdirSync(config.credentialDir, { recursive: true });
+mkdirSync(config.taskConfigDir, { recursive: true });
+const aclResults = {
+  workspace: hardenPath(config.executorWorkspace, { directory: true }),
+  credentialDir: hardenPath(config.credentialDir, { directory: true }),
+  chatFiles: hardenPath(config.chatFilesDir, { directory: true, recursive: true })
+};
+if (config.envFile) aclResults.envFile = hardenPath(config.envFile);
+const removedLegacyConfigs = removeLegacyAgentMcpConfigs(config);
+if (removedLegacyConfigs.length > 0) {
+  console.log(`removed legacy static MCP configs: ${removedLegacyConfigs.join(', ')}`);
+}
+if (config.envFileLegacy) {
+  console.warn('deprecated-workbench-env: engine credentials are being read from the repository; '
+    + 'run scripts/install-credentials.mjs and remove the repo-root workbench.env');
+}
+for (const [label, result] of Object.entries(aclResults)) {
+  if (result && result.ok === false) console.warn(`acl: could not restrict ${label}: ${result.error}`);
+}
+
 const rateBuckets = new Map();
 const rateLimitPerMinute = Number(process.env.RATE_LIMIT_PER_MIN || 600);
 
@@ -37,6 +71,22 @@ function clientIp(req) {
   const forwarded = req.headers['x-forwarded-for'];
   const raw = cf || (Array.isArray(forwarded) ? forwarded[0] : forwarded) || req.socket.remoteAddress || 'unknown';
   return String(raw).split(',')[0].trim();
+}
+
+// Attach request-scoped fields used for provenance and audit logs. Never
+// copies token material.
+function enrichAuth(auth, req) {
+  if (!auth) return auth;
+  const headerId = typeof req.headers['x-request-id'] === 'string'
+    ? req.headers['x-request-id'].trim()
+    : '';
+  auth.request_id = headerId && headerId.length <= 200 ? headerId : randomUUID();
+  auth.source_ip = clientIp(req);
+  if (auth.deprecated) {
+    const label = auth.token_kind === 'master' ? 'deprecated-master-token' : 'deprecated-agent-token';
+    console.warn(`${label} principal=${auth.principal_id ?? auth.participant} request_id=${auth.request_id} path=${req.url}`);
+  }
+  return auth;
 }
 
 function isRateLimited(req) {
@@ -163,12 +213,14 @@ const server = http.createServer(async (req, res) => {
   if (downloadMatch && req.method === 'GET') {
     // Same bearer-token identity check as /mcp, then the master check: this
     // route is the GUI's raw download path and has no per-chat agent scope.
-    const auth = identifyToken(extractBearer(req), config);
+    const auth = enrichAuth(identifyToken(extractBearer(req), config), req);
     if (!auth) {
       sendJson(res, 401, { error: 'unauthorized' });
       return;
     }
-    if (!auth.master) {
+    // Raw downloads are a human/GUI action. Executor tokens stay scoped to
+    // their MCP tools and cannot exfiltrate attachment bytes.
+    if (!auth.master && auth.role !== 'human') {
       sendJson(res, 403, { error: 'forbidden' });
       return;
     }
@@ -215,7 +267,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // Identity comes from the credential, never from the request body.
-  const auth = identifyToken(extractBearer(req), config);
+  const auth = enrichAuth(identifyToken(extractBearer(req), config), req);
   if (!auth) {
     const header = req.headers.authorization;
     console.error(header
@@ -241,7 +293,10 @@ const server = http.createServer(async (req, res) => {
     const rpcMethods = (Array.isArray(body) ? body : [body])
       .map((entry) => entry?.method)
       .filter(Boolean);
-    if (rpcMethods.length > 0) console.log(`MCP ${rpcMethods.join(',')} auth=${auth.token_kind}:${auth.participant}`);
+    if (rpcMethods.length > 0) {
+      console.log(`MCP ${rpcMethods.join(',')} auth=${auth.token_kind}:${auth.participant}`
+        + ` request_id=${auth.request_id}`);
+    }
 
     const mcp = createMcpServer(auth);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
@@ -273,14 +328,9 @@ const server = http.createServer(async (req, res) => {
   sendJson(res, 405, { error: 'method not allowed' });
 });
 
-for (const agent of ['claude', 'dsh']) {
-  try {
-    const mcpConfigPath = ensureAgentMcpConfig(config, agent);
-    console.log(`${agent} mcp config (scoped token): ${mcpConfigPath}`);
-  } catch (error) {
-    console.error(`failed to write ${agent} mcp config: ${error.message}`);
-  }
-}
+// Static per-agent MCP configs are intentionally not written anymore. Each
+// task receives a signed short-lived token through a private config file or
+// child environment (see scheduler.launch / mcp-config.writeTaskMcpConfig).
 
 server.listen(config.port, config.bind, () => {
   writeFileSync(pidFile, String(process.pid), 'utf8');
@@ -311,4 +361,4 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 // Exported for the isolated verification harness (scripts/verify-upgrade.mjs).
 // Importing this module still starts the listener; callers close `server` and
 // `store` when finished.
-export { server, store, scheduler, messages, chats, approvals, files };
+export { server, store, scheduler, messages, chats, approvals, files, config };

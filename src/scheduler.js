@@ -5,6 +5,8 @@ import { ORCH_STATE, PROCESS_STATE, TURN_STATE, deriveState } from './state.js';
 import { claudeExecutor } from './executors/claude.js';
 import { dshExecutor } from './executors/dsh.js';
 import { killTree } from './executors/process.js';
+import { issueAgentToken } from './auth.js';
+import { cleanupTaskMcpConfig } from './mcp-config.js';
 
 const EXECUTORS = { claude: claudeExecutor, dsh: dshExecutor };
 const TERMINAL = new Set([ORCH_STATE.COMPLETED, ORCH_STATE.FAILED, ORCH_STATE.CANCELLED]);
@@ -29,7 +31,9 @@ export class Scheduler {
     if (!executor) throw new Error(`unknown agent: ${agent}`);
     if (typeof prompt !== 'string' || prompt.length === 0) throw new Error('prompt must be a non-empty string');
 
-    const dir = cwd || this.config.root;
+    // Executors default to a workspace outside the repository. The old default
+    // (repo root) contained workbench.env and made the master token readable.
+    const dir = cwd || this.config.executorWorkspace || this.config.root;
     try {
       if (!statSync(dir).isDirectory()) throw new Error('not a directory');
     } catch {
@@ -177,6 +181,32 @@ export class Scheduler {
     // A chat sub-task needs its chat id in the prompt so the agent can call
     // send_message with chat_id and land its conclusion in the right chat.
     const taskChatId = this.store.getChatForTask(task.id)?.chat_id ?? null;
+
+    // Short-lived, task-bound credential. It is passed only to this executor
+    // (private MCP config file / child env) and never written to the task row,
+    // prompt or log. Expiry covers the task timeout plus a safety margin.
+    const ttlMs = Math.max(60_000, (Number(task.timeout_ms) || this.config.taskTimeoutMs || 30 * 60 * 1000)
+      + 5 * 60 * 1000);
+    let authToken;
+    let tokenKind = 'agent-task';
+    try {
+      authToken = issueAgentToken(this.config.token, {
+        agent: task.agent,
+        taskId: task.id,
+        chatId: taskChatId,
+        scope: taskChatId ? `chat:${taskChatId}` : 'task',
+        ttlMs: Math.min(ttlMs, Number(this.config.agentTokenTtlMs) || ttlMs)
+      });
+    } catch (error) {
+      // Rollback path from REFACTOR_PLAN §5.2: fall back to the static scoped
+      // token and warn. The static token is still scoped to this agent.
+      authToken = this.config.agentTokens?.[task.agent];
+      tokenKind = 'agent-legacy';
+      this.store.appendLog(task.id, 'system',
+        `per-task token issue failed (${error.message}); using legacy scoped token`);
+    }
+    if (!authToken) throw new Error(`no credential available for agent ${task.agent}`);
+
     const gateBlock = this.approvals?.promptBlock(task) || '';
     const combinedPrompt = gateBlock
       ? `${gateBlock}\n\n---\n\n${String(task.prompt)}`
@@ -193,7 +223,14 @@ export class Scheduler {
     }
 
     try {
-      const started = EXECUTORS[task.agent].start({ ...task, prompt: renderedPrompt, thread_id: threadId }, ctx);
+      const started = EXECUTORS[task.agent].start({
+        ...task,
+        prompt: renderedPrompt,
+        thread_id: threadId,
+        chat_id: taskChatId,
+        auth_token: authToken,
+        auth_token_kind: tokenKind
+      }, ctx);
       entry.cancel = started.cancel;
       this.store.updateTask(task.id, {
         state: ORCH_STATE.WORKING,
@@ -202,7 +239,8 @@ export class Scheduler {
         pid: started.pid ?? null,
         last_activity_at: this._now()
       });
-      this.store.appendLog(task.id, 'system', `running pid=${started.pid ?? 'unknown'}`);
+      this.store.appendLog(task.id, 'system',
+        `running pid=${started.pid ?? 'unknown'} auth=${tokenKind}`);
     } catch (error) {
       this.store.appendLog(task.id, 'system', `failed to start: ${error.message}`);
       this.finish(entry, { code: null, signal: null, error });
@@ -288,6 +326,7 @@ export class Scheduler {
     } catch (error) {
       this.store.appendLog(task.id, 'system', `approval cleanup failed: ${error.message}`);
     }
+    cleanupTaskMcpConfig(this.config, task.id);
   }
 
   cancel(taskId) {
@@ -305,6 +344,7 @@ export class Scheduler {
         blocker: null
       });
       this.store.appendLog(taskId, 'system', 'cancelled while queued');
+      cleanupTaskMcpConfig(this.config, taskId);
       return { task_id: taskId, status: ORCH_STATE.CANCELLED };
     }
 
@@ -481,6 +521,7 @@ export class Scheduler {
       clearTimeout(entry.timeoutTimer);
       clearInterval(entry.heartbeatTimer);
       try { entry.cancel?.(); } catch { /* ignore */ }
+      cleanupTaskMcpConfig(this.config, entry.taskId);
     }
     this.running.clear();
     this.queue = [];

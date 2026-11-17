@@ -6,13 +6,31 @@ import { Store } from '../src/store.js';
 import { MessageService } from '../src/messages.js';
 import { ChatService } from '../src/chats.js';
 import { FileService } from '../src/files.js';
-import { deriveAgentTokens } from '../src/auth.js';
+import { deriveAgentTokens, deriveHumanToken, deriveMuseToken } from '../src/auth.js';
 
 export const TEST_MASTER_TOKEN = 'test-master-token-0123456789abcdef0123456789';
 
-export const authMaster = { role: 'master', master: true, participant: 'muse', token_kind: 'master' };
-export const authClaude = { role: 'agent', master: false, participant: 'claude', token_kind: 'agent' };
-export const authDsh = { role: 'agent', master: false, participant: 'dsh', token_kind: 'agent' };
+// Legacy master (one version): a human principal that may post only as user.
+export const authMaster = {
+  role: 'master', master: true, participant: 'user', principal_id: 'user', token_kind: 'master',
+  can_post_as: ['user'], can_dispatch: false, can_operate: true, deprecated: true
+};
+export const authHuman = {
+  role: 'human', master: false, participant: 'user', principal_id: 'user', token_kind: 'human',
+  can_post_as: ['user'], can_dispatch: false, can_operate: false, deprecated: false
+};
+export const authMuse = {
+  role: 'muse', master: false, participant: 'muse', principal_id: 'muse', token_kind: 'muse',
+  can_post_as: ['muse'], can_dispatch: true, can_operate: false, deprecated: false
+};
+export const authClaude = {
+  role: 'agent', master: false, participant: 'claude', principal_id: 'claude', token_kind: 'agent',
+  can_post_as: ['claude'], can_dispatch: false, can_operate: false, deprecated: true
+};
+export const authDsh = {
+  role: 'agent', master: false, participant: 'dsh', principal_id: 'dsh', token_kind: 'agent',
+  can_post_as: ['dsh'], can_dispatch: false, can_operate: false, deprecated: true
+};
 
 export function tempDir(prefix = 'agent-workbench-test-') {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -25,7 +43,18 @@ export function makeConfig(dir, overrides = {}) {
     root: process.cwd(),
     chatFilesDir: join(dir, 'chat-files'),
     token: TEST_MASTER_TOKEN,
+    humanToken: deriveHumanToken(TEST_MASTER_TOKEN),
+    museToken: deriveMuseToken(TEST_MASTER_TOKEN),
     agentTokens: deriveAgentTokens(TEST_MASTER_TOKEN),
+    legacyMasterEnabled: true,
+    legacyAgentTokensEnabled: true,
+    humanCanOperate: false,
+    museRequireHeartbeat: false,
+    museLeaseTtlMs: 300000,
+    agentTokenTtlMs: 2 * 60 * 60 * 1000,
+    executorWorkspace: dir,
+    credentialDir: join(dir, 'credentials'),
+    taskConfigDir: join(dir, 'task-configs'),
     mcpUrl: 'http://127.0.0.1:1/mcp',
     agentMessageLimit: 10,
     agentSummaryMaxTokens: 500,

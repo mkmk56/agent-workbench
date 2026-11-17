@@ -3,6 +3,10 @@
 > 负责人：dsh · 分支：`gui/redesign-chat-backend`（基底 `gui/v0.1` dcb803a）· 日期：2026-11-15
 > 对应方案：`docs/CHAT_REDESIGN_PLAN.md` 第 3 节（数据模型）与第 4 节（工具契约）
 > 范围：仅 `src/` 后端。`gui/` 未改动（只读）。前端按本文档调用，无需读源码。
+>
+> **2026-11-17 P0 更新：** 身份/token 模型、消息来源字段、附件对象契约、Muse 心跳状态见
+> `docs/P0_IDENTITY_ISOLATION.md`。工具总数现在是 **29**（新增 `muse_heartbeat`）。
+> `list_chat_messages` 的 `files` 已从 `string[]` 改为附件对象数组，并新增 `legacy_paths`。
 
 ## 1. 落地内容一览
 
@@ -25,6 +29,15 @@ chats(chat_id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT, updated_at 
       last_message_at TEXT, last_message_preview TEXT)
 chat_tasks(chat_id TEXT, task_id TEXT, created_at TEXT, PRIMARY KEY(chat_id, task_id))
 messages.chat_id TEXT                        -- 新增列
+-- P0-3 provenance
+messages.auth_kind TEXT                      -- human | muse | agent:claude | agent:dsh
+messages.principal_id TEXT                   -- user | muse | claude | dsh
+messages.request_id TEXT                     -- x-request-id or generated UUID
+-- P0-3 delivery history
+delivery_attempts(id INTEGER PK AUTOINCREMENT, message_id, agent, attempt,
+                  status, task_id, error, created_at)
+-- P0-4 Muse presence lease
+muse_presence(principal_id PK, last_seen_at, lease_expires_at, source, updated_at)
 ```
 
 实现细节与方案差异（均为兼容性所必需，已实测）：
@@ -44,7 +57,7 @@ messages.chat_id TEXT                        -- 新增列
 
 ## 3. 工具契约（MCP）
 
-工具总数 19（原 13 + 6）。除既有 `send_message` / `list_messages` 的扩展外，新增 6 个。
+工具总数 **29**（2026-11-17 实测）。除既有 `send_message` / `list_messages` 的扩展外，群聊第一批新增 6 个，P0 再新增 `muse_heartbeat`。
 
 ### 3.1 `create_chat`
 - 入参：`{ name?: string }`（空白或缺省 → 名称 `新群聊`，由 Muse 首条回复后 `rename_chat`）
@@ -68,6 +81,11 @@ messages.chat_id TEXT                        -- 新增列
   summary, files?: string[], question?, task_id?, reply_to? }`
 - 返回：`{ message_id, chat_id, created_at, to, status, delivery_task_id }`
   （`delivery_task_id` 是 Muse→agent 分配时启动的子任务 id，便于前端“查看执行记录”）
+- 身份规则（P0-2）：
+  - 发送者身份始终由 bearer token 决定：human/master 只能 `from=user`；muse token 只能
+    `from=muse`；agent token 只能以自己的 agent 身份发。
+  - 只有 muse token 能设置 `act_recipients`；human/master/agent 设置即拒绝。
+  - muse token 每次写入必须带 `client_msg_id`，且心跳 lease 未过期。
 - 规则：
   - `from='user'` 时 `to` 必须为 `'muse'`，否则报错
     `a user message in a chat must be addressed to 'muse'`。
@@ -100,11 +118,22 @@ messages.chat_id TEXT                        -- 新增列
 - 返回：`{ chat_id, messages: [...], count, has_more }`，`messages` 按时间**升序**：
   ```json
   { "message_id": "...", "from": "user|muse|claude|dsh", "to": "...",
-    "summary": "...", "files": [], "question": null,
+    "summary": "...", "question": null,
+    "files": [
+      { "file_id": "...", "name": "报告.pdf", "mime": "application/pdf",
+        "size": 2316, "sha256": "...", "parse_status": "parsed",
+        "parse_error": null }
+    ],
+    "legacy_paths": ["old/relative/path.pdf"],
+    "auth_kind": "human|muse|agent:claude|agent:dsh",
+    "principal_id": "user|muse|claude|dsh",
+    "request_id": "...",
     "status": "stored|queued|delivered|answered|held|failed",
     "created_at": "...", "task_id": "..." }
   ```
-  `task_id` 仅在消息属于某子任务时出现（自然语言流不含 thread 状态、日志、报错堆栈）。
+  - `files` 是**附件对象数组**（P0-5 方案 A）。前端不再需要从 UUID 猜名称/大小。
+  - `legacy_paths` 是独立字段，只包含历史裸路径；不可下载/预览，渲染为“历史附件（路径）”。
+  - `task_id` 仅在消息属于某子任务时出现（自然语言流不含 thread 状态、日志、报错堆栈）。
 
 ### 3.7 既有工具改造
 - `send_message`
@@ -137,10 +166,13 @@ messages.chat_id TEXT                        -- 新增列
 | `FAILED` | `failed` | 失败 |
 | `CANCELLED` | `cancelled` | 已取消 |
 
-Muse：
-- `idle`：群聊没有待回的用户消息（待命）。
-- `needs_reply`：**有用户消息，且其后没有 Muse 消息** → 前端显示“等 Muse 回复”。
-  这是真实标记，不是“正在输入”。
+Muse（P0-4 起改为真实在线状态，不是从 `idle|needs_reply` 推导）：
+- `online`：心跳 lease 有效且没有待回的用户消息。
+- `needs_reply`：心跳 lease 有效，且**有用户消息、其后没有 Muse 消息**。
+- `offline`：心跳 lease 过期或从未收到心跳（Muse 客户端已离线）。
+- 同时返回 `online`（布尔）、`needs_reply`、`last_seen_at`、`lease_expires_at`。
+- 心跳来源：Muse 调用任意读工具（`list_chats` / `chat_status` / …）自动刷新，或显式调用 `muse_heartbeat`。
+  写工具不会刷新自己的 lease；`MUSE_LEASE_TTL_MS` 默认 5 分钟。
 
 `needs_muse` 判定（`store.chatNeedsMuse`，纯 SQL，无缓存）：
 `MAX(created_at where from_agent='user')` 存在且 `> MAX(created_at where from_agent='muse')`
@@ -240,6 +272,9 @@ Muse→agent 真实子任务（独立 thread、prompt 含群聊名与已渲染 `
 - Muse 唤醒仍按方案由 `chat-muse-watch`（每 2 分钟轮询 `list_chats` 的
   `needs_muse`）驱动，后端只提供真实标记，不做推送。
 - 群聊消息未做全文检索/分页总数统计（`before` 游标翻页已够当前 UI）。
-- 子任务 cwd 固定为 workbench 根目录（`config.root`）；若后续需要“每群聊一个工作
-  目录”，在 `chats` 增列并在 `deliverChatAssignment` 传入即可。
+- 子任务 cwd 自 P0-1 起改为不含 secrets 的执行器 workspace（默认 `<repo>/workspace`，
+  `WORKBENCH_WORKSPACE_DIR` 可覆盖）；`task_start` 仍可显式传 `cwd`。
+- **Muse 消息 `task_id=NULL` 是设计如此**：Muse 是外部协调者，不在本地建执行器，
+  引擎不伪造本地 Muse 任务。协调消息只写 `messages`/`chat_deliveries`，靠
+  `auth_kind=muse` + `principal_id=muse` + `client_msg_id` 归因。
 - GUI 侧 IPC、页面、样式不在本次范围内（Claude / Muse 负责）。

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { registerTools } from '../src/tools.js';
 import {
-  authClaude, authMaster, makeServices, seedChat, tempDir
+  authClaude, authHuman, makeServices, seedChat, tempDir
 } from './helpers.js';
 
 // Minimal MCP server stand-in: registerTools only needs registerTool().
@@ -43,7 +43,7 @@ test('chat_mark_read advances the caller cursor to a seq, message id, or the lat
     const chatId = seedChat(store);
     const first = chats.send({ chat_id: chatId, from: 'user', to: 'muse', body: 'first' });
     const second = chats.send({ chat_id: chatId, from: 'user', to: 'muse', body: 'second' });
-    const tools = makeToolRunner(services, authMaster);
+    const tools = makeToolRunner(services, authHuman);
 
     const byMessage = await tools.invoke('chat_mark_read', {
       chat_id: chatId,
@@ -52,10 +52,10 @@ test('chat_mark_read advances the caller cursor to a seq, message id, or the lat
     assert.equal(byMessage.isError, undefined);
     const firstRead = payload(byMessage);
     assert.equal(firstRead.ok, true);
-    assert.equal(firstRead.participant_id, 'muse');
+    assert.equal(firstRead.participant_id, 'user');
     assert.equal(firstRead.last_read_seq, first.seq);
     assert.equal(firstRead.unread, 1, 'the second message is still unread');
-    assert.equal(store.getChatParticipant(chatId, 'muse').last_read_seq, first.seq);
+    assert.equal(store.getChatParticipant(chatId, 'user').last_read_seq, first.seq);
 
     const bySeq = await tools.invoke('chat_mark_read', {
       chat_id: chatId,

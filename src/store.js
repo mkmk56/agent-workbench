@@ -9,7 +9,9 @@ const MESSAGE_COLUMNS = [
   // Group-chat upgrade columns. summary stays as a truncated preview; body is
   // the full message text.
   'seq', 'body', 'mentions_json', 'root_message_id', 'depth', 'epoch', 'client_msg_id',
-  'context_version'
+  'context_version',
+  // Provenance: who sent this, which authenticated principal, which request.
+  'auth_kind', 'principal_id', 'request_id'
 ];
 
 const MESSAGE_DEFAULTS = Object.freeze({
@@ -50,7 +52,10 @@ const MESSAGES_DDL = `CREATE TABLE IF NOT EXISTS messages (
         depth INTEGER NOT NULL DEFAULT 0,
         epoch INTEGER NOT NULL DEFAULT 0,
         client_msg_id TEXT,
-        context_version INTEGER NOT NULL DEFAULT 0
+        context_version INTEGER NOT NULL DEFAULT 0,
+        auth_kind TEXT,
+        principal_id TEXT,
+        request_id TEXT
       )`;
 
 const TASK_COLUMNS = [
@@ -238,6 +243,29 @@ export class Store {
         PRIMARY KEY (message_id, agent)
       );
       CREATE INDEX IF NOT EXISTS idx_chat_deliveries_status ON chat_deliveries(status, updated_at);
+      -- Append-only delivery attempt history. chat_deliveries keeps the current
+      -- state; this table answers "how many times, when, and why did it fail".
+      CREATE TABLE IF NOT EXISTS delivery_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        attempt INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        task_id TEXT,
+        error TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_delivery_attempts_message
+        ON delivery_attempts(message_id, agent, id);
+      -- Muse presence/lease. The coordinator is an external process; this row
+      -- is refreshed by its polling calls and expires when it goes away.
+      CREATE TABLE IF NOT EXISTS muse_presence (
+        principal_id TEXT PRIMARY KEY,
+        last_seen_at TEXT NOT NULL,
+        lease_expires_at TEXT NOT NULL,
+        source TEXT,
+        updated_at TEXT NOT NULL
+      );
     `);
     this.migrateMessagesForChats();
     this.migrateGroupChat();
@@ -312,7 +340,10 @@ export class Store {
           depth INTEGER NOT NULL DEFAULT 0,
           epoch INTEGER NOT NULL DEFAULT 0,
           client_msg_id TEXT,
-          context_version INTEGER NOT NULL DEFAULT 0
+          context_version INTEGER NOT NULL DEFAULT 0,
+          auth_kind TEXT,
+          principal_id TEXT,
+          request_id TEXT
         );
         INSERT INTO messages_chat_migration (${copied.join(', ')})
           SELECT ${copied.join(', ')} FROM messages;
@@ -354,6 +385,10 @@ export class Store {
     this._addColumnIfMissing('messages', 'epoch', 'INTEGER NOT NULL DEFAULT 0');
     this._addColumnIfMissing('messages', 'client_msg_id', 'TEXT');
     this._addColumnIfMissing('messages', 'context_version', 'INTEGER NOT NULL DEFAULT 0');
+    // Provenance (P0-3). Nullable: historical rows cannot be attributed.
+    this._addColumnIfMissing('messages', 'auth_kind', 'TEXT');
+    this._addColumnIfMissing('messages', 'principal_id', 'TEXT');
+    this._addColumnIfMissing('messages', 'request_id', 'TEXT');
     this._addColumnIfMissing('chats', 'epoch', 'INTEGER NOT NULL DEFAULT 0');
     // A pre-chat database may have a chats table from an even older schema (or
     // none at all). Add the missing columns before creating the index that
@@ -985,6 +1020,7 @@ export class Store {
 
   // --------------------------------------------------------------- deliveries
   insertDelivery(delivery) {
+    const status = delivery.status ?? 'visible';
     this.db.prepare(
       `INSERT INTO chat_deliveries (message_id, agent, status, task_id, error, epoch, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -997,23 +1033,124 @@ export class Store {
     ).run(
       delivery.message_id,
       delivery.agent,
-      delivery.status ?? 'visible',
+      status,
       delivery.task_id ?? null,
       delivery.error ?? null,
       delivery.epoch ?? 0,
       delivery.updated_at ?? this._now()
     );
+    if (status !== 'visible') {
+      this.recordDeliveryAttempt({
+        message_id: delivery.message_id,
+        agent: delivery.agent,
+        status,
+        task_id: delivery.task_id ?? null,
+        error: delivery.error ?? null,
+        created_at: delivery.updated_at
+      });
+    }
   }
 
   updateDelivery(messageId, agent, patch) {
     const allowed = ['status', 'task_id', 'error', 'epoch'];
     const keys = Object.keys(patch).filter((key) => allowed.includes(key));
     if (keys.length === 0) return this.getDelivery(messageId, agent);
+    const before = this.getDelivery(messageId, agent);
+    const now = this._now();
     const sets = keys.map((key) => `${key} = ?`).join(', ');
     this.db.prepare(
       `UPDATE chat_deliveries SET ${sets}, updated_at = ? WHERE message_id = ? AND agent = ?`
-    ).run(...keys.map((key) => patch[key] ?? null), this._now(), messageId, agent);
-    return this.getDelivery(messageId, agent);
+    ).run(...keys.map((key) => patch[key] ?? null), now, messageId, agent);
+    const after = this.getDelivery(messageId, agent);
+    const changed = !before
+      || before.status !== after.status
+      || (patch.error !== undefined && (before.error ?? null) !== (after.error ?? null))
+      || (patch.task_id !== undefined && (before.task_id ?? null) !== (after.task_id ?? null));
+    if (changed) {
+      this.recordDeliveryAttempt({
+        message_id: messageId,
+        agent,
+        status: after.status,
+        task_id: after.task_id ?? null,
+        error: after.error ?? null,
+        created_at: now
+      });
+    }
+    return after;
+  }
+
+  recordDeliveryAttempt({ message_id: messageId, agent, status, task_id: taskId = null, error = null, created_at: createdAt = null }) {
+    const row = this.db.prepare(
+      'SELECT COALESCE(MAX(attempt), 0) AS n FROM delivery_attempts WHERE message_id = ? AND agent = ?'
+    ).get(messageId, agent);
+    const attempt = Number(row?.n ?? 0) + 1;
+    this.db.prepare(
+      `INSERT INTO delivery_attempts (message_id, agent, attempt, status, task_id, error, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(messageId, agent, attempt, status, taskId, error, createdAt || this._now());
+    return attempt;
+  }
+
+  listDeliveryAttempts(messageId, agent = null) {
+    if (agent) {
+      return this.db.prepare(
+        'SELECT * FROM delivery_attempts WHERE message_id = ? AND agent = ? ORDER BY attempt ASC'
+      ).all(messageId, agent);
+    }
+    return this.db.prepare(
+      'SELECT * FROM delivery_attempts WHERE message_id = ? ORDER BY agent ASC, attempt ASC'
+    ).all(messageId);
+  }
+
+  deliveryAttemptSummary(messageId, agent) {
+    const row = this.db.prepare(
+      `SELECT COUNT(*) AS attempt_count,
+              MIN(created_at) AS first_attempt_at,
+              MAX(created_at) AS last_attempt_at,
+              SUM(CASE WHEN status IN ('delivered','failed','skipped','held') THEN 1 ELSE 0 END) AS finished_count
+         FROM delivery_attempts WHERE message_id = ? AND agent = ?`
+    ).get(messageId, agent);
+    return {
+      attempt_count: Number(row?.attempt_count ?? 0),
+      first_attempt_at: row?.first_attempt_at ?? null,
+      last_attempt_at: row?.last_attempt_at ?? null,
+      finished_count: Number(row?.finished_count ?? 0)
+    };
+  }
+
+  // ------------------------------------------------------------------ presence
+  touchMusePresence({ ttlMs = 5 * 60 * 1000, source = 'request', force = false } = {}) {
+    const now = Date.now();
+    const existing = this.getMusePresence();
+    if (!force && existing) {
+      const last = Date.parse(existing.last_seen_at);
+      const throttle = Math.min(5000, Math.max(200, Number(ttlMs) / 2));
+      if (Number.isFinite(last) && now - last < throttle) return existing;
+    }
+    const seenAt = new Date(now).toISOString();
+    const expiresAt = new Date(now + Math.max(1000, Number(ttlMs) || 300_000)).toISOString();
+    this.db.prepare(
+      `INSERT INTO muse_presence (principal_id, last_seen_at, lease_expires_at, source, updated_at)
+       VALUES ('muse', ?, ?, ?, ?)
+       ON CONFLICT(principal_id) DO UPDATE SET
+         last_seen_at = excluded.last_seen_at,
+         lease_expires_at = excluded.lease_expires_at,
+         source = excluded.source,
+         updated_at = excluded.updated_at`
+    ).run(seenAt, expiresAt, source ?? null, seenAt);
+    return this.getMusePresence();
+  }
+
+  getMusePresence() {
+    return this.db.prepare("SELECT * FROM muse_presence WHERE principal_id = 'muse'").get() ?? null;
+  }
+
+  museLeaseFresh(ttlMs = 5 * 60 * 1000, now = Date.now()) {
+    const presence = this.getMusePresence();
+    if (!presence) return false;
+    const last = Date.parse(presence.last_seen_at);
+    if (!Number.isFinite(last)) return false;
+    return now - last <= Math.max(1000, Number(ttlMs) || 300_000);
   }
 
   getDelivery(messageId, agent) {

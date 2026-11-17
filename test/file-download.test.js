@@ -143,6 +143,10 @@ before(async () => {
   process.env.AGENT_APPROVAL_GATE = '0';
   process.env.WORKBENCH_CLAUDE_ENTRY = join(dir, '__no_claude_binary__');
   process.env.WORKBENCH_DSH_ENTRY = join(dir, '__no_dsh_binary__');
+  // Keep the real per-user credential directory and workspace untouched.
+  process.env.WORKBENCH_CREDENTIAL_DIR = join(dir, 'credentials');
+  process.env.WORKBENCH_WORKSPACE_DIR = join(dir, 'workspace');
+  process.env.WORKBENCH_ENV_FILE = join(dir, 'credentials', 'engine.env');
   engine = await import('../src/server.js');
   await waitForHealth();
 });

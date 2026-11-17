@@ -1,56 +1,89 @@
-import { chmodSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
+import { credentialDir } from './credentials.js';
+import { currentWindowsPrincipal, hardenPath } from './security.js';
 
-// Windows built-in principals used by the token file ACL. Their SAM account
-// names are not localized, so these values resolve on every Windows locale.
-const WINDOWS_SYSTEM = 'SYSTEM';
-const WINDOWS_ADMINS = 'Administrators';
+// Each running task gets its own MCP config containing a signed token bound to
+// that task. The file is written under the per-user credential directory, not
+// data/ and not the repository, and is deleted when the task finishes. Other
+// executors never see this path; the static data/<agent>-mcp.json files are
+// removed at startup.
+export function taskConfigDir(config, taskId) {
+  const base = config.taskConfigDir || join(config.credentialDir || credentialDir(), 'task-configs');
+  return join(base, String(taskId));
+}
 
-function currentWindowsPrincipal() {
-  if (process.env.USERDOMAIN && process.env.USERNAME) {
-    return `${process.env.USERDOMAIN}\\${process.env.USERNAME}`;
-  }
+function writeRestrictedFile(path, doc) {
+  const windowsPrincipal = process.platform === 'win32' ? currentWindowsPrincipal() : null;
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  hardenPath(dirname(path), { directory: true });
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    return execFileSync('whoami', { encoding: 'utf8', windowsHide: true }).trim();
+    writeFileSync(tmp, JSON.stringify(doc, null, 2), { encoding: 'utf8', mode: 0o600 });
+    hardenPath(tmp);
+    renameSync(tmp, path);
+    hardenPath(path);
+  } catch (error) {
+    try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
+    throw error;
+  }
+  void windowsPrincipal;
+  return path;
+}
+
+export function writeTaskMcpConfig(config, { agent, taskId, token, chatId = null } = {}) {
+  if (agent !== 'claude' && agent !== 'dsh') throw new Error(`unknown agent: ${agent}`);
+  if (!taskId) throw new Error('taskId is required for a task MCP config');
+  if (!token) throw new Error(`no per-task token available for agent ${agent}`);
+  const path = join(taskConfigDir(config, taskId), `${agent}.json`);
+  return writeRestrictedFile(path, {
+    mcpServers: {
+      'agent-workbench': {
+        type: 'http',
+        url: config.mcpUrl,
+        headers: { Authorization: `Bearer ${token}` },
+        // The client may read this marker to know which task the credential
+        // belongs to; it is not a secret.
+        _workbench: { agent, task_id: taskId, chat_id: chatId || null, token_kind: 'agent-task' }
+      }
+    }
+  });
+}
+
+export function cleanupTaskMcpConfig(config, taskId) {
+  if (!taskId) return;
+  try {
+    rmSync(taskConfigDir(config, taskId), { recursive: true, force: true });
   } catch {
-    throw new Error('cannot determine the current Windows user; refusing to write the MCP token file');
+    // The token still expires; cleanup is best effort.
   }
 }
 
-// Node's `mode` option is not honoured on Windows: the file keeps the ACL
-// inherited from its directory, which usually lets BUILTIN\Users read it. This
-// file holds the workbench bearer token, so lock it down explicitly: remove
-// inherited permissions and grant only the current user, SYSTEM and the local
-// Administrators group.
-function lockDownWindowsFile(path, principal) {
-  execFileSync('icacls', [
-    path,
-    '/inheritance:r',
-    '/grant:r', `${principal}:F`,
-    `${WINDOWS_SYSTEM}:F`,
-    `${WINDOWS_ADMINS}:F`
-  ], { stdio: 'ignore', windowsHide: true });
-}
-
-function restrictTokenFile(path, windowsPrincipal) {
-  if (process.platform === 'win32') {
-    lockDownWindowsFile(path, windowsPrincipal);
-  } else {
-    chmodSync(path, 0o600);
+// One-time cleanup for the previous static config files. They held static
+// HMAC tokens derived from the master and were readable by every executor.
+export function removeLegacyAgentMcpConfigs(config) {
+  const removed = [];
+  for (const path of [config.claudeMcpConfigPath, config.dshMcpConfigPath]) {
+    if (!path) continue;
+    try {
+      rmSync(path, { force: true });
+      removed.push(path);
+    } catch {
+      // Ignore: the path may not exist or may be locked.
+    }
   }
+  return removed;
 }
 
-// Executors are started with --mcp-config pointing at a per-agent file so each
-// one calls the local workbench with its own scoped token. The master token is
-// never written into an executor config.
+// Backwards-compatible helper for older callers. New code must use
+// writeTaskMcpConfig so the token is task-bound and expiring.
 export function ensureAgentMcpConfig(config, agent = 'claude') {
   if (agent !== 'claude' && agent !== 'dsh') throw new Error(`unknown agent: ${agent}`);
-  const path = agent === 'dsh' ? config.dshMcpConfigPath : config.claudeMcpConfigPath;
   const token = config.agentTokens?.[agent];
   if (!token) throw new Error(`no scoped token configured for agent ${agent}`);
-  const doc = {
+  const path = join(config.credentialDir || credentialDir(), 'legacy', `${agent}.json`);
+  return writeRestrictedFile(path, {
     mcpServers: {
       'agent-workbench': {
         type: 'http',
@@ -58,31 +91,9 @@ export function ensureAgentMcpConfig(config, agent = 'claude') {
         headers: { Authorization: `Bearer ${token}` }
       }
     }
-  };
-  // Resolve the principal before writing anything: if it cannot be resolved,
-  // fail before the token reaches disk.
-  const windowsPrincipal = process.platform === 'win32' ? currentWindowsPrincipal() : null;
-
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    writeFileSync(tmp, JSON.stringify(doc, null, 2), { encoding: 'utf8', mode: 0o600 });
-    // Restrict the temporary file first so the token is never on disk with
-    // inherited permissions, then rename atomically into place. Moved files
-    // keep their ACL, and the second pass guarantees the final path is locked
-    // even if the platform replaced the security descriptor on rename.
-    restrictTokenFile(tmp, windowsPrincipal);
-    renameSync(tmp, path);
-    restrictTokenFile(path, windowsPrincipal);
-  } catch (error) {
-    try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
-    throw error;
-  }
-  return path;
+  });
 }
 
-// Backwards-compatible name: Claude is still the only executor that reads an
-// MCP config file today, but the token is now Claude's scoped token.
 export function ensureClaudeMcpConfig(config) {
   return ensureAgentMcpConfig(config, 'claude');
 }

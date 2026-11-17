@@ -7,9 +7,13 @@
  *
  * Token sources, in order:
  *   1. process.env.MCP_BEARER_TOKEN (e.g. a Task Scheduler environment variable)
- *   2. <repo>/workbench.env MCP_BEARER_TOKEN
+ *   2. <credentials>/engine.env (the post-P0 location, outside the repo)
+ *   3. <repo>/workbench.env MCP_BEARER_TOKEN (legacy, migration fallback)
  *
  * The token itself is never printed, logged, or written inside the repository.
+ * The GUI keeps using the legacy master token for one compatibility version
+ * so task_start/respond_approval keep working; new clients should use the
+ * human token (MCP_HUMAN_TOKEN / deriveHumanToken) instead.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -18,12 +22,17 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const targetDir = path.join(
-  process.env.APPDATA?.trim() || path.join(os.homedir(), 'AppData', 'Roaming'),
-  'agent-workbench',
-  'credentials',
-);
+const targetDir = process.env.WORKBENCH_CREDENTIAL_DIR?.trim()
+  ? path.resolve(process.env.WORKBENCH_CREDENTIAL_DIR)
+  : path.join(
+    process.env.APPDATA?.trim() || path.join(os.homedir(), 'AppData', 'Roaming'),
+    'agent-workbench',
+    'credentials',
+  );
 const targetFile = path.join(targetDir, 'engine-token');
+const engineEnvFile = process.env.WORKBENCH_ENV_FILE?.trim()
+  ? path.resolve(process.env.WORKBENCH_ENV_FILE)
+  : path.join(targetDir, 'engine.env');
 
 function readEnvFileValue(filePath, key) {
   let raw;
@@ -51,9 +60,13 @@ function resolveToken() {
   if (fromEnv.length > 0) {
     return { token: fromEnv, source: 'environment' };
   }
+  const fromCredential = readEnvFileValue(engineEnvFile, 'MCP_BEARER_TOKEN');
+  if (fromCredential.length > 0) {
+    return { token: fromCredential, source: 'engine.env' };
+  }
   const fromFile = readEnvFileValue(path.join(repoRoot, 'workbench.env'), 'MCP_BEARER_TOKEN');
   if (fromFile.length > 0) {
-    return { token: fromFile, source: 'workbench.env' };
+    return { token: fromFile, source: 'workbench.env (legacy)' };
   }
   return { token: null, source: 'none' };
 }

@@ -2,9 +2,18 @@ import { resolve, join, dirname } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { deriveAgentTokens } from './auth.js';
+import {
+  deriveAgentTokens, deriveHumanToken, deriveMuseToken
+} from './auth.js';
+import { credentialDir, loadEngineEnv } from './credentials.js';
 
 const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
+
+// Credentials live outside the repository. The legacy repo-root workbench.env
+// is still read once (with a warning) so an existing installation can start
+// and run scripts/install-credentials.mjs; after migration the executor cwd
+// and environment no longer expose any token file.
+const envLoad = loadEngineEnv({ legacyPaths: [resolve(root, 'workbench.env')] });
 
 function readSettingsEnv(path) {
   const doc = JSON.parse(readFileSync(path, 'utf8'));
@@ -91,6 +100,30 @@ export const config = {
   port,
   bind,
   token: process.env.MCP_BEARER_TOKEN || '',
+  // Token principals. The legacy master stays valid for one compatibility
+  // version; HUMAN and MUSE are derived from it unless explicitly provided.
+  humanToken: process.env.MCP_HUMAN_TOKEN || '',
+  museToken: process.env.MCP_MUSE_TOKEN || '',
+  legacyMasterEnabled: process.env.WORKBENCH_LEGACY_MASTER !== '0',
+  legacyMasterAllowMuse: process.env.WORKBENCH_LEGACY_MASTER_ALLOW_MUSE === '1',
+  legacyAgentTokensEnabled: process.env.WORKBENCH_LEGACY_AGENT_TOKENS !== '0',
+  // The human token is read-only/collaboration by default: it may post as
+  // user but cannot dispatch, start tasks or approve. Raise this to let the
+  // GUI use the human token for task_start during the transition.
+  humanCanOperate: boolEnv('WORKBENCH_HUMAN_OPERATE', false),
+  // Muse must keep a heartbeat lease. list_chats/chat_status/muse_heartbeat
+  // refresh it; a send without a fresh lease is rejected.
+  museRequireHeartbeat: boolEnv('MUSE_REQUIRE_HEARTBEAT', true),
+  museLeaseTtlMs: intEnv('MUSE_LEASE_TTL_MS', 5 * 60 * 1000),
+  // Per-task executor tokens expire with the task (plus a safety margin).
+  agentTokenTtlMs: intEnv('AGENT_TOKEN_TTL_MS', 2 * 60 * 60 * 1000),
+  // Executors run here, not in the repository root. The workspace contains no
+  // secrets; master may still pass an explicit cwd to task_start.
+  executorWorkspace: resolve(root, process.env.WORKBENCH_WORKSPACE_DIR || 'workspace'),
+  credentialDir: credentialDir(),
+  taskConfigDir: resolve(credentialDir(), 'task-configs'),
+  envFile: envLoad.path,
+  legacyEnvFile: envLoad.legacy,
   dataDir,
   dbPath: resolve(root, process.env.MCP_DB_PATH || join(process.env.MCP_DATA_DIR || 'data', 'workbench.db')),
   logDir: resolve(root, process.env.MCP_LOG_DIR || 'logs'),
@@ -283,11 +316,17 @@ export function describeResolution(resolved) {
 }
 
 if (!config.token || config.token.length < 32) {
-  console.error('MCP_BEARER_TOKEN is required and must be at least 32 characters long.');
+  console.error(
+    'MCP_BEARER_TOKEN is required and must be at least 32 characters long. '
+    + `Set it in the engine credential file (${envLoad.path || join(credentialDir(), 'engine.env')}) `
+    + 'or in the process environment.'
+  );
   process.exit(1);
 }
 
 // Deterministic per-executor tokens. No plaintext agent token is persisted;
-// both the server and the executor's MCP config derive the same value from the
-// master token.
+// the static form is a one-version compatibility path. New tasks receive
+// signed, short-lived per-task tokens instead (see auth.issueAgentToken).
 config.agentTokens = deriveAgentTokens(config.token);
+config.humanToken = config.humanToken || deriveHumanToken(config.token);
+config.museToken = config.museToken || deriveMuseToken(config.token);

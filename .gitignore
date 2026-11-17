@@ -10,6 +10,8 @@ workbench.env
 # Runtime data, task files, and SQLite databases
 data/
 logs/
+# Executor workspace (P0-1): no credentials, never committed
+workspace/
 *.db
 *.db-shm
 *.db-wal

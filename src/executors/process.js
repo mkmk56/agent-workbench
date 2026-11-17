@@ -7,6 +7,43 @@ export function stripAnsi(text) {
   return String(text).replace(ANSI, '');
 }
 
+// Executors only receive what they need to run. The engine environment holds
+// the master/human/Muse tokens, database paths and credential locations; none
+// of it may leak into an agent process.
+const BASE_ENV_KEYS_WIN = [
+  'SystemRoot', 'windir', 'SystemDrive', 'ComSpec', 'PATHEXT', 'PATH',
+  'TEMP', 'TMP', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA',
+  'PROGRAMDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'COMMONPROGRAMFILES',
+  'USERNAME', 'USERDOMAIN', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE',
+  'OS', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TERM', 'TZ', 'CLAUDE_CONFIG_DIR'
+];
+const BASE_ENV_KEYS_POSIX = [
+  'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'LC_CTYPE',
+  'TMPDIR', 'TERM', 'TZ', 'CLAUDE_CONFIG_DIR'
+];
+
+// Never inherited from the engine, and removed even if a caller passes one by
+// mistake. Per-task MCP credentials are injected deliberately by executors.
+const BLOCKED_ENV_KEYS = new Set([
+  'MCP_BEARER_TOKEN', 'MCP_HUMAN_TOKEN', 'MCP_MUSE_TOKEN',
+  'MCP_DATA_DIR', 'MCP_DB_PATH', 'MCP_LOG_DIR',
+  'WORKBENCH_ENV_FILE', 'WORKBENCH_CLAUDE_ENV_JSON'
+]);
+
+export function buildExecutorEnv(extra = {}) {
+  const keys = process.platform === 'win32' ? BASE_ENV_KEYS_WIN : BASE_ENV_KEYS_POSIX;
+  const env = {};
+  for (const key of keys) {
+    if (process.env[key] !== undefined) env[key] = process.env[key];
+  }
+  for (const [key, value] of Object.entries(extra || {})) {
+    if (value === undefined || value === null) continue;
+    if (BLOCKED_ENV_KEYS.has(key)) continue;
+    env[key] = String(value);
+  }
+  return env;
+}
+
 export function spawnProcess({ command, prefixArgs = [], args, cwd, env, onLine, onExit }) {
   let exited = false;
   let outBuf = '';
@@ -21,11 +58,9 @@ export function spawnProcess({ command, prefixArgs = [], args, cwd, env, onLine,
     for (const line of parts) onLine(stream, line);
   };
 
-  // Executor processes inherit the server environment on purpose: the claude
-  // executor needs it to reach the local MCP endpoint, and agents may rely on
-  // WORKBENCH_* configuration. Do not strip MCP_* / WORKBENCH_* here.
-  const childEnv = { ...process.env };
-  Object.assign(childEnv, env || {});
+  // Explicit allow-list, never a copy of process.env. The old behaviour let
+  // executors read the master bearer token and impersonate user/Muse.
+  const childEnv = buildExecutorEnv(env);
 
   const child = crossSpawn(command, [...prefixArgs, ...args], {
     cwd,

@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { deriveState } from './state.js';
+import { resolveSender } from './auth.js';
+import { fileRef } from './context.js';
 
 export const DEFAULT_CHAT_NAME = '新群聊';
 const NAME_MAX = 200;
@@ -133,12 +135,22 @@ export class ChatService {
     };
   }
 
+  // Muse is an external process, so "idle" is not evidence that it is alive.
+  // Presence comes from its polling/heartbeat lease: a stale lease is offline.
   museStatus(chatId) {
+    const presence = this.store.getMusePresence?.() ?? null;
+    const ttl = Math.max(1000, Number(this.config.museLeaseTtlMs) || 5 * 60 * 1000);
+    const lastSeen = presence ? Date.parse(presence.last_seen_at) : NaN;
+    const online = Number.isFinite(lastSeen) && Date.now() - lastSeen <= ttl;
     const needsMuse = this.store.chatNeedsMuse(chatId);
     return {
-      status: needsMuse ? 'needs_reply' : 'idle',
+      status: !online ? 'offline' : (needsMuse ? 'needs_reply' : 'online'),
+      online,
+      needs_reply: needsMuse,
       state: null,
       task_id: null,
+      last_seen_at: presence?.last_seen_at ?? null,
+      lease_expires_at: presence?.lease_expires_at ?? null,
       updated_at: this.store.lastChatMessage(chatId)?.created_at ?? null
     };
   }
@@ -228,6 +240,7 @@ export class ChatService {
         ...this.describe(chat),
         needs_muse: this.store.chatNeedsMuse(chat.chat_id),
         agents: {
+          muse: this.museStatus(chat.chat_id).status,
           claude: this.agentStatus(chat.chat_id, 'claude').status,
           dsh: this.agentStatus(chat.chat_id, 'dsh').status
         }
@@ -245,7 +258,25 @@ export class ChatService {
       chat_id: chat.chat_id,
       epoch: Number(chat.epoch ?? 0),
       messages: rows.map((row) => {
+        // P0-5 (contract A): attachments are objects, not bare file_id strings.
+        // The frontend no longer has to guess a name/size from a UUID.
         const attached = this.store.listMessageFiles(row.id);
+        const rawFiles = parseJsonArray(row.files_json);
+        // Historical rows may carry file_id values in files_json without a
+        // message_files row. Resolve those when the chat_files row still
+        // exists; anything that is not an opaque file_id is a legacy path and
+        // is returned separately, never as an attachment.
+        let files = attached;
+        if (files.length === 0) {
+          files = rawFiles
+            .filter((entry) => typeof entry === 'string' && /^[A-Za-z0-9-]{8,80}$/.test(entry))
+            .map((fileId) => this.store.getChatFile(fileId))
+            .filter(Boolean);
+        }
+        const attachedIds = new Set(files.map((file) => file.file_id));
+        const legacyPaths = rawFiles.filter(
+          (entry) => typeof entry === 'string' && !attachedIds.has(entry) && !/^[A-Za-z0-9-]{8,80}$/.test(entry)
+        );
         return {
           message_id: row.id,
           seq: row.seq ?? null,
@@ -254,14 +285,16 @@ export class ChatService {
           summary: row.summary,
           body: row.body ?? row.summary,
           mentions: parseJsonArray(row.mentions_json),
-          files: attached.length > 0
-            ? attached.map((file) => file.file_id)
-            : parseJsonArray(row.files_json),
+          files: files.map(fileRef),
+          legacy_paths: legacyPaths,
           question: row.question ?? null,
           epoch: Number(row.epoch ?? 0),
           depth: Number(row.depth ?? 0),
           root_message_id: row.root_message_id ?? null,
           status: row.status,
+          auth_kind: row.auth_kind ?? null,
+          principal_id: row.principal_id ?? null,
+          request_id: row.request_id ?? null,
           created_at: row.created_at,
           ...(row.task_id ? { task_id: row.task_id } : {})
         };
@@ -274,10 +307,10 @@ export class ChatService {
   send({
     chat_id: chatId, from, to, summary, body, files, question, task_id: taskId, reply_to: replyTo,
     mentions, act, act_recipients: actRecipients, client_msg_id: clientMsgId, epoch, is_final: isFinal,
-    auth
+    request_id: requestId, auth
   } = {}) {
     const chat = this.requireChat(chatId);
-    const effectiveFrom = auth ? requireSender(auth, from) : from;
+    const effectiveFrom = resolveSender(auth, from);
     if (!CHAT_SENDERS.has(effectiveFrom) && !AGENTS.has(effectiveFrom)) {
       throw new Error("from must be 'user', 'muse', 'claude' or 'dsh'");
     }
@@ -306,6 +339,7 @@ export class ChatService {
       epoch,
       is_final: isFinal,
       chat_id: chat.chat_id,
+      request_id: requestId || auth?.request_id,
       auth
     });
     return {
@@ -323,18 +357,3 @@ export class ChatService {
   }
 }
 
-function requireSender(auth, from) {
-  // Local import-free guard mirroring auth.resolveSender; kept here so the
-  // ChatService's old callers (no auth) still work.
-  if (!auth) return from;
-  if (auth.master) {
-    if (from !== 'user' && from !== 'muse') {
-      throw new Error(`the master token may post as 'user' or 'muse', not '${from}'`);
-    }
-    return from;
-  }
-  if (auth.participant && from !== auth.participant) {
-    throw new Error(`token identifies as '${auth.participant}' but the request claims from='${from}'`);
-  }
-  return from;
-}

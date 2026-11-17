@@ -1,7 +1,8 @@
 import * as z from 'zod/v4';
 import { buildChatContext } from './context.js';
 import {
-  assertChatAccess, assertTaskAccess, isMaster, requireMaster
+  agentScope, assertChatAccess, assertTaskAccess, isMaster, isReadAll,
+  requireMaster, requireOperator
 } from './auth.js';
 
 const asText = (value) => ({
@@ -13,20 +14,84 @@ const asError = (message) => ({
   isError: true
 });
 
-function agentScope(auth) {
-  return auth && !isMaster(auth) ? auth.participant : null;
+function truncate(value, max = 300) {
+  const text = String(value ?? '');
+  return text.length > max ? `${text.slice(0, max)}…(${text.length})` : text;
 }
 
-export function registerTools(server, { scheduler, store, messages, approvals, chats, files, config }, auth = { master: true, participant: 'muse' }) {
-  const master = isMaster(auth);
+// Tool-call audit line: tool name, argument summary, outcome and duration.
+// Secrets and base64 payloads are never written verbatim.
+function summarizeArgs(args) {
+  if (!args || typeof args !== 'object') return '-';
+  const out = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (/token|secret|password|authorization/i.test(key)) {
+      out[key] = '<redacted>';
+    } else if (key === 'data') {
+      out[key] = `<base64 ${String(value ?? '').length} chars>`;
+    } else if (typeof value === 'string') {
+      out[key] = truncate(value, 120);
+    } else {
+      out[key] = value;
+    }
+  }
+  return truncate(JSON.stringify(out), 400);
+}
 
-  server.registerTool('agent_info', {
+function summarizeResult(result) {
+  if (!result) return 'none';
+  if (result.isError) return 'error';
+  const text = Array.isArray(result.content)
+    ? result.content.map((entry) => entry?.text ?? '').filter(Boolean).join(' ')
+    : '';
+  return text ? truncate(text.replace(/\s+/g, ' '), 160) : 'ok';
+}
+
+export function registerTools(server, { scheduler, store, messages, approvals, chats, files, config }, auth = { master: true, participant: 'user', token_kind: 'master' }) {
+  const master = isMaster(auth);
+  const readAll = isReadAll(auth);
+  const requestId = auth?.request_id || '-';
+
+  // Chat CRUD is a human/Muse collaboration action, not an executor action.
+  const requireChatAdmin = (action) => {
+    if (!master && auth?.role !== 'human') {
+      throw new Error(`${action} requires a human or master token`);
+    }
+  };
+
+  const register = (name, meta, handler) => {
+    server.registerTool(name, meta, async (args, extra) => {
+      const started = Date.now();
+      // Muse polling is its heartbeat. Writes are deliberately excluded so a
+      // send cannot renew its own lease.
+      if (auth?.token_kind === 'muse' && name !== 'send_chat_message' && name !== 'send_message') {
+        try {
+          store.touchMusePresence({ ttlMs: config.museLeaseTtlMs, source: `tool:${name}` });
+        } catch {
+          // Presence is best effort; never fail a read because of it.
+        }
+      }
+      let result;
+      try {
+        result = await handler(args, extra);
+      } catch (error) {
+        console.log(`tool=${name} request_id=${requestId} auth=${auth?.token_kind ?? 'none'}:${auth?.participant ?? 'none'}`
+          + ` duration_ms=${Date.now() - started} result=error params=${summarizeArgs(args)} error=${truncate(error.message, 160)}`);
+        throw error;
+      }
+      console.log(`tool=${name} request_id=${requestId} auth=${auth?.token_kind ?? 'none'}:${auth?.participant ?? 'none'}`
+        + ` duration_ms=${Date.now() - started} result=${summarizeResult(result)} params=${summarizeArgs(args)}`);
+      return result;
+    });
+  };
+
+  register('agent_info', {
     description: 'List available executors (claude, dsh) with version, capabilities and resume support.'
   }, async () => asText(scheduler.agentInfo()));
 
-  server.registerTool('task_start', {
+  register('task_start', {
     description: 'Start a task on a local executor. Returns immediately with task_id and session_id. '
-      + 'Master token only.',
+      + 'Operator token only (legacy master, or a human token with WORKBENCH_HUMAN_OPERATE=1).',
     inputSchema: {
       agent: z.enum(['claude', 'dsh']).describe('Executor to use'),
       prompt: z.string().min(1).describe('Task text'),
@@ -39,7 +104,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
   }, async ({ agent, prompt, cwd, session_id, model, max_turns, timeout_ms }) => {
     void max_turns;
     try {
-      requireMaster(auth, 'task_start');
+      requireOperator(auth, 'task_start');
       const result = scheduler.createTask({
         agent, prompt, cwd, sessionId: session_id, model, timeoutMs: timeout_ms
       });
@@ -49,8 +114,8 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   });
 
-  server.registerTool('task_send', {
-    description: 'Send a follow-up message to an existing task or session. Master token only.',
+  register('task_send', {
+    description: 'Send a follow-up message to an existing task or session. Operator token only.',
     inputSchema: {
       task_id: z.string().optional().describe('Task whose session should receive the message'),
       session_id: z.string().optional().describe('Session to continue, when task_id is omitted'),
@@ -58,7 +123,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   }, async ({ task_id, session_id, prompt }) => {
     try {
-      requireMaster(auth, 'task_send');
+      requireOperator(auth, 'task_send');
       let sessionId = session_id;
       let agent;
       if (task_id) {
@@ -80,7 +145,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   });
 
-  server.registerTool('task_status', {
+  register('task_status', {
     description: 'Get the current status of a task. Agent tokens may only read their own tasks.',
     inputSchema: {
       task_id: z.string().describe('Task id')
@@ -94,7 +159,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   });
 
-  server.registerTool('task_logs', {
+  register('task_logs', {
     description: 'Read incremental log entries for a task. Agent tokens are scoped to their own tasks.',
     inputSchema: {
       task_id: z.string().describe('Task id'),
@@ -117,7 +182,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   });
 
-  server.registerTool('task_cancel', {
+  register('task_cancel', {
     description: 'Cancel a running or queued task and clean up its process tree. Agent tokens may only cancel their own tasks.',
     inputSchema: {
       task_id: z.string().describe('Task id')
@@ -131,7 +196,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   });
 
-  server.registerTool('task_list', {
+  register('task_list', {
     description: 'List recent tasks, newest first. Agent tokens only see their own tasks.',
     inputSchema: {
       status: z.string().optional().describe('Optional state filter (COMPLETED, FAILED, CANCELLED, ...)'),
@@ -150,9 +215,10 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     return asText({ tasks });
   });
 
-  server.registerTool('send_message', {
+  register('send_message', {
     description: 'Send a conclusion-only message from one local agent to the other. The server derives the sender '
-      + 'from the bearer token: an executor token can only speak as itself and must pass its own task_id. The summary '
+      + 'from the bearer token: human/master may post only as user; the muse token only as muse (client_msg_id '
+      + 'required); an executor token can only speak as itself and must pass its own task_id. The summary '
       + 'is a preview (token-capped); body carries the full text. In a chat, files must be file_id references. '
       + 'When the target agent is idle the message is delivered by starting a task; otherwise it is queued. Each '
       + 'sub-task thread still stops after 10 agent-to-agent messages.',
@@ -174,14 +240,16 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
   }, async ({ from, to, task_id, chat_id, reply_to, summary, body, files, question, deliver, is_final }) => {
     try {
       return asText(messages.send({
-        from, to, task_id, chat_id, reply_to, summary, body, files, question, deliver, is_final, auth
+        from, to, task_id, chat_id, reply_to, summary, body, files, question, deliver, is_final,
+        request_id: auth?.request_id,
+        auth
       }));
     } catch (error) {
       return asError(error.message);
     }
   });
 
-  server.registerTool('list_messages', {
+  register('list_messages', {
     description: 'List persisted agent-to-agent messages and thread state. Filter by thread_id, task_id, chat_id, '
       + 'from, to, reply_to or status. Agent tokens are limited to chats they participate in and their own tasks.',
     inputSchema: {
@@ -196,7 +264,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   }, async (filters) => {
     try {
-      if (!master) {
+      if (!readAll) {
         if (filters.chat_id) assertChatAccess(store, auth, filters.chat_id);
         if (filters.task_id) assertTaskAccess(store, auth, filters.task_id);
         if (filters.thread_id && !filters.chat_id && !filters.task_id) {
@@ -220,14 +288,14 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
   });
 
   // ------------------------------------------------------------------ chats
-  server.registerTool('create_chat', {
-    description: 'Create a group chat. Master token only. Returns the new chat with epoch 0.',
+  register('create_chat', {
+    description: 'Create a group chat. Human or master token only. Returns the new chat with epoch 0.',
     inputSchema: {
       name: z.string().max(200).optional().describe('Chat name; defaults to 新群聊')
     }
   }, async ({ name }) => {
     try {
-      requireMaster(auth, 'create_chat');
+      requireChatAdmin('create_chat');
       const chat = chats.create({ name });
       return asText({
         chat_id: chat.chat_id,
@@ -240,7 +308,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   });
 
-  server.registerTool('list_chats', {
+  register('list_chats', {
     description: 'List group chats. The master token sees every chat; an executor token sees only chats it has '
       + 'joined (mentioned or dispatched). needs_muse and agent statuses are derived from real rows.',
     inputSchema: {
@@ -251,63 +319,63 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   }, async ({ status, include_archived, limit }) => {
     try {
-      const chatIds = master ? null : store.listParticipantChatIds(auth.participant);
+      const chatIds = readAll ? null : store.listParticipantChatIds(auth.participant);
       return asText(chats.list({ status, include_archived, limit, chat_ids: chatIds }));
     } catch (error) {
       return asError(error.message);
     }
   });
 
-  server.registerTool('rename_chat', {
-    description: 'Rename a group chat and return the updated chat. Master token only.',
+  register('rename_chat', {
+    description: 'Rename a group chat and return the updated chat. Human or master token only.',
     inputSchema: {
       chat_id: z.string().min(1).describe('Chat id'),
       name: z.string().min(1).max(200).describe('New chat name')
     }
   }, async ({ chat_id, name }) => {
     try {
-      requireMaster(auth, 'rename_chat');
+      requireChatAdmin('rename_chat');
       return asText(chats.rename({ chat_id, name }));
     } catch (error) {
       return asError(error.message);
     }
   });
 
-  server.registerTool('chat_archive', {
+  register('chat_archive', {
     description: 'Archive a group chat. Messages and files are kept; the chat is only hidden from the default '
-      + 'list_chats result. Restore it with chat_unarchive. Master token only.',
+      + 'list_chats result. Restore it with chat_unarchive. Human or master token only.',
     inputSchema: {
       chat_id: z.string().min(1).describe('Chat id')
     }
   }, async ({ chat_id }) => {
     try {
-      requireMaster(auth, 'chat_archive');
+      requireChatAdmin('chat_archive');
       return asText(chats.archive({ chat_id, archived: true }));
     } catch (error) {
       return asError(error.message);
     }
   });
 
-  server.registerTool('chat_unarchive', {
-    description: 'Restore an archived group chat to active status. Master token only.',
+  register('chat_unarchive', {
+    description: 'Restore an archived group chat to active status. Human or master token only.',
     inputSchema: {
       chat_id: z.string().min(1).describe('Chat id')
     }
   }, async ({ chat_id }) => {
     try {
-      requireMaster(auth, 'chat_unarchive');
+      requireChatAdmin('chat_unarchive');
       return asText(chats.archive({ chat_id, archived: false }));
     } catch (error) {
       return asError(error.message);
     }
   });
 
-  server.registerTool('send_chat_message', {
+  register('send_chat_message', {
     description: 'Post a message into a group chat. Every message is visible to all participants; only '
-      + 'act_recipients start sub-tasks. The sender is derived from the bearer token (master may post as user or '
-      + 'muse; an executor may only post as itself and must pass its own task_id). A user message increments the '
-      + 'chat epoch; a dispatch carrying a stale epoch is rejected. files must be file_id values. client_msg_id '
-      + 'makes retries idempotent.',
+      + 'act_recipients start sub-tasks. The sender is derived from the bearer token: human/master may post only '
+      + 'as user; the muse token only as muse (and must send client_msg_id); an executor may only post as itself '
+      + 'with its own task_id. Only the muse token may set act_recipients. A user message increments the chat '
+      + 'epoch; a dispatch carrying a stale epoch is rejected. files must be file_id values.',
     inputSchema: {
       chat_id: z.string().min(1).describe('Chat id'),
       from: z.enum(['user', 'muse', 'claude', 'dsh']).describe('Sender; must match the token identity'),
@@ -328,13 +396,13 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   }, async (args) => {
     try {
-      return asText(chats.send({ ...args, auth }));
+      return asText(chats.send({ ...args, request_id: auth?.request_id, auth }));
     } catch (error) {
       return asError(error.message);
     }
   });
 
-  server.registerTool('chat_status', {
+  register('chat_status', {
     description: 'Live status of a group chat: epoch, needs_muse, participants with read/delivery state, '
       + 'per-participant status and the chat\'s sub-tasks. Terminal agent status collapses to idle after the '
       + 'configured TTL.',
@@ -350,7 +418,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   });
 
-  server.registerTool('list_chat_messages', {
+  register('list_chat_messages', {
     description: 'List one group chat\'s message stream, oldest first. Returns full body plus the summary preview, '
       + 'seq, epoch, mentions and file_id attachments. `before` pages backwards by message id; `after_seq` polls '
       + 'incrementally. Agent tokens may only read chats they participate in.',
@@ -369,7 +437,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   });
 
-  server.registerTool('chat_mark_read', {
+  register('chat_mark_read', {
     description: 'Advance one participant\'s read cursor in a group chat. Marks up to up_to_seq, the seq of '
       + 'message_id, or the chat\'s latest seq when neither is given. Master tokens may target any participant; '
       + 'agent tokens may only mark themselves. Returns the stored last_read_seq and the remaining unread count.',
@@ -420,8 +488,34 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   });
 
+  // -------------------------------------------------------------- muse presence
+  register('muse_heartbeat', {
+    description: 'Refresh the Muse presence lease. Muse token only. Any authenticated Muse request '
+      + '(list_chats, chat_status, …) also refreshes the lease; a stale lease makes chat_status report Muse offline.'
+  }, async ({ source, ttl_ms }) => {
+    try {
+      if (auth?.token_kind !== 'muse') throw new Error('muse_heartbeat requires the muse token');
+      const ttl = ttl_ms ?? config.museLeaseTtlMs ?? 300000;
+      const presence = store.touchMusePresence({
+        ttlMs: ttl,
+        source: source || 'muse_heartbeat',
+        force: true
+      });
+      return asText({
+        ok: true,
+        principal_id: 'muse',
+        last_seen_at: presence.last_seen_at,
+        lease_expires_at: presence.lease_expires_at,
+        ttl_ms: ttl,
+        online: true
+      });
+    } catch (error) {
+      return asError(error.message);
+    }
+  });
+
   // -------------------------------------------------------------- chat context
-  server.registerTool('chat_get_context', {
+  register('chat_get_context', {
     description: 'Read the deterministic shared context of a chat: the most recent messages within a token '
       + 'budget (seq ascending) and the chat attachment list. Used by buildChatTaskPrompt and available to agents.',
     inputSchema: {
@@ -445,7 +539,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
   });
 
   // ---------------------------------------------------------------- chat files
-  server.registerTool('upload_chat_file_init', {
+  register('upload_chat_file_init', {
     description: 'Start a chunked file upload for one chat. Returns upload_id and the per-chunk byte cap '
       + '(<= 1 MB). Single-file limit is 20 MB; larger files are rejected explicitly.',
     inputSchema: {
@@ -458,13 +552,13 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     try {
       requireFiles(files);
       assertChatAccess(store, auth, chat_id);
-      return asText(files.initUpload({ chat_id, name, size, mime, uploader: master ? 'user' : auth.participant }));
+      return asText(files.initUpload({ chat_id, name, size, mime, uploader: auth.participant || 'user' }));
     } catch (error) {
       return asError(error.message);
     }
   });
 
-  server.registerTool('upload_chat_file_chunk', {
+  register('upload_chat_file_chunk', {
     description: 'Append one base64 chunk to an upload. Chunks must arrive in order starting at index 0; each '
       + 'decoded chunk must be <= 1 MB so the 8 MB JSON body limit is never hit.',
     inputSchema: {
@@ -475,13 +569,13 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
   }, async ({ upload_id, index, data }) => {
     try {
       requireFiles(files);
-      return asText(files.appendChunk({ upload_id, index, data, uploader: master ? 'user' : auth.participant }));
+      return asText(files.appendChunk({ upload_id, index, data, uploader: auth.participant || 'user' }));
     } catch (error) {
       return asError(error.message);
     }
   });
 
-  server.registerTool('upload_chat_file_complete', {
+  register('upload_chat_file_complete', {
     description: 'Finish an upload: verifies the declared size, stores the file under the chat directory, '
       + 'computes sha256, parses text/PDF/DOCX/XLSX/PPTX/ZIP or records image metadata, and returns the file_id.',
     inputSchema: {
@@ -490,13 +584,13 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
   }, async ({ upload_id }) => {
     try {
       requireFiles(files);
-      return asText(files.completeUpload({ upload_id, uploader: master ? 'user' : auth.participant }));
+      return asText(files.completeUpload({ upload_id, uploader: auth.participant || 'user' }));
     } catch (error) {
       return asError(error.message);
     }
   });
 
-  server.registerTool('read_chat_file', {
+  register('read_chat_file', {
     description: 'Read a chat file by file_id (never by host path). Text/code/PDF/DOCX/XLSX/PPTX return '
       + 'extracted text; ZIP returns a file tree and entry=<path> reads one member; images are returned as image '
       + 'content only to vision-capable executors. Unsupported binaries and non-vision executors get an explicit error.',
@@ -535,7 +629,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   });
 
-  server.registerTool('list_chat_files', {
+  register('list_chat_files', {
     description: 'List files uploaded to one chat, with file_id, name, mime, size, sha256 and parse status.',
     inputSchema: {
       chat_id: z.string().min(1).describe('Chat id'),
@@ -552,7 +646,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
   });
 
   // --------------------------------------------------------------- approvals
-  server.registerTool('request_approval', {
+  register('request_approval', {
     description: 'Ask the user, in chat, before a critical operation. Only active when AGENT_APPROVAL_GATE=1. '
       + 'An executor token may only ask for its own task; session grants are scoped to (chat, agent, category).',
     inputSchema: {
@@ -567,14 +661,14 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   }, async (args) => {
     try {
-      if (!master) assertTaskAccess(store, auth, args.task_id);
+      if (!readAll) assertTaskAccess(store, auth, args.task_id);
       return asText(await approvals.request(args));
     } catch (error) {
       return asError(error.message);
     }
   });
 
-  server.registerTool('respond_approval', {
+  register('respond_approval', {
     description: 'Answer a pending approval as the user. MASTER TOKEN ONLY: an executor token is rejected, so '
       + 'an agent can never approve its own request. decision=once allows this request; session also allows later '
       + 'operations of the same category for this (chat, agent); deny stops the operation.',
@@ -593,7 +687,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   });
 
-  server.registerTool('list_approvals', {
+  register('list_approvals', {
     description: 'List persisted approval requests and decisions. Agent tokens are scoped to their own approvals.',
     inputSchema: {
       thread_id: z.string().optional().describe('Conversation thread id'),
@@ -603,7 +697,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   }, async (filters) => {
     try {
-      if (!master) {
+      if (!readAll) {
         if (filters.task_id) assertTaskAccess(store, auth, filters.task_id);
         filters = { ...filters, agent: auth.participant };
       }
@@ -613,7 +707,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   });
 
-  server.registerTool('wait_for_task', {
+  register('wait_for_task', {
     description: 'Long-poll until a task reaches a terminal state or the timeout expires (max 40s). Agent tokens '
       + 'may only wait on their own tasks.',
     inputSchema: {

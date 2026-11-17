@@ -60,6 +60,10 @@ console.log = (...args) => engineStdout.write(`${args.join(' ')}\n`);
 // ever start from this run.
 process.env.MCP_PORT = String(port);
 process.env.MCP_BEARER_TOKEN = token;
+process.env.WORKBENCH_LEGACY_MASTER_ALLOW_MUSE = '1';
+process.env.WORKBENCH_CREDENTIAL_DIR = join(runDir, 'credentials');
+process.env.WORKBENCH_WORKSPACE_DIR = join(runDir, 'workspace');
+process.env.WORKBENCH_ENV_FILE = join(runDir, 'engine.env');
 process.env.MCP_DATA_DIR = runDir;
 process.env.MCP_DB_PATH = dbPath;
 process.env.MCP_LOG_DIR = logDir;

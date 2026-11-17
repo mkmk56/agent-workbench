@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
-import { tempDir, makeServices, seedTask } from './helpers.js';
+import { authMuse, tempDir, makeServices, seedTask } from './helpers.js';
 import { Store } from '../src/store.js';
 
 function createLegacyChatDb(dbPath) {
@@ -185,7 +185,9 @@ test('stale epoch dispatches are rejected', () => {
       to: 'claude',
       body: 'stale dispatch',
       act_recipients: ['claude'],
-      epoch: 0
+      epoch: 0,
+      client_msg_id: 'store-stale-1',
+      auth: authMuse
     }), /epoch mismatch/i);
     assert.equal(store.listMessages({ chatId: chat.chat_id }).length, 1);
   } finally {

@@ -6,8 +6,8 @@
   "type": "module",
   "main": "src/server.js",
   "scripts": {
-    "start": "node --env-file-if-exists=workbench.env src/server.js",
-    "dev": "node --env-file-if-exists=workbench.env --watch src/server.js",
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
     "test": "node --test \"test/*.test.js\"",
     "verify:upgrade": "node scripts/verify-upgrade.mjs",
     "typecheck": "node scripts/check-syntax.mjs"

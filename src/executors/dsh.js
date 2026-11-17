@@ -1,5 +1,5 @@
 import { describeResolution, resolveDshCommand } from '../config.js';
-import { ensureAgentMcpConfig } from '../mcp-config.js';
+import { writeTaskMcpConfig } from '../mcp-config.js';
 import { spawnProcess, killTree } from './process.js';
 
 const MAX_HISTORY_CHARS = 12000;
@@ -45,15 +45,20 @@ export const dshExecutor = {
     // inherit the master token.
     let env = {};
     try {
-      const mcpConfigPath = ensureAgentMcpConfig(ctx.config, 'dsh');
+      const mcpConfigPath = writeTaskMcpConfig(ctx.config, {
+        agent: 'dsh',
+        taskId: task.id,
+        token: task.auth_token,
+        chatId: task.chat_id || null
+      });
       env = {
         WORKBENCH_MCP_CONFIG: mcpConfigPath,
         WORKBENCH_MCP_URL: ctx.config.mcpUrl,
-        WORKBENCH_MCP_TOKEN: ctx.config.agentTokens?.dsh ?? ''
+        WORKBENCH_MCP_TOKEN: task.auth_token
       };
-      ctx.log('system', `dsh scoped mcp config=${mcpConfigPath} (token injected via env)`);
+      ctx.log('system', `dsh task-bound mcp config=${mcpConfigPath} (token injected via env)`);
     } catch (error) {
-      ctx.log('system', `dsh scoped mcp config unavailable: ${error.message}`);
+      ctx.log('system', `dsh mcp config unavailable: ${error.message}`);
     }
     const child = spawnProcess({
       command: resolved.command,

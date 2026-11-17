@@ -724,8 +724,9 @@ export class FileService {
   readFile({ chat_id: chatId, file_id: fileId, entry = null, max_bytes: maxBytes, actor = null }) {
     const result = this.read({ chatId, fileId, entry, maxBytes, actor });
     if (result.kind !== 'image') return result;
-    const participant = actor?.master ? 'user' : actor?.participant;
-    const vision = Boolean(actor?.master || this.config.executorVision?.[participant]);
+    const isHuman = Boolean(actor?.master || actor?.role === 'human');
+    const participant = isHuman ? 'user' : actor?.participant;
+    const vision = Boolean(isHuman || this.config.executorVision?.[participant]);
     if (!vision) {
       throw new Error(
         `executor '${participant}' cannot receive image content (no vision input). `

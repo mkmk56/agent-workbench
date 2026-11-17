@@ -5,7 +5,7 @@ import { Store } from '../src/store.js';
 import { MessageService } from '../src/messages.js';
 import { ChatService } from '../src/chats.js';
 import {
-  FakeScheduler, authClaude, authMaster, makeConfig, seedChat, seedTask, tempDir
+  FakeScheduler, authClaude, authMaster, authMuse, makeConfig, seedChat, seedTask, tempDir
 } from './helpers.js';
 
 function build(dir, overrides = {}) {
@@ -36,7 +36,7 @@ test('user message bumps epoch, keeps full body and truncated preview', () => {
     assert.equal(store.chatNeedsMuse(chatId), true);
 
     const muse = messages.send({
-      auth: authMaster, from: 'muse', to: 'user', chat_id: chatId, summary: 'muse reply'
+      auth: authMuse, from: 'muse', to: 'user', chat_id: chatId, summary: 'muse reply', client_msg_id: 'muse-reply-1'
     });
     assert.equal(muse.epoch, 1);
     assert.equal(store.chatNeedsMuse(chatId), false);
@@ -52,16 +52,16 @@ test('visibility and action are separate: only act_recipients start sub-tasks', 
   try {
     const chatId = seedChat(store);
     const visible = chats.send({
-      auth: authMaster, from: 'muse', to: 'claude', chat_id: chatId,
-      summary: 'everyone sees this', act_recipients: []
+      auth: authMuse, from: 'muse', to: 'claude', chat_id: chatId,
+      summary: 'everyone sees this', act_recipients: [], client_msg_id: 'muse-visible-1'
     });
     assert.equal(scheduler.created.length, 0, 'no action recipient means no sub-task');
     const deliveries = store.listMessageDeliveries(visible.message_id);
     assert.equal(deliveries.find((d) => d.agent === 'claude').status, 'visible');
 
     const acted = chats.send({
-      auth: authMaster, from: 'muse', to: 'claude', chat_id: chatId,
-      summary: 'claude please act', act_recipients: ['claude'], epoch: store.chatEpoch(chatId)
+      auth: authMuse, from: 'muse', to: 'claude', chat_id: chatId,
+      summary: 'claude please act', act_recipients: ['claude'], epoch: store.chatEpoch(chatId), client_msg_id: 'muse-act-1'
     });
     assert.equal(scheduler.created.length, 1);
     assert.equal(scheduler.created[0].agent, 'claude');
@@ -99,7 +99,7 @@ test('agent identity, task ownership and participation are enforced', () => {
     assert.throws(() => messages.send({
       auth: authClaude, from: 'claude', to: 'muse', task_id: taskId, chat_id: chatId,
       summary: 'try to dispatch', act_recipients: ['dsh']
-    }), /may not dispatch sub-tasks/);
+    }), /requires an orchestrator \(Muse\) token/);
 
     const otherChat = seedChat(store, { name: 'other' });
     assert.throws(() => messages.send({
@@ -120,8 +120,8 @@ test('stale epoch dispatch is rejected', () => {
     chats.send({ auth: authMaster, from: 'user', to: 'muse', chat_id: chatId, summary: 'hello' });
     const current = store.chatEpoch(chatId);
     assert.throws(() => chats.send({
-      auth: authMaster, from: 'muse', to: 'claude', chat_id: chatId,
-      summary: 'stale dispatch', act_recipients: ['claude'], epoch: current - 1
+      auth: authMuse, from: 'muse', to: 'claude', chat_id: chatId,
+      summary: 'stale dispatch', act_recipients: ['claude'], epoch: current - 1, client_msg_id: 'muse-stale-1'
     }), /epoch mismatch/);
   } finally {
     store.close();

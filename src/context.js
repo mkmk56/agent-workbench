@@ -9,14 +9,15 @@ function parseJsonArray(value) {
   }
 }
 
-function fileRef(row) {
+export function fileRef(row) {
   return {
     file_id: row.file_id,
     name: row.original_name,
     mime: row.mime ?? null,
     size: Number(row.size ?? 0),
     sha256: row.sha256 ?? null,
-    parse_status: row.parse_status ?? 'pending'
+    parse_status: row.parse_status ?? 'pending',
+    parse_error: row.parse_error ?? null
   };
 }
 

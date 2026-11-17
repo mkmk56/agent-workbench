@@ -3,7 +3,9 @@ import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { estimateTokens, truncateSummary } from './text.js';
 import { buildChatContext, userRequestFromContext } from './context.js';
-import { resolveSender } from './auth.js';
+import {
+  authKindFor, canDispatch, principalIdFor, resolveSender
+} from './auth.js';
 
 export { estimateTokens, truncateSummary };
 
@@ -248,6 +250,9 @@ export class MessageService {
       epoch: Number(row.epoch ?? 0),
       client_msg_id: row.client_msg_id ?? null,
       context_version: Number(row.context_version ?? 0),
+      auth_kind: row.auth_kind ?? null,
+      principal_id: row.principal_id ?? null,
+      request_id: row.request_id ?? null,
       question: row.question,
       summary_tokens: row.summary_tokens,
       summary_truncated: Boolean(row.summary_truncated),
@@ -268,7 +273,8 @@ export class MessageService {
         task_id: delivery.task_id ?? null,
         epoch: Number(delivery.epoch ?? 0),
         error: delivery.error ?? null,
-        updated_at: delivery.updated_at
+        updated_at: delivery.updated_at,
+        ...this.store.deliveryAttemptSummary(row.id, delivery.agent)
       }));
     }
     return described;
@@ -284,6 +290,9 @@ export class MessageService {
     const taskId = typeof input.task_id === 'string' && input.task_id ? input.task_id : null;
     const task = taskId ? this.store.getTask(taskId) : null;
     if (taskId && !task) throw new Error(`task not found: ${taskId}`);
+    const requestedClientMsgId = input.client_msg_id
+      ? String(input.client_msg_id).slice(0, 200)
+      : null;
 
     // P0: an executor may only speak through a task it owns. The old loophole
     // (omit task_id, send with chat_id, claim any from) is closed here, not in
@@ -316,6 +325,30 @@ export class MessageService {
     }
     if (chatId && auth?.role === 'agent' && !this.store.isChatParticipant(chatId, from)) {
       throw new Error(`agent '${from}' is not a participant of chat ${chatId}`);
+    }
+
+    // A per-task token is pinned to its task/chat. A stolen token cannot be
+    // replayed against another task or another chat.
+    if (auth?.token_kind === 'agent-task') {
+      if (taskId && auth.task_id !== taskId) {
+        throw new Error(`this token is bound to task ${auth.task_id}, not ${taskId}`);
+      }
+      if (auth.chat_id && chatId && auth.chat_id !== chatId) {
+        throw new Error(`this token is bound to chat ${auth.chat_id}, not ${chatId}`);
+      }
+    }
+
+    // Muse is an external principal: every write needs an idempotency key and
+    // a fresh heartbeat lease. Polling list_chats/chat_status (or calling
+    // muse_heartbeat) refreshes the lease.
+    if (auth?.token_kind === 'muse') {
+      if (!requestedClientMsgId) {
+        throw new Error('muse messages require client_msg_id');
+      }
+      if (this.config.museRequireHeartbeat !== false
+        && !this.store.museLeaseFresh?.(this.config.museLeaseTtlMs)) {
+        throw new Error('muse heartbeat lease expired; call muse_heartbeat before sending');
+      }
     }
 
     const threadId = task ? this.store.getThreadId(taskId) : chatThreadId(chatId);
@@ -399,15 +432,16 @@ export class MessageService {
     if (actRecipients === null) {
       actRecipients = (chatId && AGENTS.has(to) && from === 'muse') ? [to] : [];
     }
-    if (auth?.role === 'agent' && actRecipients.length > 0) {
-      throw new Error('an executor may not dispatch sub-tasks; only the master token can set act_recipients');
+    // Only the Muse principal may fan a message out into sub-tasks. The legacy
+    // master, the human token and executors can never dispatch, even when the
+    // request body carries act_recipients.
+    if (actRecipients.length > 0 && !canDispatch(auth)) {
+      throw new Error('dispatching sub-tasks requires an orchestrator (Muse) token');
     }
 
     // Idempotency is resolved before the epoch bump: retrying the same
     // client_msg_id must return the original row without advancing the epoch.
-    const clientMsgId = chatId && input.client_msg_id
-      ? String(input.client_msg_id).slice(0, 200)
-      : null;
+    const clientMsgId = requestedClientMsgId;
     if (clientMsgId) {
       const existing = this.store.getMessageByClientId(chatId, clientMsgId);
       if (existing) {
@@ -512,7 +546,11 @@ export class MessageService {
         depth,
         epoch,
         client_msg_id: clientMsgId,
-        context_version: contextVersion
+        context_version: contextVersion,
+        auth_kind: authKindFor(auth, from),
+        principal_id: principalIdFor(auth, from),
+        request_id: input.request_id || auth?.request_id
+          || (taskId ? `task:${taskId}` : null)
       }, { deliveries, fileIds, bumpEpoch });
     } catch (error) {
       if (clientMsgId && /UNIQUE constraint failed/i.test(error.message)) {
@@ -539,6 +577,8 @@ export class MessageService {
     this._log(row, 'system',
       `message ${id} ${from}->${to} thread=${threadId} chat=${chatId ?? 'none'} seq=${row.seq ?? 'none'}`
       + ` epoch=${epoch} reply_to=${reply?.id ?? 'none'} tokens=${summary.tokens}`
+      + ` auth_kind=${row.auth_kind ?? 'unknown'} principal=${row.principal_id ?? 'unknown'}`
+      + ` request_id=${row.request_id ?? 'none'}`
       + `${summary.truncated ? ' truncated' : ''}${atLimit ? ' held=limit' : ''}`
     );
 
@@ -653,7 +693,7 @@ export class MessageService {
       const created = this.scheduler.createTask({
         agent: message.to_agent,
         prompt: buildMessagePrompt(message),
-        cwd: sourceTask?.cwd || this.config.root,
+        cwd: sourceTask?.cwd || this.config.executorWorkspace || this.config.root,
         sessionId: session?.session_id || undefined,
         threadId: message.thread_id,
         originMessageId: messageId
@@ -739,7 +779,7 @@ export class MessageService {
       const created = this.scheduler.createTask({
         agent,
         prompt: buildChatTaskPrompt(message, chat, context),
-        cwd: this.config.root,
+        cwd: this.config.executorWorkspace || this.config.root,
         chatId: chat.chat_id,
         originMessageId: message.id
       });
@@ -849,6 +889,20 @@ export class MessageService {
       : [];
     try {
       const reply = this.send({
+        // Internal auto-reply: no bearer token is involved, but provenance is
+        // still recorded as the owning agent rather than an anonymous write.
+        auth: {
+          role: 'agent',
+          master: false,
+          participant: task.agent,
+          principal_id: task.agent,
+          token_kind: 'internal',
+          can_post_as: [task.agent],
+          can_dispatch: false,
+          can_operate: false,
+          request_id: `auto-reply:${taskId}`
+        },
+        request_id: `auto-reply:${taskId}`,
         from: task.agent,
         to: origin.from_agent,
         task_id: taskId,

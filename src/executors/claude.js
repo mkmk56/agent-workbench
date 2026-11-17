@@ -1,5 +1,5 @@
 import { describeResolution, resolveClaudeCommand } from '../config.js';
-import { ensureAgentMcpConfig } from '../mcp-config.js';
+import { writeTaskMcpConfig } from '../mcp-config.js';
 import { spawnProcess, killTree } from './process.js';
 
 function buildArgs(task, config) {
@@ -12,8 +12,15 @@ function buildArgs(task, config) {
   if (task.model) args.push('--model', task.model);
   if (task.resume) args.push('--resume', task.session_id);
   else args.push('--session-id', task.session_id);
-  // Claude gets its own scoped token, never the master token.
-  args.push('--mcp-config', ensureAgentMcpConfig(config, 'claude'));
+  // A short-lived token bound to this task, written outside the repository and
+  // deleted when the task ends. The master token is never used here.
+  const mcpConfig = writeTaskMcpConfig(config, {
+    agent: 'claude',
+    taskId: task.id,
+    token: task.auth_token,
+    chatId: task.chat_id || null
+  });
+  args.push('--mcp-config', mcpConfig);
   return args;
 }
 
