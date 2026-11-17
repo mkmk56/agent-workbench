@@ -12,7 +12,6 @@ import type { AppTheme } from '../lib/theme';
 import type { AppInfo, EngineStatus, Route } from '../types';
 import { AppIconButton } from '../ui/astryx';
 import { AgentHud } from './AgentHud';
-import { NavAgentStatus } from './NavAgentStatus';
 
 type NavEntry = {
   key: string;
@@ -64,8 +63,11 @@ const ENTRIES: NavEntry[] = [
 /**
  * Global nav rail (Muse, group-chat upgrade). Fixed left, icons only, names
  * on hover. Top: product mark + the four sections. Middle: live Agent HUD
- * slots (real-time status + paper planes, unchanged behaviour). Bottom:
- * engine status, theme toggle, settings, help.
+ * slots (real-time status + paper planes, unchanged behaviour) — the rail's
+ * only avatar row: the duplicate copy that sat under the capsule (the old
+ * `.nav-rail__agents` block) is gone, so the rail no longer lists each agent
+ * twice. The HUD capsule itself is untouched. Bottom: engine status, theme
+ * toggle, settings, help.
  */
 export function GlobalNav({
   route,
@@ -118,12 +120,6 @@ export function GlobalNav({
       <div className="nav-rail__hud">
         <AgentHud engine={engine} />
       </div>
-
-      {/*
-        Agent avatars with hover/focus status cards (task §1). Kept outside
-        .nav-rail__hud so the HUD — its capsule, ring and portal — is untouched.
-      */}
-      <NavAgentStatus chatId={route.name === 'chat' ? route.id : null} />
 
       <div className="nav-rail__spacer" />
 
