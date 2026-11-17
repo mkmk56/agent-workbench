@@ -199,7 +199,15 @@ export class Scheduler {
       });
     } catch (error) {
       // Rollback path from REFACTOR_PLAN §5.2: fall back to the static scoped
-      // token and warn. The static token is still scoped to this agent.
+      // token and warn. Static tokens are rejected unless the installation
+      // explicitly opted into the compatibility mode, so do not hand one to
+      // the executor when it would only fail authentication later.
+      if (!this.config.legacyAgentTokensEnabled) {
+        const failure = new Error(`per-task token issue failed: ${error.message}`);
+        this.store.appendLog(task.id, 'system', `failed to issue credential: ${failure.message}`);
+        this.finish(entry, { code: null, signal: null, error: failure });
+        return;
+      }
       authToken = this.config.agentTokens?.[task.agent];
       tokenKind = 'agent-legacy';
       this.store.appendLog(task.id, 'system',

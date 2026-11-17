@@ -10,11 +10,21 @@ export function stripAnsi(text) {
 // Executors only receive what they need to run. The engine environment holds
 // the master/human/Muse tokens, database paths and credential locations; none
 // of it may leak into an agent process.
+//
+// The user-profile variables are deliberately absent: with APPDATA /
+// LOCALAPPDATA / USERPROFILE / HOMEDRIVE / HOMEPATH / USERNAME inherited, an
+// executor can deterministically rebuild
+// %APPDATA%\agent-workbench\credentials\engine.env and read the master token.
+// APPDATA and LOCALAPPDATA are actually removed. USERPROFILE/HOMEDRIVE/
+// HOMEPATH/USERNAME are re-synthesized by Node for its own child processes
+// even when omitted (verified on Windows), so this is defence in depth, not a
+// hard boundary. The primary control is that human/Muse are independent
+// secrets, so a leaked master no longer yields the Muse dispatch capability.
 const BASE_ENV_KEYS_WIN = [
   'SystemRoot', 'windir', 'SystemDrive', 'ComSpec', 'PATHEXT', 'PATH',
-  'TEMP', 'TMP', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA',
+  'TEMP', 'TMP',
   'PROGRAMDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'COMMONPROGRAMFILES',
-  'USERNAME', 'USERDOMAIN', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE',
+  'USERDOMAIN', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE',
   'OS', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TERM', 'TZ', 'CLAUDE_CONFIG_DIR'
 ];
 const BASE_ENV_KEYS_POSIX = [
@@ -30,10 +40,23 @@ const BLOCKED_ENV_KEYS = new Set([
   'WORKBENCH_ENV_FILE', 'WORKBENCH_CLAUDE_ENV_JSON'
 ]);
 
+// Set by the engine to a workspace directory. Inherited TEMP/TMP normally
+// point inside %LOCALAPPDATA%\Temp, which reveals the profile path even when
+// LOCALAPPDATA itself is removed from the allow-list.
+let executorTempDir = null;
+
+export function setExecutorTempDir(dir) {
+  executorTempDir = dir ? String(dir) : null;
+}
+
 export function buildExecutorEnv(extra = {}) {
   const keys = process.platform === 'win32' ? BASE_ENV_KEYS_WIN : BASE_ENV_KEYS_POSIX;
   const env = {};
   for (const key of keys) {
+    if (process.platform === 'win32' && executorTempDir && (key === 'TEMP' || key === 'TMP')) {
+      env[key] = executorTempDir;
+      continue;
+    }
     if (process.env[key] !== undefined) env[key] = process.env[key];
   }
   for (const [key, value] of Object.entries(extra || {})) {

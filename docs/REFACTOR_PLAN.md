@@ -51,13 +51,15 @@
 - `src/executors/process.js`：`spawnProcess` 显式构造 env 白名单，只传执行器必需的变量；删除 `MCP_BEARER_TOKEN`、`MCP_DATA_DIR`、`MCP_DB_PATH` 等引擎侧 secrets。
 - `workbench.env` 移出仓库根（执行器 `cwd` 即仓库根可直接读到），改由 OS 凭据存储或引擎启动时从受限路径读取；同时把 `workbench.env` 与 `data/chat-files` 的 ACL 收紧到与 `data/claude-mcp.json` 同等（`icacls /inheritance:r`，仅 SYSTEM/Administrators/当前用户）。
 - 执行器 `cwd` 改到不含 secrets 的 workspace 目录。
-- 验收：新增端到端安全测试——执行器进程内 `process.env.MCP_BEARER_TOKEN` 为空；用 master token 文件路径读取失败；以 user/muse 发消息被拒；读另一 agent 的 `*-mcp.json` 被拒。
+- 验收：新增端到端安全测试——执行器进程内 `process.env.MCP_BEARER_TOKEN` 为空；`APPDATA`/`LOCALAPPDATA` 不再进入执行器，无法用 `%APPDATA%\agent-workbench\credentials\engine.env` 推导真实 master 路径；以 user/muse 发消息被拒；读另一 agent 的 `*-mcp.json` 被拒（真实 `data/` 路径）；知道 master 也不能用 HMAC 派生 human/muse。
+  - 限制：同一 Windows 用户下 ACL 无法阻止显式绝对路径读取；且 Node 会把 `USERPROFILE`/`HOMEDRIVE`/`HOMEPATH`/`USERNAME` 重新合成到子进程（实测），`os.homedir()` 仍可得到用户目录。因此不声称“物理上读不到”。真正的权限边界是 human/muse 改为独立随机 token，读到 master 也不能派生 muse/human 或获得派发权。
 
 #### P0-2 拆分 principal（后端审计 P0-1/P0-3）
 
-- `human` token：只能 `from=user`，默认不能设 `act_recipients`、不能调用 `task_start`/`respond_approval`。
-- `muse` token：只能 `from=muse`，可派发；强制 `client_msg_id`（无则拒绝，见 P1-4）；要求心跳/lease（见 P0-4）。
-- agent token：绑定 task/agent/exp/scope，按任务短期签发，通过私有通道注入（不落盘到共享可读目录）；不能派发、不能审批；过期即失效。
+- `human` token：独立的随机 secret（`MCP_HUMAN_TOKEN`，生成后存入 engine.env），只能 `from=user`，默认不能设 `act_recipients`、不能调用 `task_start`/`respond_approval`。
+- `muse` token：独立的随机 secret（`MCP_MUSE_TOKEN`，生成后存入 engine.env），只能 `from=muse`，可派发；强制 `client_msg_id`（无则拒绝，见 P1-4）；要求心跳/lease（见 P0-4）。
+- 两者都**不再默认由 master 派生**；`WORKBENCH_DERIVE_PRINCIPAL_TOKENS=1` 仅作为显式回滚开关（会重新打开 master → muse 派发链）。
+- agent token：绑定 task/agent/exp/scope，按任务短期签发，通过私有通道注入（不落盘到共享可读目录）；不能派发、不能审批；过期即失效。旧静态 agent token 默认拒绝（`WORKBENCH_LEGACY_AGENT_TOKENS=1` 仅为显式回滚）。
 - 过渡期：旧 master token 保留一个版本兼容期，仅接受 `from=user` 的 GUI 直连调用，引擎日志记 `deprecated-master-token` 告警；过渡期结束即吊销。回滚见 §5.2。
 
 #### P0-3 记录来源（后端审计 P0-1/P0-3）
@@ -197,7 +199,7 @@
 ### 5.2 Token 拆分（breaking）
 
 - 拆分 `human`/`muse` token 与 per-task agent token 是 breaking change：旧 master token 在过渡期（一个版本）内仍接受 GUI 直连的 `from=user` 调用并记告警；过渡期后吊销。
-- 回滚：恢复 master token 接受 `user|muse`（一行配置开关 + `auth.js` 分支保留）；per-task token 签发失败时回退到静态 scoped token（日志告警）。
+- 回滚：恢复 master token 接受 `user|muse`（`WORKBENCH_LEGACY_MASTER_ALLOW_MUSE=1`）；恢复 human/muse 派生（`WORKBENCH_DERIVE_PRINCIPAL_TOKENS=1`）；恢复静态 agent token（`WORKBENCH_LEGACY_AGENT_TOKENS=1`，仅在开启时 per-task 签发失败才回退到静态 scoped token 并写日志告警）。
 - 部署顺序：后端先行（新 token 体系 + 兼容旧 master）→ 前端随后（新 token 接入 + 未读/附件契约）→ 过渡期结束再收紧。引擎重启前确认无进行中任务（重启会把未完成任务标 FAILED，是已知行为）。
 
 ### 5.3 附件契约（breaking）
@@ -232,7 +234,8 @@
 
 ### 6.2 安全验收（P0 新增）
 
-- 执行器进程内读不到 master token；不能以 user/muse 发消息；不能读另一 agent 的 token 配置；`respond_approval` 不能自批。
+- 执行器进程内没有 master/human/muse token；`APPDATA`/`LOCALAPPDATA` 不再泄漏；不能以 user/muse 发消息；不能读另一 agent 的 token 配置；知道 master 也不能派生 human/muse 或获得 Muse 派发权；`respond_approval` 不能自批（执行器 token 被拒）。
+  - 不在本批声称：同一 Windows 用户下用绝对路径物理读取 `engine.env` 仍可能成功（ACL 对同用户无效，`USERPROFILE`/`os.homedir()` 不受 env 白名单影响，Node 会重新合成）；需 OS 级隔离才能消除。
 - `user`/`muse` 身份在 DB 里可归因（`auth_kind`/`principal_id`/`request_id` 有值）；Muse 消息有 `client_msg_id`；心跳超时后 `chat_status` 显示 Muse 离线。
 
 ### 6.3 性能验收（对照 §4 基线）

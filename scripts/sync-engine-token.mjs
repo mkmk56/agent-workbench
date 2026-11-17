@@ -13,7 +13,8 @@
  * The token itself is never printed, logged, or written inside the repository.
  * The GUI keeps using the legacy master token for one compatibility version
  * so task_start/respond_approval keep working; new clients should use the
- * human token (MCP_HUMAN_TOKEN / deriveHumanToken) instead.
+ * stored MCP_HUMAN_TOKEN (independent random value, never derived from the
+ * master) instead.
  */
 import fs from 'node:fs';
 import os from 'node:os';

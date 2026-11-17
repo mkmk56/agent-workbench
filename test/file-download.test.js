@@ -5,7 +5,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
-import { deriveAgentToken } from '../src/auth.js';
+import { issueAgentToken } from '../src/auth.js';
 import { tempDir } from './helpers.js';
 
 // The route lives in src/server.js, so this test boots the real engine on a
@@ -204,9 +204,12 @@ test('download without a token returns 401', async () => {
 });
 
 test('a valid agent token is not the master token and returns 403', async () => {
-  const res = await request(`/chats/${CHAT_A}/files/${FILE_A}`, {
-    token: deriveAgentToken(TOKEN, 'claude')
+  // Static agent tokens are disabled; a real per-task token authenticates as
+  // an agent principal but still may not use the human download route.
+  const agentToken = issueAgentToken(TOKEN, {
+    agent: 'claude', taskId: 'download-test-task', ttlMs: 60_000
   });
+  const res = await request(`/chats/${CHAT_A}/files/${FILE_A}`, { token: agentToken });
   assert.equal(res.status, 403);
   assert.deepEqual(await res.json(), { error: 'forbidden' });
 });

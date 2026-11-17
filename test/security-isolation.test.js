@@ -1,4 +1,4 @@
-import { after, before, test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -10,7 +10,9 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { deriveHumanToken, deriveMuseToken, issueAgentToken } from '../src/auth.js';
+import {
+  deriveAgentToken, deriveHumanToken, deriveMuseToken, identifyToken, issueAgentToken
+} from '../src/auth.js';
 import { buildExecutorEnv } from '../src/executors/process.js';
 import { seedChat, seedTask } from './helpers.js';
 
@@ -29,8 +31,10 @@ const execFileAsync = promisify(execFile);
 const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const dir = mkdtempSync(join(tmpdir(), 'agent-workbench-p0-'));
 const TOKEN = randomBytes(24).toString('hex');
-const HUMAN_TOKEN = deriveHumanToken(TOKEN);
-const MUSE_TOKEN = deriveMuseToken(TOKEN);
+// Human and Muse are independent random secrets. The old derived values are
+// kept only to prove that a leaked master cannot reproduce them.
+const HUMAN_TOKEN = randomBytes(24).toString('hex');
+const MUSE_TOKEN = randomBytes(24).toString('hex');
 const MUSE_TTL_MS = 1500;
 
 let engine = null;
@@ -100,7 +104,10 @@ async function callError(client, name, args = {}) {
   return raw?.isError ? textOf(raw) : null;
 }
 
-before(async () => {
+// Boot the engine at module load instead of in a before() hook. Bun's default
+// 5s hook timeout is too tight when it runs all test files in one process;
+// module evaluation is not subject to that hook timer.
+async function setup() {
   port = await freePort();
   Object.assign(process.env, {
     MCP_PORT: String(port),
@@ -109,6 +116,9 @@ before(async () => {
     MCP_DB_PATH: join(dir, 'workbench.db'),
     MCP_LOG_DIR: join(dir, 'logs'),
     MCP_BEARER_TOKEN: TOKEN,
+    MCP_HUMAN_TOKEN: HUMAN_TOKEN,
+    MCP_MUSE_TOKEN: MUSE_TOKEN,
+    WORKBENCH_LEGACY_AGENT_TOKENS: '0',
     AGENT_AUTO_DELIVER: '0',
     AGENT_APPROVAL_GATE: '0',
     MUSE_REQUIRE_HEARTBEAT: '1',
@@ -120,7 +130,10 @@ before(async () => {
     WORKBENCH_DSH_ENTRY: join(dir, '__no_dsh_binary__')
   });
   // Force the credential loader to use the temporary environment only.
-  writeFileSync(join(dir, 'engine.env'), `MCP_BEARER_TOKEN=${TOKEN}\n`);
+  writeFileSync(
+    join(dir, 'engine.env'),
+    `MCP_BEARER_TOKEN=${TOKEN}\nMCP_HUMAN_TOKEN=${HUMAN_TOKEN}\nMCP_MUSE_TOKEN=${MUSE_TOKEN}\n`
+  );
 
   engine = await import('../src/server.js');
   await waitForHealth();
@@ -136,26 +149,32 @@ before(async () => {
   clients.agent = await connect(issueAgentToken(TOKEN, {
     agent: 'claude', taskId: claudeTaskId, chatId, scope: `chat:${chatId}`, ttlMs: 60_000
   }), REQUEST_IDS.agent);
-});
+}
+
+await setup();
 
 after(async () => {
-  for (const client of Object.values(clients)) {
-    try { await client.close(); } catch { /* ignore */ }
-  }
+  // Keep cleanup bounded: some MCP transports keep a stream open, and a test
+  // runner with a short hook timeout (Bun uses 5s) would otherwise report a
+  // false failure after every assertion already passed.
+  const settle = (promise, ms = 750) => Promise.race([
+    Promise.resolve(promise).catch(() => {}),
+    new Promise((resolveDone) => setTimeout(resolveDone, ms))
+  ]);
+  await settle(Promise.all(Object.values(clients).map((client) => client.close())));
   if (engine) {
-    await new Promise((resolveClose) => {
-      engine.server.close(resolveClose);
-      engine.server.closeAllConnections?.();
-    });
+    engine.server.closeAllConnections?.();
+    await settle(new Promise((resolveClose) => engine.server.close(resolveClose)));
     engine.scheduler.shutdown();
-    engine.store.close();
+    try { engine.store.close(); } catch { /* ignore */ }
   }
   rmSync(dir, { recursive: true, force: true });
-});
+}, { timeout: 60_000 });
 
 test('P0-1 executor processes receive no engine secrets and no repository credential path', async () => {
   const script = `
     const fs = require('fs');
+    const path = require('path');
     const out = {
       token: process.env.MCP_BEARER_TOKEN || null,
       human: process.env.MCP_HUMAN_TOKEN || null,
@@ -163,8 +182,33 @@ test('P0-1 executor processes receive no engine secrets and no repository creden
       dataDir: process.env.MCP_DATA_DIR || null,
       dbPath: process.env.MCP_DB_PATH || null,
       cwd: process.cwd(),
+      env: {
+        appData: process.env.APPDATA || null,
+        localAppData: process.env.LOCALAPPDATA || null,
+        userProfile: process.env.USERPROFILE || null,
+        homeDrive: process.env.HOMEDRIVE || null,
+        homePath: process.env.HOMEPATH || null,
+        userName: process.env.USERNAME || null,
+        temp: process.env.TEMP || null,
+        tmp: process.env.TMP || null
+      },
       paths: {}
     };
+    // Probe the real master credential location exactly the way an executor
+    // would: derive %APPDATA%\\agent-workbench\\credentials\\engine.env from the
+    // inherited environment. With the profile variables removed this must be
+    // null even though the file exists on the operator's PC.
+    out.realMasterViaAppData = out.env.appData
+      ? path.join(out.env.appData, 'agent-workbench', 'credentials', 'engine.env')
+      : null;
+    // Node re-synthesizes USERPROFILE/HOMEDRIVE/HOMEPATH/USERNAME for its own
+    // child processes even when they are absent from the env block. Record the
+    // residual path so the limitation is visible in the test output.
+    const os = require('os');
+    out.realMasterViaHome = (() => {
+      try { return path.join(os.homedir(), 'AppData', 'Roaming', 'agent-workbench', 'credentials', 'engine.env'); }
+      catch { return null; }
+    })();
     for (const spec of JSON.parse(process.argv[1])) {
       try { fs.readFileSync(spec.path); out.paths[spec.label] = 'readable'; }
       catch (error) { out.paths[spec.label] = error.code || 'error'; }
@@ -174,7 +218,11 @@ test('P0-1 executor processes receive no engine secrets and no repository creden
   const paths = [
     { label: 'repoEnv', path: join(repoRoot, 'workbench.env') },
     { label: 'claudeStaticConfig', path: join(dir, 'claude-mcp.json') },
-    { label: 'dshStaticConfig', path: join(dir, 'dsh-mcp.json') }
+    { label: 'dshStaticConfig', path: join(dir, 'dsh-mcp.json') },
+    // Use the real repository data paths, not the test's temporary data dir:
+    // the production leftovers are what the review found still on disk.
+    { label: 'repoDataClaudeConfig', path: join(repoRoot, 'data', 'claude-mcp.json') },
+    { label: 'repoDataDshConfig', path: join(repoRoot, 'data', 'dsh-mcp.json') }
   ];
   const { stdout } = await execFileAsync(process.execPath, ['-e', script, JSON.stringify(paths)], {
     cwd: engine.config.executorWorkspace,
@@ -190,11 +238,60 @@ test('P0-1 executor processes receive no engine secrets and no repository creden
   assert.equal(out.dataDir, null, 'MCP_DATA_DIR leaked into the executor');
   assert.equal(out.dbPath, null, 'MCP_DB_PATH leaked into the executor');
   assert.equal(resolve(out.cwd), resolve(engine.config.executorWorkspace), 'executor cwd is not the workspace');
+  if (process.platform === 'win32') {
+    assert.equal(out.env.appData, null, 'APPDATA leaked into the executor');
+    assert.equal(out.env.localAppData, null, 'LOCALAPPDATA leaked into the executor');
+    // USERPROFILE/HOMEDRIVE/HOMEPATH/USERNAME cannot be removed from a Node
+    // child: Node re-synthesizes them from the OS user token even when the
+    // env block omits them (verified on Windows). Do not assert they are null;
+    // realMasterViaHome in the output records the residual OS limitation.
+    assert.equal(
+      out.realMasterViaAppData, null,
+      'the executor can derive the real master credential path from APPDATA'
+    );
+    assert.equal(
+      out.paths.repoDataClaudeConfig, 'ENOENT',
+      'the real data/claude-mcp.json static config still exists'
+    );
+    assert.equal(
+      out.paths.repoDataDshConfig, 'ENOENT',
+      'the real data/dsh-mcp.json static config still exists'
+    );
+    // TEMP/TMP must be redirected to the executor workspace, not inherited
+    // from the engine process (the inherited value points at %LOCALAPPDATA%).
+    assert.equal(resolve(out.env.temp), resolve(engine.config.executorTempDir));
+    assert.equal(resolve(out.env.tmp), resolve(engine.config.executorTempDir));
+    assert.notEqual(resolve(out.env.temp), resolve(process.env.TEMP));
+  }
   assert.equal(out.paths.repoEnv, 'ENOENT', 'the repository workbench.env is still readable');
   assert.equal(out.paths.claudeStaticConfig, 'ENOENT', 'a static agent MCP config still exists');
   assert.equal(out.paths.dshStaticConfig, 'ENOENT', 'a static agent MCP config still exists');
   assert.equal(existsSync(join(repoRoot, 'workbench.env')), false);
   assert.equal(readdirSync(engine.config.taskConfigDir).length, 0, 'no task config should exist without a task');
+});
+
+test('P0-1 a leaked master token cannot derive the human or Muse token', () => {
+  assert.equal(engine.config.allowDerivedPrincipalTokens, false);
+  assert.equal(engine.config.humanToken, HUMAN_TOKEN);
+  assert.equal(engine.config.museToken, MUSE_TOKEN);
+
+  // This is exactly the old attack: HMAC(master, "principal-token:muse")
+  // yielded a working Muse token with dispatch rights. It must now be
+  // rejected even though the attacker knows the master.
+  const derivedHuman = deriveHumanToken(TOKEN);
+  const derivedMuse = deriveMuseToken(TOKEN);
+  assert.notEqual(derivedMuse, MUSE_TOKEN);
+  assert.equal(identifyToken(derivedHuman, engine.config), null);
+  assert.equal(identifyToken(derivedMuse, engine.config), null);
+  assert.equal(identifyToken(HUMAN_TOKEN, engine.config).token_kind, 'human');
+  assert.equal(identifyToken(MUSE_TOKEN, engine.config).token_kind, 'muse');
+});
+
+test('P0-1 unexpiring static agent tokens are rejected', async () => {
+  assert.equal(engine.config.legacyAgentTokensEnabled, false);
+  const staticClaude = deriveAgentToken(TOKEN, 'claude');
+  assert.equal(identifyToken(staticClaude, engine.config), null);
+  await assert.rejects(() => connect(staticClaude), /401|unauthorized|Unauthorized/i);
 });
 
 test('P0-2 the legacy master token is a human principal only', async () => {
@@ -304,6 +401,38 @@ test('P0-2 per-task agent tokens are task/chat bound and expire', async () => {
   assert.equal(row.auth_kind, 'agent:claude');
   assert.equal(row.principal_id, 'claude');
   assert.equal(row.request_id, REQUEST_IDS.agent);
+
+  // A per-task token is pinned to the chat in its signed payload. Make the
+  // second chat one claude has joined, so participation alone would allow
+  // access; only the token's chat binding can reject it.
+  const otherChatId = seedChat(engine.store, { name: 'P0 other chat' });
+  engine.store.upsertChatParticipant({
+    chat_id: otherChatId, participant_id: 'claude', kind: 'agent', role: 'claude'
+  });
+  // A task that really belongs to the second chat: the token issued for
+  // claudeTaskId must still be rejected when it is used there.
+  const otherChatTaskId = seedTask(engine.store, {
+    agent: 'claude', chatId: otherChatId, cwd: dir
+  }).id;
+  assert.match(await callError(clients.agent, 'list_chat_messages', {
+    chat_id: otherChatId
+  }), /bound to chat/);
+  assert.match(await callError(clients.agent, 'send_chat_message', {
+    chat_id: otherChatId, from: 'claude', to: 'muse', task_id: claudeTaskId, body: 'cross-chat'
+  }), /bound to chat/);
+  assert.match(await callError(clients.agent, 'send_chat_message', {
+    chat_id: otherChatId, from: 'claude', to: 'muse', task_id: otherChatTaskId, body: 'other task'
+  }), /bound to task|bound to chat/);
+  // list_chats/listing must not expose the other chat either.
+  const listed = await call(clients.agent, 'list_chats', {});
+  assert.deepEqual(listed.chats.map((entry) => entry.chat_id), [chatId]);
+
+  // An executor token cannot self-approve. Combined with P0-1 (no master
+  // token in the executor environment), this is the "respond_approval 不能
+  // 自批" acceptance item.
+  assert.match(await callError(clients.agent, 'respond_approval', {
+    decision: 'once', approval_id: 'none'
+  }), /master token/);
 
   // An expired token is rejected during initialize (401), not by a tool.
   const expired = issueAgentToken(TOKEN, {

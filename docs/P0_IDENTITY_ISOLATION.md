@@ -17,27 +17,37 @@
 
 | token | 来源 | 可发送身份 | 可派发 | 可 `task_start`/`task_send` | 可 `respond_approval` | 备注 |
 |---|---|---|---|---|---|---|
-| `human` | `MCP_HUMAN_TOKEN`，未设置时由 master 派生 | 仅 `user` | 否 | 默认否（`WORKBENCH_HUMAN_OPERATE=1` 可开） | 否 | GUI/人类客户端的目标 token |
-| `muse` | `MCP_MUSE_TOKEN`，未设置时由 master 派生 | 仅 `muse` | 是 | 否 | 否 | 强制 `client_msg_id` + 心跳 lease |
+| `human` | `MCP_HUMAN_TOKEN`（独立随机值，存于 engine.env） | 仅 `user` | 否 | 默认否（`WORKBENCH_HUMAN_OPERATE=1` 可开） | 否 | GUI/人类客户端的目标 token |
+| `muse` | `MCP_MUSE_TOKEN`（独立随机值，存于 engine.env） | 仅 `muse` | 是 | 否 | 否 | 强制 `client_msg_id` + 心跳 lease |
 | `agent-task` | 引擎按任务签发，HMAC 签名 | 仅绑定 agent | 否 | 否 | 否 | 绑定 task/agent/chat/exp/scope；过期即失效 |
 | `master`（过渡） | `MCP_BEARER_TOKEN` | 仅 `user` | 否 | 是 | 是 | 兼容一个版本；每次使用记 `deprecated-master-token` |
 
-旧静态 agent token（`HMAC(master, "agent-token:<agent>")`）保留一个版本以兼容旧验证脚本，日志记 `deprecated-agent-token`；`WORKBENCH_LEGACY_AGENT_TOKENS=0` 可立即吊销。
+旧静态 agent token（`HMAC(master, "agent-token:<agent>")`）默认**拒绝**（`WORKBENCH_LEGACY_AGENT_TOKENS` 默认 `0`）；只有显式设为 `1` 才在过渡期启用，日志记 `deprecated-agent-token`。
 
-派生公式（未显式设置 token 时）：
+human/muse **不再默认从 master 派生**。`MCP_HUMAN_TOKEN` / `MCP_MUSE_TOKEN` 由 `scripts/install-credentials.mjs` 生成 64 位十六进制随机值并写入 engine.env；两者与 master 相互独立。派生逻辑只保留为显式回滚开关：
 
 ```
+WORKBENCH_DERIVE_PRINCIPAL_TOKENS=1   # 仅回滚用，正常安装不要开启
 human = HMAC-SHA256(MCP_BEARER_TOKEN, "principal-token:human")
 muse  = HMAC-SHA256(MCP_BEARER_TOKEN, "principal-token:muse")
 ```
 
-`node scripts/show-principal-token.mjs human|muse --yes` 可在本机终端显示对应 token（不写盘、不打日志）。
+原因：旧实现里只要读到 master（执行器通过 `%APPDATA%` 可确定性推导 engine.env 路径），就能算出 muse token 并派发子任务、算出 human token 冒充用户。独立随机值切断了这条链；即使 master 泄漏，也不能派发、不能冒充 human/muse。
+
+`node scripts/show-principal-token.mjs human|muse --yes` 从 engine.env/进程环境读取**存储值**并打印（不再派生；不写盘、不打日志；缺少时提示先运行 install-credentials）。
 
 ## 3. P0-1：切断 master token 可见性
 
 ### 3.1 执行器环境白名单
 
-`src/executors/process.js:buildExecutorEnv()` 只复制运行所需的系统变量（Windows：`PATH`、`SystemRoot`、`ComSpec`、`TEMP`、`USERPROFILE` 等；POSIX：`PATH`、`HOME`、`TMPDIR` 等），再加上调用方显式提供的执行器变量。`MCP_BEARER_TOKEN`、`MCP_HUMAN_TOKEN`、`MCP_MUSE_TOKEN`、`MCP_DATA_DIR`、`MCP_DB_PATH`、`MCP_LOG_DIR`、`WORKBENCH_ENV_FILE`、`WORKBENCH_CLAUDE_ENV_JSON` 即使被误传也会被删除。
+`src/executors/process.js:buildExecutorEnv()` 只复制运行所需的系统变量（Windows：`PATH`、`SystemRoot`、`ComSpec`、`TEMP`、`TMP` 等；POSIX：`PATH`、`HOME`、`TMPDIR` 等），再加上调用方显式提供的执行器变量。`MCP_BEARER_TOKEN`、`MCP_HUMAN_TOKEN`、`MCP_MUSE_TOKEN`、`MCP_DATA_DIR`、`MCP_DB_PATH`、`MCP_LOG_DIR`、`WORKBENCH_ENV_FILE`、`WORKBENCH_CLAUDE_ENV_JSON` 即使被误传也会被删除。
+
+Windows 白名单额外移除了 `APPDATA`、`LOCALAPPDATA`、`USERPROFILE`、`HOMEDRIVE`、`HOMEPATH`、`USERNAME`，并把 `TEMP`/`TMP` 重定向到 workspace 下的 `.tmp`（否则 `%TEMP%` 本身就会暴露 `%LOCALAPPDATA%`）。实测 claude 与 dsh 在移除这些变量后仍能完成真实任务。
+
+> 限制（诚实记录，实测结论）：
+> - `APPDATA` / `LOCALAPPDATA` 确实被移除；执行器不能再从这两个变量推导 `%APPDATA%\agent-workbench\credentials\engine.env`。
+> - `USERPROFILE` / `HOMEDRIVE` / `HOMEPATH` / `USERNAME` 即使从 env 白名单删除，Node 仍会在自己的子进程里重新合成（本机实测：`spawn(node, ..., { env: {} })` 后子进程 `USERPROFILE` 仍为 `C:\Users\<user>`；非 Node 子进程如 `cmd /c set` 不会）。因此 `os.homedir()` 仍可得到用户目录，执行器仍可显式拼出 engine.env 路径并读取。
+> - 结论：移除白名单变量只能减少“顺手可读”，**不能**声称“执行器物理上读不到 master 文件”。真正切断权限提升的是独立 human/muse token：master 泄漏不再等于 Muse 派发权，也不再能冒充 human/muse。要物理阻断同用户读取，需要独立 Windows 用户/容器/DPAPI + 启动期解密等 OS 级隔离（本批未做）。
 
 `spawnProcess()` 不再使用 `{ ...process.env }`。
 
@@ -45,8 +55,8 @@ muse  = HMAC-SHA256(MCP_BEARER_TOKEN, "principal-token:muse")
 
 - 新位置：`%APPDATA%\agent-workbench\credentials\engine.env`（POSIX：`~/.config/agent-workbench/credentials/engine.env`），可用 `WORKBENCH_ENV_FILE` / `WORKBENCH_CREDENTIAL_DIR` 覆盖。
 - `src/credentials.js` 在 `config.js` 读取环境变量之前加载该文件；不覆盖调用方已设置的变量。
-- 迁移脚本：`node scripts/install-credentials.mjs --remove-legacy`。它把仓库 `workbench.env` 合并写入新位置、收紧 ACL，并删除仓库副本。
-- 本次已执行迁移：仓库根 `workbench.env` 已不存在；生产引擎未重启，运行中的进程不受影响。
+- 迁移脚本：`node scripts/install-credentials.mjs --remove-legacy`。它把仓库 `workbench.env` 合并写入新位置、收紧 ACL，并删除仓库副本；缺少 `MCP_HUMAN_TOKEN` / `MCP_MUSE_TOKEN` 时生成独立随机值，缺少 `WORKBENCH_LEGACY_AGENT_TOKENS` 时写入 `0`。
+- 本次已执行迁移：仓库根 `workbench.env` 已不存在；`engine.env` 已补入独立 human/muse token 与 `WORKBENCH_LEGACY_AGENT_TOKENS=0`；生产引擎未重启，运行中的进程不受影响（重启后生效）。
 - `scripts/sync-engine-token.mjs` 改为优先读取新位置，GUI 的 `engine-token` 仍可用。
 
 ### 3.3 ACL
@@ -66,13 +76,15 @@ muse  = HMAC-SHA256(MCP_BEARER_TOKEN, "principal-token:muse")
 
 ### 3.5 每任务 MCP 配置
 
-`data/claude-mcp.json` / `data/dsh-mcp.json` 不再生成；新引擎启动时删除旧文件。`src/mcp-config.js:writeTaskMcpConfig()` 把配置写到 `%APPDATA%\agent-workbench\credentials\task-configs\<task_id>\<agent>.json`，文件 ACL 只保留当前用户/SYSTEM/Administrators；任务结束/取消/引擎关闭时删除。Claude 通过 `--mcp-config` 读取，dsh 通过 `WORKBENCH_MCP_CONFIG`/`WORKBENCH_MCP_TOKEN` 环境变量读取。token 不写入 task 行、prompt 或日志。
+`data/claude-mcp.json` / `data/dsh-mcp.json` 不再生成；新引擎启动时删除旧文件。本次已在无任务运行时手工删除生产盘上的这两个文件。`src/mcp-config.js:writeTaskMcpConfig()` 把配置写到 `%APPDATA%\agent-workbench\credentials\task-configs\<task_id>\<agent>.json`，文件 ACL 只保留当前用户/SYSTEM/Administrators；任务结束/取消/引擎关闭时删除。Claude 通过 `--mcp-config` 读取，dsh 通过 `WORKBENCH_MCP_CONFIG`/`WORKBENCH_MCP_TOKEN` 环境变量读取。token 不写入 task 行、prompt 或日志。
+
+旧静态 agent token 默认拒绝：`WORKBENCH_LEGACY_AGENT_TOKENS` 默认 `0`，`identifyToken` 不再接受 `HMAC(master, "agent-token:<agent>")`。旧验证脚本如需在本地调试，必须显式让引擎以 `WORKBENCH_LEGACY_AGENT_TOKENS=1` 启动，或改用 per-task token。
 
 ## 4. P0-2：principal 拆分规则
 
 - `human`：`resolveSender` 只允许 `from=user`；`act_recipients` 非空即拒绝；`task_start`/`task_send` 需 `requireOperator`（默认拒绝）；`respond_approval` 需 master（拒绝）。聊天 CRUD（创建/改名/归档）允许 human。
 - `muse`：只允许 `from=muse`；`act_recipients` 允许；每次写入必须有 `client_msg_id`，且心跳 lease 未过期；不能 `task_start`/审批。
-- `agent-task`：发送身份与 token 绑定的 agent 一致；`task_id` 必须等于 token 的 `tid`；`chat_id` 必须等于 token 的 `cid`；`assertTaskAccess` 只允许绑定任务；不能派发/审批。
+- `agent-task`：发送身份与 token 绑定的 agent 一致；`task_id` 必须等于 token 的 `tid`；`chat_id` 必须等于 token 的 `cid`；`assertChatAccess`/`accessibleChatIds` 也强制 chat 绑定（即使该 agent 是另一个 chat 的参与者，也不能读写）；`assertTaskAccess` 只允许绑定任务；不能派发/审批。
 - 过渡 master：只允许 `from=user`（`WORKBENCH_LEGACY_MASTER_ALLOW_MUSE=1` 是 §5.2 回滚开关）；每次使用输出 `deprecated-master-token` 告警；`WORKBENCH_LEGACY_MASTER=0` 吊销。
 
 ## 5. P0-3：来源记录
@@ -129,7 +141,7 @@ tool=<name> request_id=<id> auth=<token_kind>:<participant> duration_ms=<n> resu
 ### 迁移（本次已做）
 
 ```bash
-node scripts/install-credentials.mjs            # 写入新凭据位置并收紧 ACL
+node scripts/install-credentials.mjs            # 写入新凭据位置、生成独立 human/muse token、收紧 ACL、写入 LEGACY_AGENT_TOKENS=0
 node scripts/install-credentials.mjs --remove-legacy
 ```
 
@@ -138,28 +150,33 @@ node scripts/install-credentials.mjs --remove-legacy
 ### 回滚（REFACTOR_PLAN §5.2）
 
 1. **恢复 master 发 muse**：`WORKBENCH_LEGACY_MASTER=1` + `WORKBENCH_LEGACY_MASTER_ALLOW_MUSE=1`。
-2. **恢复静态 agent token**：`WORKBENCH_LEGACY_AGENT_TOKENS=1`（默认）。
+2. **恢复静态 agent token**：`WORKBENCH_LEGACY_AGENT_TOKENS=1`（默认已改为 `0`，必须显式开启）。
 3. **取消 Muse 心跳强制**：`MUSE_REQUIRE_HEARTBEAT=0`。
 4. **恢复仓库 env 文件**：把 `%APPDATA%\agent-workbench\credentials\engine.env` 复制回 `<repo>/workbench.env`（仅回滚用；会重新暴露给执行器）。
-5. **per-task token 签发失败**：`scheduler.launch` 自动回退到静态 scoped token 并写任务日志。
+5. **恢复派生 principal token**：`WORKBENCH_DERIVE_PRINCIPAL_TOKENS=1`（仅回滚；会重新打开 master → muse 派发链）。
+6. **per-task token 签发失败**：仅在 `WORKBENCH_LEGACY_AGENT_TOKENS=1` 时，`scheduler.launch` 才回退到静态 scoped token 并写任务日志；默认配置下直接失败。
 
 ### 部署顺序
 
 1. 后端（本批）→ staging 安全测试通过。
-2. 更新 Muse 客户端：改用 `MCP_MUSE_TOKEN`，每次写入带 `client_msg_id`，轮询 `list_chats`/`chat_status` 或调用 `muse_heartbeat`。
+2. 更新 Muse 客户端：用 `node scripts/show-principal-token.mjs muse --yes` 读取**存储的** `MCP_MUSE_TOKEN`，每次写入带 `client_msg_id`，轮询 `list_chats`/`chat_status` 或调用 `muse_heartbeat`。重启后旧的派生 muse token 不再有效。
 3. 更新 GUI：读取 human token（或暂时继续用 master）；若 GUI 需要 `task_start`，设置 `WORKBENCH_HUMAN_OPERATE=1` 或保留 master 到过渡期结束。
-4. 重启生产引擎（本次未做；见汇报）。重启会删除旧 `data/*-mcp.json`、收紧 ACL、启用新 token 体系。
-5. 过渡期结束：`WORKBENCH_LEGACY_MASTER=0`、`WORKBENCH_LEGACY_AGENT_TOKENS=0`。
+4. 重启生产引擎（本次未做；见汇报）。重启会加载新的独立 human/muse token、启用 `WORKBENCH_LEGACY_AGENT_TOKENS=0`、删除旧 `data/*-mcp.json`、收紧 ACL。
+5. 过渡期结束：`WORKBENCH_LEGACY_MASTER=0`。
 
 ## 9. 验收测试
 
 `test/security-isolation.test.js`（端到端，真实 HTTP MCP + 临时端口/数据目录）：
 
-1. 执行器子进程 `MCP_BEARER_TOKEN`/`MCP_HUMAN_TOKEN`/`MCP_MUSE_TOKEN`/`MCP_DATA_DIR`/`MCP_DB_PATH` 为空；cwd 为 workspace；仓库 `workbench.env`、`data/*-mcp.json` 读取返回 ENOENT。
-2. legacy master 只能 `from=user`；不能设置 `act_recipients`。
-3. human 只能 `from=user`；不能派发；`task_start`/`respond_approval` 被拒；写入行 `auth_kind=human`、`principal_id=user`、`request_id` 等于请求头。
-4. Muse 无心跳 → 写入被拒；无 `client_msg_id` → 被拒；心跳后可写；可派发；lease 过期后 `chat_status.agents.muse.status=offline`。
-5. per-task agent token：只能以绑定 agent 身份发送；跨 task 被拒；跨 chat 被拒；过期 token 在 initialize 阶段 401。
-6. 消息来源字段齐全；`delivery_attempts` 记录 `pending → skipped`。
+1. 执行器子进程 `MCP_BEARER_TOKEN`/`MCP_HUMAN_TOKEN`/`MCP_MUSE_TOKEN`/`MCP_DATA_DIR`/`MCP_DB_PATH` 为空；cwd 为 workspace；仓库 `workbench.env`、仓库真实 `data/claude-mcp.json`/`data/dsh-mcp.json` 读取返回 ENOENT；Windows 上 `APPDATA`/`LOCALAPPDATA` 为空，执行器无法用 `%APPDATA%\agent-workbench\credentials\engine.env` 推导真实 master 路径；`TEMP`/`TMP` 被重定向到 executor workspace（不再是继承的 `%LOCALAPPDATA%\Temp`）。`USERPROFILE` 等由 Node 重新合成，测试只记录 `realMasterViaHome`，不声称其为空（见 §3.1 限制）。
+2. 知道 master 也不能用 `HMAC(master, "principal-token:human|muse")` 登录；默认不派生，只有 `WORKBENCH_DERIVE_PRINCIPAL_TOKENS=1` 才启用。
+3. 静态 agent token（`HMAC(master, "agent-token:<agent>")`）默认被拒绝（401）。
+4. legacy master 只能 `from=user`；不能设置 `act_recipients`。
+5. human 只能 `from=user`；不能派发；`task_start`/`respond_approval` 被拒；写入行 `auth_kind=human`、`principal_id=user`、`request_id` 等于请求头。
+6. Muse 无心跳 → 写入被拒；无 `client_msg_id` → 被拒；心跳后可写；可派发；lease 过期后 `chat_status.agents.muse.status=offline`。
+7. per-task agent token：只能以绑定 agent 身份发送；跨 task 被拒；**即使 agent 已是第二个 chat 的参与者，跨 chat 的读/写仍被 token 的 `cid` 绑定拒绝，`list_chats` 也不返回第二个 chat**；`respond_approval` 被拒；过期 token 在 initialize 阶段 401。
+8. 消息来源字段齐全；`delivery_attempts` 记录 `pending → skipped`。
 
-`npm test`：57 项全部通过（2026-11-17）。
+**未覆盖/不能声称的项：** 同一 Windows 用户下，执行器仍可通过 `os.homedir()` 或 Windows Known Folder API 得到用户目录并显式读取 `engine.env`（ACL 对同用户无效）。因此本批**不声称**“执行器物理上读不到 master 文件”；只声称“即使读到 master，也不能冒充 human/muse 或获得 Muse 派发权”，以及“执行器 token 无法调用 `respond_approval`”。要消除前者需要 OS 级隔离（独立用户/容器/DPAPI + 启动期解密）。
+
+`npm test` 结果见本次提交的汇报（2026-11-17）。

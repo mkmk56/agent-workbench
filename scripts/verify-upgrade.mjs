@@ -47,6 +47,9 @@ process.env.MCP_DATA_DIR = runDir;
 process.env.MCP_DB_PATH = dbPath;
 process.env.MCP_LOG_DIR = join(runDir, 'logs');
 process.env.MCP_BEARER_TOKEN = token;
+// This legacy harness authenticates as executor agents with static scoped
+// tokens. Production rejects them by default, so opt in explicitly here.
+process.env.WORKBENCH_LEGACY_AGENT_TOKENS = '1';
 process.env.WORKBENCH_LEGACY_MASTER_ALLOW_MUSE = '1';
 process.env.WORKBENCH_CREDENTIAL_DIR = join(runDir, 'credentials');
 process.env.WORKBENCH_WORKSPACE_DIR = join(runDir, 'workspace');

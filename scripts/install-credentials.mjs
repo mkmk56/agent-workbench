@@ -12,10 +12,13 @@
  *   node scripts/install-credentials.mjs --if-missing    # only when engine.env is absent
  *   node scripts/install-credentials.mjs --remove-legacy # also delete <repo>/workbench.env
  *
- * Token values are never printed.
+ * Human and Muse tokens are generated as independent random secrets (never
+ * derived from the master) and stored in the same restricted file. Token
+ * values are never printed.
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { credentialDir, engineEnvPath, parseEnvText } from '../src/credentials.js';
 import { hardenPath } from '../src/security.js';
@@ -72,11 +75,32 @@ if (!merged.MCP_BEARER_TOKEN) {
   process.exit(1);
 }
 
+// Human and Muse are independent secrets. They must not be derived from the
+// master token, otherwise reading the master also yields Muse dispatch and
+// human impersonation. Preserve existing values and generate only what is
+// missing; values are never printed.
+const generated = [];
+for (const key of ['MCP_HUMAN_TOKEN', 'MCP_MUSE_TOKEN']) {
+  const value = typeof merged[key] === 'string' ? merged[key].trim() : '';
+  if (value.length < 32) {
+    merged[key] = randomBytes(32).toString('hex');
+    generated.push(key);
+  }
+}
+// Static per-agent tokens are unexpiring and derivable from the master. New
+// installations reject them unless the operator explicitly opts back in.
+if (merged.WORKBENCH_LEGACY_AGENT_TOKENS === undefined) {
+  merged.WORKBENCH_LEGACY_AGENT_TOKENS = '0';
+}
+
 const lines = Object.entries(merged)
   .filter(([, value]) => value !== undefined && value !== null && String(value) !== '')
   .map(([key, value]) => `${key}=${value}`);
 writeRestricted(targetPath, `${lines.join('\n')}\n`);
 console.log(`[credentials] wrote ${targetPath} (keys=${Object.keys(merged).length})`);
+if (generated.length > 0) {
+  console.log(`[credentials] generated independent principal tokens: ${generated.join(', ')}`);
+}
 
 if (removeLegacy && fs.existsSync(legacyPath)) {
   fs.rmSync(legacyPath, { force: true });

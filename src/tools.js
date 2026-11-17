@@ -1,7 +1,7 @@
 import * as z from 'zod/v4';
 import { buildChatContext } from './context.js';
 import {
-  agentScope, assertChatAccess, assertTaskAccess, isMaster, isReadAll,
+  accessibleChatIds, agentScope, assertChatAccess, assertTaskAccess, isMaster, isReadAll,
   requireMaster, requireOperator
 } from './auth.js';
 
@@ -278,7 +278,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
           }
         }
         if (!filters.chat_id && !filters.task_id && !filters.thread_id) {
-          filters = { ...filters, chat_ids: store.listParticipantChatIds(auth.participant) };
+          filters = { ...filters, chat_ids: accessibleChatIds(store, auth) };
         }
       }
       return asText(messages.list(filters));
@@ -319,7 +319,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   }, async ({ status, include_archived, limit }) => {
     try {
-      const chatIds = readAll ? null : store.listParticipantChatIds(auth.participant);
+      const chatIds = accessibleChatIds(store, auth);
       return asText(chats.list({ status, include_archived, limit, chat_ids: chatIds }));
     } catch (error) {
       return asError(error.message);

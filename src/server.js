@@ -13,6 +13,7 @@ import { ChatService } from './chats.js';
 import { ApprovalService } from './approvals.js';
 import { FileService } from './files.js';
 import { removeLegacyAgentMcpConfigs } from './mcp-config.js';
+import { setExecutorTempDir } from './executors/process.js';
 import { hardenPath } from './security.js';
 import { registerTools } from './tools.js';
 
@@ -42,6 +43,10 @@ const pidFile = join(config.logDir, 'server.pid');
 // so the env allow-list and cwd change are the primary controls.
 // ---------------------------------------------------------------------------
 mkdirSync(config.executorWorkspace, { recursive: true });
+// Executor TEMP/TMP is redirected here so the inherited temp path cannot
+// reveal %LOCALAPPDATA%. No secrets are written to this directory.
+mkdirSync(config.executorTempDir, { recursive: true });
+setExecutorTempDir(config.executorTempDir);
 mkdirSync(config.chatFilesDir, { recursive: true });
 mkdirSync(config.credentialDir, { recursive: true });
 mkdirSync(config.taskConfigDir, { recursive: true });
@@ -55,7 +60,7 @@ const removedLegacyConfigs = removeLegacyAgentMcpConfigs(config);
 if (removedLegacyConfigs.length > 0) {
   console.log(`removed legacy static MCP configs: ${removedLegacyConfigs.join(', ')}`);
 }
-if (config.envFileLegacy) {
+if (config.legacyEnvFile) {
   console.warn('deprecated-workbench-env: engine credentials are being read from the repository; '
     + 'run scripts/install-credentials.mjs and remove the repo-root workbench.env');
 }

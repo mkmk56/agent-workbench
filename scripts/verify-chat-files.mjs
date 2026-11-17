@@ -252,6 +252,8 @@ async function startEngine() {
       ...process.env,
       MCP_PORT: String(port),
       MCP_BEARER_TOKEN: token,
+      // Legacy harness: it uses static scoped agent tokens on purpose.
+      WORKBENCH_LEGACY_AGENT_TOKENS: '1',
       WORKBENCH_LEGACY_MASTER_ALLOW_MUSE: '1',
       WORKBENCH_CREDENTIAL_DIR: join(runDir, 'credentials'),
       WORKBENCH_WORKSPACE_DIR: join(runDir, 'workspace'),

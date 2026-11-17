@@ -88,6 +88,12 @@ function boolEnv(name, fallback = false) {
 
 const port = intEnv('MCP_PORT', 8080);
 const dataDir = resolve(root, process.env.MCP_DATA_DIR || 'data');
+const executorWorkspace = resolve(root, process.env.WORKBENCH_WORKSPACE_DIR || 'workspace');
+// Executors inherit TEMP/TMP but must not inherit a path that points into the
+// user profile (%LOCALAPPDATA%\Temp). Redirect them to a workspace directory.
+const executorTempDir = process.env.WORKBENCH_EXECUTOR_TMP_DIR
+  ? resolve(process.env.WORKBENCH_EXECUTOR_TMP_DIR)
+  : resolve(executorWorkspace, '.tmp');
 // Local default stays loopback-only. Containers set MCP_BIND=0.0.0.0 so the
 // platform's reverse proxy can reach the engine.
 const bind = process.env.MCP_BIND || '127.0.0.1';
@@ -100,13 +106,19 @@ export const config = {
   port,
   bind,
   token: process.env.MCP_BEARER_TOKEN || '',
-  // Token principals. The legacy master stays valid for one compatibility
-  // version; HUMAN and MUSE are derived from it unless explicitly provided.
+  // Token principals. Human and Muse are independent random secrets stored in
+  // engine.env. Deriving them from the master is a rollback-only mode that
+  // must be opted into explicitly; otherwise reading the master token would
+  // also yield the Muse dispatch capability.
   humanToken: process.env.MCP_HUMAN_TOKEN || '',
   museToken: process.env.MCP_MUSE_TOKEN || '',
+  allowDerivedPrincipalTokens: process.env.WORKBENCH_DERIVE_PRINCIPAL_TOKENS === '1',
   legacyMasterEnabled: process.env.WORKBENCH_LEGACY_MASTER !== '0',
   legacyMasterAllowMuse: process.env.WORKBENCH_LEGACY_MASTER_ALLOW_MUSE === '1',
-  legacyAgentTokensEnabled: process.env.WORKBENCH_LEGACY_AGENT_TOKENS !== '0',
+  // Static per-agent tokens are disabled by default. They are unexpiring and
+  // derivable from the master, so an installation must opt in explicitly
+  // (WORKBENCH_LEGACY_AGENT_TOKENS=1) for one compatibility version.
+  legacyAgentTokensEnabled: process.env.WORKBENCH_LEGACY_AGENT_TOKENS === '1',
   // The human token is read-only/collaboration by default: it may post as
   // user but cannot dispatch, start tasks or approve. Raise this to let the
   // GUI use the human token for task_start during the transition.
@@ -119,7 +131,8 @@ export const config = {
   agentTokenTtlMs: intEnv('AGENT_TOKEN_TTL_MS', 2 * 60 * 60 * 1000),
   // Executors run here, not in the repository root. The workspace contains no
   // secrets; master may still pass an explicit cwd to task_start.
-  executorWorkspace: resolve(root, process.env.WORKBENCH_WORKSPACE_DIR || 'workspace'),
+  executorWorkspace,
+  executorTempDir,
   credentialDir: credentialDir(),
   taskConfigDir: resolve(credentialDir(), 'task-configs'),
   envFile: envLoad.path,
@@ -328,5 +341,21 @@ if (!config.token || config.token.length < 32) {
 // the static form is a one-version compatibility path. New tasks receive
 // signed, short-lived per-task tokens instead (see auth.issueAgentToken).
 config.agentTokens = deriveAgentTokens(config.token);
-config.humanToken = config.humanToken || deriveHumanToken(config.token);
-config.museToken = config.museToken || deriveMuseToken(config.token);
+if (config.allowDerivedPrincipalTokens) {
+  // Explicit rollback mode. The derived values are still deterministic, so
+  // anyone holding the master can reproduce them; never enable this in normal
+  // operation.
+  config.humanToken = config.humanToken || deriveHumanToken(config.token);
+  config.museToken = config.museToken || deriveMuseToken(config.token);
+}
+if (!config.humanToken || !config.museToken) {
+  const missing = [
+    !config.humanToken ? 'MCP_HUMAN_TOKEN' : null,
+    !config.museToken ? 'MCP_MUSE_TOKEN' : null
+  ].filter(Boolean).join(' and ');
+  console.warn(
+    `principal tokens are not configured: ${missing} missing. `
+    + `Run scripts/install-credentials.mjs (stores independent random values in ${envLoad.path || join(credentialDir(), 'engine.env')}) `
+    + 'or set WORKBENCH_DERIVE_PRINCIPAL_TOKENS=1 only for a deliberate rollback.'
+  );
+}

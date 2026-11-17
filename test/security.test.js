@@ -60,6 +60,40 @@ test('tokens map to distinct principals and unknown tokens are rejected', () => 
   assert.equal(identifyToken('', config), null);
 });
 
+test('human and muse tokens are never derived from the master by default', () => {
+  const config = {
+    token: MASTER,
+    humanToken: '',
+    museToken: '',
+    legacyMasterEnabled: true,
+    legacyAgentTokensEnabled: false
+  };
+  // Knowing the master must not yield the Muse dispatch capability.
+  assert.equal(identifyToken(deriveHumanToken(MASTER), config), null);
+  assert.equal(identifyToken(deriveMuseToken(MASTER), config), null);
+
+  // Derivation is a deliberate rollback opt-in only.
+  const optIn = { ...config, allowDerivedPrincipalTokens: true };
+  assert.equal(identifyToken(deriveHumanToken(MASTER), optIn).token_kind, 'human');
+  assert.equal(identifyToken(deriveMuseToken(MASTER), optIn).token_kind, 'muse');
+});
+
+test('static agent tokens are rejected unless explicitly enabled', () => {
+  const config = {
+    token: MASTER,
+    humanToken: 'h'.repeat(48),
+    museToken: 'u'.repeat(48),
+    legacyMasterEnabled: true,
+    legacyAgentTokensEnabled: false
+  };
+  const staticClaude = deriveAgentToken(MASTER, 'claude');
+  assert.equal(identifyToken(staticClaude, config), null);
+  assert.equal(
+    identifyToken(staticClaude, { ...config, legacyAgentTokensEnabled: true }).participant,
+    'claude'
+  );
+});
+
 test('legacy master can be revoked and cannot post as muse by default', () => {
   const config = authConfig();
   assert.equal(identifyToken(MASTER, { ...config, legacyMasterEnabled: false }), null);

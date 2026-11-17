@@ -39,9 +39,12 @@ export function deriveAgentTokens(masterToken) {
   return Object.fromEntries(AGENT_PARTICIPANTS.map((agent) => [agent, deriveAgentToken(masterToken, agent)]));
 }
 
-// Human and Muse now have separate, deterministic tokens so an installation
-// does not need to provision two new secrets. Set MCP_HUMAN_TOKEN /
-// MCP_MUSE_TOKEN to rotate them independently.
+// Human and Muse must be independent random secrets stored next to the master
+// (MCP_HUMAN_TOKEN / MCP_MUSE_TOKEN). Deriving them from the master is a
+// rollback-only legacy mode: reading the master token used to yield the Muse
+// dispatch capability and human impersonation for free. The derivation helpers
+// are kept for that explicit opt-in (WORKBENCH_DERIVE_PRINCIPAL_TOKENS=1) and
+// for old tests, but identifyToken never derives unless the caller opts in.
 export function deriveHumanToken(masterToken) {
   if (!masterToken) throw new Error('master token is required to derive the human token');
   return createHmac('sha256', masterToken).update('principal-token:human').digest('hex');
@@ -50,6 +53,15 @@ export function deriveHumanToken(masterToken) {
 export function deriveMuseToken(masterToken) {
   if (!masterToken) throw new Error('master token is required to derive the muse token');
   return createHmac('sha256', masterToken).update('principal-token:muse').digest('hex');
+}
+
+function configuredPrincipalToken(config, kind) {
+  const explicit = kind === 'human' ? config.humanToken : config.museToken;
+  if (explicit) return explicit;
+  if (config.allowDerivedPrincipalTokens === true) {
+    return kind === 'human' ? deriveHumanToken(config.token) : deriveMuseToken(config.token);
+  }
+  return null;
 }
 
 function safeEqual(provided, expected) {
@@ -164,8 +176,8 @@ export function identifyToken(provided, config) {
     };
   }
 
-  const humanToken = config.humanToken ?? deriveHumanToken(config.token);
-  if (safeEqual(provided, humanToken)) {
+  const humanToken = configuredPrincipalToken(config, 'human');
+  if (humanToken && safeEqual(provided, humanToken)) {
     return {
       role: 'human',
       master: false,
@@ -179,8 +191,8 @@ export function identifyToken(provided, config) {
     };
   }
 
-  const museToken = config.museToken ?? deriveMuseToken(config.token);
-  if (safeEqual(provided, museToken)) {
+  const museToken = configuredPrincipalToken(config, 'muse');
+  if (museToken && safeEqual(provided, museToken)) {
     return {
       role: 'muse',
       master: false,
@@ -309,6 +321,11 @@ export function principalIdFor(auth, from) {
 export function assertChatAccess(store, auth, chatId) {
   if (!auth) throw new Error('unauthenticated');
   if (!store.getChat(chatId)) throw new Error(`chat not found: ${chatId}`);
+  // A per-task token is pinned to the chat embedded in its signed payload.
+  // Participation alone must not let it read or write a second chat.
+  if (auth.token_kind === 'agent-task' && auth.chat_id && auth.chat_id !== chatId) {
+    throw new Error(`this token is bound to chat ${auth.chat_id}, not ${chatId}`);
+  }
   if (isReadAll(auth)) return;
   if (!store.isChatParticipant(chatId, auth.participant)) {
     throw new Error(`agent '${auth.participant}' is not a participant of chat ${chatId}`);
@@ -332,6 +349,7 @@ export function assertTaskAccess(store, auth, taskId) {
 export function accessibleChatIds(store, auth) {
   if (!auth) return [];
   if (isReadAll(auth)) return null; // null means "no filter"
+  if (auth.token_kind === 'agent-task' && auth.chat_id) return [auth.chat_id];
   return store.listParticipantChatIds(auth.participant);
 }
 
