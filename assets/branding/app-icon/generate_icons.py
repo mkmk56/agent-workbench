@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Regenerate Agent Workbench app-icon PNGs + ICO from the Converge mark.
 
-Direction A (user pick, 2026-11-13): Y-merge + orange node. This is a REFRESH
-of that mark, not a new direction — the old render failed at small sizes:
+Direction A (user pick, 2026-11-13): Y-merge + node. Node color was signal
+orange #E85D26 until 2026-11-17, when the user decided it becomes ink #1E2126.
+This is a REFRESH of that mark, not a new direction — the old render failed at
+small sizes:
 - Ink tile (#1E2126) vanished on a dark Windows taskbar (zero contrast).
 - Y arms (w=54/512) anti-aliased into a grey smudge at 16px.
 - Orange node (r=42/512) was ~2.6px at 16px: invisible.
@@ -23,7 +25,7 @@ from PIL import Image, ImageDraw
 
 PAPER = (245, 243, 238, 255)
 INK = (30, 33, 38, 255)
-ORANGE = (232, 93, 38, 255)
+NODE = INK  # node was signal orange (232, 93, 38) until 2026-11-17 user decision
 BORDER = (30, 33, 38, 26)  # ~10% ink hairline: defines the light tile on white
 SS = 4  # supersample factor
 
@@ -60,7 +62,7 @@ def render(size, geo):
                        cx * sc + r, cy * sc + r], fill=INK)
     cx, cy, r = geo["node"]
     d.ellipse([cx * sc - r * sc, cy * sc - r * sc,
-               cx * sc + r * sc, cy * sc + r * sc], fill=ORANGE)
+               cx * sc + r * sc, cy * sc + r * sc], fill=NODE)
     return img.resize((size, size), Image.LANCZOS)
 
 
