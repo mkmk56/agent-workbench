@@ -378,7 +378,7 @@
   place-items: center;
   flex: none;
   overflow: hidden;
-  /* Identity avatars are coloured circles, like the target design. */
+  /* Neutral avatar circle (decision A); the glyph inside is the identity. */
   border-radius: 50%;
 }
 
@@ -394,8 +394,11 @@
 
 .chat-avatar--agent,
 .chat-avatar--mark {
-  background: #1e2126;
-  border: 1px solid rgba(245, 243, 238, 0.14);
+  /* Neutral agent avatar (decision A): panel bg + strong border + body
+   * glyph. Was hardcoded ink/paper; now tokenised. */
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
 }
 
 .chat-avatar--agent img,
@@ -502,7 +505,7 @@
 
 .chat-msg__sender {
   font-weight: 600;
-  color: var(--text-secondary);
+  color: var(--text);
 }
 
 .chat-bubble {
@@ -973,53 +976,19 @@
 }
 
 /* ---------------------------------------------------------------
- * 10. Group-chat upgrade (Muse): identity colours, file cards,
- *    attachment bar, @mentions, thinking indicator, files page.
- *    Identity colours are solid tokens only (plan §4) — no gradients.
+ * 10. Group-chat upgrade (Muse): decision A — no identity colours.
+ *    Sender name is body colour (see .chat-msg__sender); avatars are
+ *    neutral (see .chat-avatar--agent); agent bubbles blend into the
+ *    workspace instead of carrying a tint. File cards, attachment bar,
+ *    @mentions, thinking indicator, files page below.
  * ------------------------------------------------------------- */
 
-/* Identity: sender name + coloured avatar + bubble tint, per agent. */
-.chat-msg[data-sender="muse"] .chat-msg__sender {
-  color: var(--identity-muse-text);
-}
-
-.chat-msg[data-sender="claude"] .chat-msg__sender {
-  color: var(--identity-claude-text);
-}
-
-.chat-msg[data-sender="dsh"] .chat-msg__sender {
-  color: var(--identity-dsh-text);
-}
-
-.chat-avatar--muse {
-  background: var(--identity-muse);
+/* Agent messages blend into the workspace: no bubble chrome. User
+ * messages keep the neutral panel (.chat-msg--user .chat-bubble). */
+.chat-msg:not(.chat-msg--user) .chat-bubble {
+  background: transparent;
   border-color: transparent;
-}
-
-.chat-avatar--claude {
-  background: var(--identity-claude);
-  border-color: transparent;
-}
-
-.chat-avatar--dsh {
-  background: var(--identity-dsh);
-  border-color: transparent;
-}
-
-.chat-msg[data-sender="muse"] .chat-bubble {
-  background: var(--identity-muse-subtle);
-}
-
-.chat-msg[data-sender="claude"] .chat-bubble {
-  background: var(--identity-claude-subtle);
-}
-
-.chat-msg[data-sender="dsh"] .chat-bubble {
-  background: var(--identity-dsh-subtle);
-}
-
-.chat-msg[data-sender="user"] .chat-msg__sender {
-  color: var(--identity-user-text);
+  padding: 0;
 }
 
 .chat-msg__status {
@@ -1172,7 +1141,7 @@
   background: var(--success);
 }
 
-/* Compact member row: avatar + identity-coloured name + online dot. */
+/* Compact member row: avatar + name + online dot. */
 .chat-presence--row {
   margin: 0;
 }
@@ -1186,17 +1155,8 @@
   line-height: 20px;
 }
 
-.chat-presence__item--muse .chat-presence__name {
-  color: var(--identity-muse-text);
-}
-
-.chat-presence__item--claude .chat-presence__name {
-  color: var(--identity-claude-text);
-}
-
-.chat-presence__item--dsh .chat-presence__name {
-  color: var(--identity-dsh-text);
-}
+/* Decision A: presence names are body colour for every member; the
+ * avatar glyph is the identity. Per-agent name colours deleted. */
 
 .chat-presence__online-dot {
   flex: none;

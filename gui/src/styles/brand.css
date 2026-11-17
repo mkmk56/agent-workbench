@@ -9,65 +9,85 @@
 :root {
   color-scheme: light;
 
+  /* Matte Black · paper-white variant (VISUAL_SCHEME.md §4.6).
+   * Same token names as dark; only values differ. Accent is cold
+   * silver-gray; no identity colours (decision A, §2/§3). */
   --bg: #f5f3ee;
+  --bg-secondary: #edeae2;
+  --bg-sidebar: #f5f3ee;
+  --bg-workspace: #ffffff;
+  --bg-float: #ffffff;
+  --bg-panel: #ffffff;
   --surface: #ffffff;
   --surface-subtle: #edeae2;
   --surface-hover: #e7e3d9;
   --surface-disabled: #e6e2d8;
+  --panel-1: #ffffff;
+  --panel-2: #f4f1ea;
+  --panel-hover: #edeae2;
   --border: #d8d5cc;
+  --border-subtle: #e5e2d8;
   --border-strong: #bfbbb0;
+  --control-border: #82888f;
 
   --text: #1e2126;
   --text-secondary: #5f656e;
   --text-muted: #8a8f98;
+  --text-disabled: #b9bdc4;
 
-  --accent: #e85d26;
-  --accent-hover: #f26b36;
-  --accent-text: #c0471a;
-  --accent-subtle: #fbe8df;
-  --focus-ring: rgba(232, 93, 38, 0.35);
+  --accent: #5f656e;
+  --accent-secondary: #8a8f98;
+  --accent-hover: #4b5159;
+  --accent-active: #3a3f45;
+  --accent-text: #5f656e;
+  --accent-subtle: #edeae2;
+  --focus-ring: rgba(95, 101, 110, 0.45);
 
-  --success: #2e7d5b;
-  --success-text: #25684c;
+  --success: #4a7d64;
+  --success-text: #2f5d46;
   --success-subtle: #e3f1ea;
-  --warning: #d97706;
-  --warning-text: #9a5b00;
+  --warning: #b98a3e;
+  --warning-text: #8a5e14;
   --warning-subtle: #fcf0dc;
-  --error: #c0392b;
-  --error-text: #a93226;
+  --error: #a85a52;
+  --error-text: #8f443c;
   --error-subtle: #f9e5e2;
+  --info: #6b8ca8;
+  --info-text: #4a6a80;
+  --info-subtle: #e8eff3;
   --scrim: rgba(30, 33, 38, 0.48);
 
-  /* Text/icon colour on strong semantic fills. Brand: ink on orange. */
-  --on-accent: #1e2126;
+  /* Text/icon colour on strong semantic fills. */
+  --on-accent: #f5f3ee;
   --on-success: #f5f3ee;
   --on-warning: #1e2126;
   --on-error: #f5f3ee;
+  --on-info: #f5f3ee;
 
-  /* Agent identity colours (group-chat upgrade, 2026-11-16). Must match
-   * src/theme/brand-theme.mjs. Text values WCAG-checked ≥4.5:1; solids ≥3:1
-   * as graphic accents. Solid colours only, never gradients. */
-  --identity-muse: #8b7cff;
-  --identity-muse-text: #6d28d9;
-  --identity-muse-subtle: #f1eeff;
-  --identity-claude: #e85d26;
-  --identity-claude-text: #c0471a;
-  --identity-claude-subtle: #fbe8df;
-  --identity-dsh: #3b82f6;
-  --identity-dsh-text: #1d4ed8;
-  --identity-dsh-subtle: #ebf2fe;
-  --identity-user: #8a8f98;
-  --identity-user-text: #5f656e;
-  --identity-user-subtle: #edeae2;
+  /* No identity colours (decision A). Identity is glyph + name + tag.
+   * --hud-working: bright arc of the HUD working ring (neutral, motion
+   * carries the meaning). --status-running: neutral running dot. */
+  --hud-working: #5f656e;
+  --status-running: #8a8f98;
 
-  --radius-xs: 2px;
-  --radius-sm: 4px;
+  /* Inner top highlight: depth without glow (VISUAL_SCHEME.md §4.3). */
+  --elev-1: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
+  --radius-xl: 16px;
 
   --shadow-1: 0 1px 2px rgba(30, 33, 38, 0.08);
   --shadow-2: 0 4px 12px rgba(30, 33, 38, 0.12);
   --shadow-3: 0 16px 40px rgba(30, 33, 38, 0.18);
+
+  /* Motion (VISUAL_SCHEME.md §8). transform/opacity only. */
+  --duration-fast: 150ms;
+  --duration-normal: 200ms;
+  --duration-slow: 250ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 
   --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
     system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
@@ -82,52 +102,66 @@
 html[data-theme="dark"] {
   color-scheme: dark;
 
-  --bg: #1e2126;
-  --surface: #25292f;
-  --surface-subtle: #2c3138;
-  --surface-hover: #333941;
-  --surface-disabled: #2c3138;
-  --border: #3a4048;
-  --border-strong: #4a515a;
+  /* Premium Matte Black (VISUAL_SCHEME.md §4). Layered blacks; hierarchy
+   * comes from 1px borders + the inset highlight, not colour steps. */
+  --bg: #090a0b;
+  --bg-secondary: #0d0f11;
+  --bg-sidebar: #0b0c0e;
+  --bg-workspace: #101214;
+  --bg-float: #151719;
+  --bg-panel: #181a1d;
+  --surface: #141619;
+  --surface-subtle: #191c20;
+  --surface-hover: #1d2024;
+  --surface-disabled: #141619;
+  --panel-1: #141619;
+  --panel-2: #191c20;
+  --panel-hover: #1d2024;
+  --border: #292d32;
+  --border-subtle: #202328;
+  --border-strong: #383d44;
+  --control-border: #5f666f;
 
-  --text: #f5f3ee;
-  --text-secondary: #a8adb5;
-  --text-muted: #8a8f98;
+  --text: #f2f3f4;
+  --text-secondary: #9298a1;
+  --text-muted: #686f78;
+  --text-disabled: #4b5159;
 
-  --accent: #e85d26;
-  --accent-hover: #f26b36;
-  --accent-text: #ff8a5c;
-  --accent-subtle: #3a2620;
-  --focus-ring: rgba(255, 138, 92, 0.45);
+  --accent: #c5cbd3;
+  --accent-secondary: #a3abb5;
+  --accent-hover: #e0e4e9;
+  --accent-active: #8d97a3;
+  --accent-text: #e0e4e9;
+  --accent-subtle: #1d2024;
+  --focus-ring: rgba(197, 203, 211, 0.45);
 
-  --success: #63c79b;
-  --success-text: #63c79b;
+  --success: #5a9a7a;
+  --success-text: #5a9a7a;
   --success-subtle: #1f3a2f;
-  --warning: #f0a63c;
-  --warning-text: #f0a63c;
+  --warning: #c99a4b;
+  --warning-text: #c99a4b;
   --warning-subtle: #3a2e1b;
-  --error: #f08a7e;
-  --error-text: #f08a7e;
+  --error: #a85a52;
+  /* --error-text is lightened vs the scheme's #a85a52 (3.80:1) so body
+   * text passes WCAG AA (5.60:1); #a85a52 stays the fill/icon value. */
+  --error-text: #c07a72;
   --error-subtle: #3a2321;
+  --info: #6b8ca8;
+  --info-text: #6b8ca8;
+  --info-subtle: #1c2833;
   --scrim: rgba(0, 0, 0, 0.62);
 
-  --on-accent: #1e2126;
-  --on-success: #1e2126;
-  --on-warning: #1e2126;
-  --on-error: #1e2126;
+  --on-accent: #101214;
+  --on-success: #101214;
+  --on-warning: #101214;
+  --on-error: #101214;
+  --on-info: #101214;
 
-  --identity-muse: #8b7cff;
-  --identity-muse-text: #a78bfa;
-  --identity-muse-subtle: #2a2440;
-  --identity-claude: #e85d26;
-  --identity-claude-text: #ff8a5c;
-  --identity-claude-subtle: #3a2620;
-  --identity-dsh: #3b82f6;
-  --identity-dsh-text: #60a5fa;
-  --identity-dsh-subtle: #1e2c47;
-  --identity-user: #8a8f98;
-  --identity-user-text: #a8adb5;
-  --identity-user-subtle: #2c3138;
+  /* No identity colours (decision A). */
+  --hud-working: #e0e4e9;
+  --status-running: #a3abb5;
+
+  --elev-1: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.24);
   --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.32);
@@ -2409,25 +2443,9 @@ html[data-theme="dark"] .log-row {
   object-fit: contain;
 }
 
-.chat-item__avatar--muse {
-  background: var(--identity-muse-subtle);
-  color: var(--identity-muse-text);
-}
-
-.chat-item__avatar--claude {
-  background: var(--identity-claude-subtle);
-  color: var(--identity-claude-text);
-}
-
-.chat-item__avatar--dsh {
-  background: var(--identity-dsh-subtle);
-  color: var(--identity-dsh-text);
-}
-
-.chat-item__avatar--user {
-  background: var(--identity-user-subtle);
-  color: var(--identity-user-text);
-}
+/* Decision A (VISUAL_SCHEME.md §3): no identity colours. Sidebar avatars
+ * all use the neutral base above (panel bg + secondary glyph); the glyph
+ * itself (M / ✳ / d / person) is the identity. Per-agent overrides deleted. */
 
 /* Top row is centred now that it carries the avatar stack. */
 .chat-item__top {

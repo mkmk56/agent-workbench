@@ -1044,7 +1044,7 @@ function createWindow(): void {
     minWidth: 1080,
     minHeight: 700,
     show: false,
-    backgroundColor: '#F5F3EE',
+    backgroundColor: '#090A0B',
     autoHideMenuBar: true,
     ...(fs.existsSync(iconPath) ? { icon: iconPath } : {}),
     webPreferences: {
