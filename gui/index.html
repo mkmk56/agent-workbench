@@ -5,19 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
     <title>Agent Workbench</title>
-    <script>
-      /* Pre-paint theme: same logic as lib/theme.ts initialTheme(). Sets
-       * data-theme before first paint so a dark-theme user never flashes
-       * the light theme (and vice versa). The main-process window
-       * background is dark (#090A0B), so this must match it for dark. */
-      try {
-        var t = localStorage.getItem('agent-workbench.theme');
-        if (t !== 'light' && t !== 'dark') {
-          t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-        }
-        document.documentElement.dataset.theme = t;
-      } catch (e) {}
-    </script>
+    <!-- Pre-paint theme bootstrap (see public/theme-boot.js). External
+         script, not inline: the production CSP forbids inline scripts. -->
+    <script src="./theme-boot.js"></script>
   </head>
   <body>
     <div id="root"></div>

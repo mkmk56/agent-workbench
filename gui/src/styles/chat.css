@@ -990,7 +990,7 @@
 /* Agent messages blend into the workspace: no bubble chrome. User
  * messages keep the neutral panel (.chat-msg--user .chat-bubble).
  * Failed bubbles are excluded — .chat-bubble--failed keeps its red
- * border/fill (this rule's 0,3,0 specificity would otherwise eat it). */
+ * border/fill (this rule's 0,4,0 specificity would otherwise eat it). */
 .chat-msg:not(.chat-msg--user) .chat-bubble:not(.chat-bubble--failed) {
   background: transparent;
   border-color: transparent;
