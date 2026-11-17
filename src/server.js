@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -60,9 +60,18 @@ const removedLegacyConfigs = removeLegacyAgentMcpConfigs(config);
 if (removedLegacyConfigs.length > 0) {
   console.log(`removed legacy static MCP configs: ${removedLegacyConfigs.join(', ')}`);
 }
-if (config.legacyEnvFile) {
-  console.warn('deprecated-workbench-env: engine credentials are being read from the repository; '
-    + 'run scripts/install-credentials.mjs and remove the repo-root workbench.env');
+// Warn whenever the repository still holds workbench.env. Loading credentials
+// from it is the more severe legacy case, but after the one-time migration the
+// file is merely residual: it is no longer read, yet it still exposes the old
+// token to anything that can read the repository. existsSync is explicit so
+// this warning also fires when engine.env (not the legacy file) was loaded.
+const repoEnvFile = config.legacyEnvFile || config.legacyEnvPath;
+if (repoEnvFile && existsSync(repoEnvFile)) {
+  console.warn(config.legacyEnvFile
+    ? 'deprecated-workbench-env: engine credentials are being read from the repository; '
+      + 'run scripts/install-credentials.mjs and remove the repo-root workbench.env'
+    : 'deprecated-workbench-env: the repository still contains workbench.env; '
+      + 'remove it (credentials are loaded from engine.env)');
 }
 for (const [label, result] of Object.entries(aclResults)) {
   if (result && result.ok === false) console.warn(`acl: could not restrict ${label}: ${result.error}`);

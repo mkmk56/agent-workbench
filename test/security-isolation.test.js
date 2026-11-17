@@ -201,9 +201,10 @@ test('P0-1 executor processes receive no engine secrets and no repository creden
     out.realMasterViaAppData = out.env.appData
       ? path.join(out.env.appData, 'agent-workbench', 'credentials', 'engine.env')
       : null;
-    // Node re-synthesizes USERPROFILE/HOMEDRIVE/HOMEPATH/USERNAME for its own
-    // child processes even when they are absent from the env block. Record the
-    // residual path so the limitation is visible in the test output.
+    // The executor env block omits USERPROFILE/HOMEDRIVE/HOMEPATH/USERNAME
+    // (observed as null). Record os.homedir() anyway: it falls back to the
+    // Windows user-profile API even without those variables, so the residual
+    // OS limitation stays visible in the test output.
     const os = require('os');
     out.realMasterViaHome = (() => {
       try { return path.join(os.homedir(), 'AppData', 'Roaming', 'agent-workbench', 'credentials', 'engine.env'); }
@@ -241,10 +242,10 @@ test('P0-1 executor processes receive no engine secrets and no repository creden
   if (process.platform === 'win32') {
     assert.equal(out.env.appData, null, 'APPDATA leaked into the executor');
     assert.equal(out.env.localAppData, null, 'LOCALAPPDATA leaked into the executor');
-    // USERPROFILE/HOMEDRIVE/HOMEPATH/USERNAME cannot be removed from a Node
-    // child: Node re-synthesizes them from the OS user token even when the
-    // env block omits them (verified on Windows). Do not assert they are null;
-    // realMasterViaHome in the output records the residual OS limitation.
+    // USERPROFILE/HOMEDRIVE/HOMEPATH/USERNAME are absent from the env block
+    // (observed as null). The profile is still reachable through os.homedir(),
+    // which falls back to the Windows user-directory API; record that residual
+    // gap via realMasterViaHome instead of asserting physical isolation.
     assert.equal(
       out.realMasterViaAppData, null,
       'the executor can derive the real master credential path from APPDATA'

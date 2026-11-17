@@ -137,6 +137,9 @@ export const config = {
   taskConfigDir: resolve(credentialDir(), 'task-configs'),
   envFile: envLoad.path,
   legacyEnvFile: envLoad.legacy,
+  // Always present, whether or not the legacy file was loaded. Lets startup
+  // warn about a leftover repository copy after the one-time migration.
+  legacyEnvPath: resolve(root, 'workbench.env'),
   dataDir,
   dbPath: resolve(root, process.env.MCP_DB_PATH || join(process.env.MCP_DATA_DIR || 'data', 'workbench.db')),
   logDir: resolve(root, process.env.MCP_LOG_DIR || 'logs'),
