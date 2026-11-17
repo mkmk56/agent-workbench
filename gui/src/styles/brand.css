@@ -66,9 +66,19 @@
 
   /* No identity colours (decision A). Identity is glyph + name + tag.
    * --hud-working: bright arc of the HUD working ring (neutral, motion
-   * carries the meaning). --status-running: neutral running dot. */
-  --hud-working: #5f656e;
-  --status-running: #8a8f98;
+   * carries the meaning). The HUD capsule is ink in BOTH themes, so
+   * this must be a light value in both themes — the old #5F656E was
+   * 2.75:1 on the capsule and would have been invisible once wired.
+   * --status-running: neutral running dot/text on page surfaces; light
+   * value must clear AA on paper (#8A8F98 was 2.93:1). */
+  --hud-working: #e0e4e9;
+  --status-running: #5f656e;
+  --status-running-subtle: #edeae2;
+
+  /* Agent avatar tile: ink in both themes. The mark PNGs are white
+   * glyphs on transparency — only a dark tile keeps them legible in
+   * the paper-white theme. */
+  --avatar-ink: #1e2126;
 
   /* Inner top highlight: depth without glow (VISUAL_SCHEME.md §4.3). */
   --elev-1: inset 0 1px 0 rgba(255, 255, 255, 0.7);
@@ -160,6 +170,8 @@ html[data-theme="dark"] {
   /* No identity colours (decision A). */
   --hud-working: #e0e4e9;
   --status-running: #a3abb5;
+  --status-running-subtle: #1d2024;
+  --avatar-ink: #1e2126;
 
   --elev-1: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 
@@ -897,7 +909,7 @@ html[data-theme="dark"] .select {
 }
 
 .status--running {
-  color: var(--accent-text);
+  color: var(--status-running);
 }
 
 .status--success {
@@ -938,8 +950,8 @@ html[data-theme="dark"] .select {
 }
 
 .badge--running {
-  background: var(--accent-subtle);
-  color: var(--accent-text);
+  background: var(--status-running-subtle);
+  color: var(--status-running);
 }
 
 .badge--success {
@@ -2443,9 +2455,17 @@ html[data-theme="dark"] .log-row {
   object-fit: contain;
 }
 
-/* Decision A (VISUAL_SCHEME.md §3): no identity colours. Sidebar avatars
- * all use the neutral base above (panel bg + secondary glyph); the glyph
- * itself (M / ✳ / d / person) is the identity. Per-agent overrides deleted. */
+/* Decision A (VISUAL_SCHEME.md §3): no identity colours. The three agent
+ * avatars share ONE ink tile — the mark PNGs are white glyphs on
+ * transparency, so only a dark tile keeps them legible in the
+ * paper-white theme. The glyph itself (M / ✳ / d) is the identity.
+ * The user avatar keeps the neutral base above (lucide icon, currentColor). */
+.chat-item__avatar--muse,
+.chat-item__avatar--claude,
+.chat-item__avatar--dsh {
+  background: var(--avatar-ink);
+  color: #f5f3ee; /* fallback letter if a mark image fails to load */
+}
 
 /* Top row is centred now that it carries the avatar stack. */
 .chat-item__top {

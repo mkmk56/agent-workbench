@@ -392,17 +392,21 @@
   height: 32px;
 }
 
-.chat-avatar--agent,
-.chat-avatar--mark {
-  /* Neutral agent avatar (decision A): panel bg + strong border + body
-   * glyph. Was hardcoded ink/paper; now tokenised. */
-  background: var(--panel-2);
+.chat-avatar--muse,
+.chat-avatar--claude,
+.chat-avatar--dsh {
+  /* Ink tile in BOTH themes (see --avatar-ink): the mark PNGs are white
+   * glyphs on transparency. One shared rule on purpose — decision A.
+   * (The old .chat-avatar--agent/--mark selector never matched any
+   * component; components emit --muse/--claude/--dsh.) */
+  background: var(--avatar-ink);
   border: 1px solid var(--border-strong);
-  color: var(--text);
+  color: #f5f3ee; /* fallback letter if a mark image fails to load */
 }
 
-.chat-avatar--agent img,
-.chat-avatar--mark img {
+.chat-avatar--muse img,
+.chat-avatar--claude img,
+.chat-avatar--dsh img {
   width: 18px;
   height: 18px;
   object-fit: contain;
@@ -978,14 +982,16 @@
 /* ---------------------------------------------------------------
  * 10. Group-chat upgrade (Muse): decision A — no identity colours.
  *    Sender name is body colour (see .chat-msg__sender); avatars are
- *    neutral (see .chat-avatar--agent); agent bubbles blend into the
- *    workspace instead of carrying a tint. File cards, attachment bar,
- *    @mentions, thinking indicator, files page below.
+ *    ink tiles (see .chat-avatar--muse/--claude/--dsh); agent bubbles
+ *    blend into the workspace instead of carrying a tint. File cards,
+ *    attachment bar, @mentions, thinking indicator, files page below.
  * ------------------------------------------------------------- */
 
 /* Agent messages blend into the workspace: no bubble chrome. User
- * messages keep the neutral panel (.chat-msg--user .chat-bubble). */
-.chat-msg:not(.chat-msg--user) .chat-bubble {
+ * messages keep the neutral panel (.chat-msg--user .chat-bubble).
+ * Failed bubbles are excluded — .chat-bubble--failed keeps its red
+ * border/fill (this rule's 0,3,0 specificity would otherwise eat it). */
+.chat-msg:not(.chat-msg--user) .chat-bubble:not(.chat-bubble--failed) {
   background: transparent;
   border-color: transparent;
   padding: 0;

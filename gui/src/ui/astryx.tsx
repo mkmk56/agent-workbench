@@ -127,6 +127,9 @@ export function AppStatus({
   );
 }
 
+/* 'orange' is Astryx's built-in variant name for the running tone; its
+ * colours are overridden to the neutral running tokens in
+ * astryx-overrides.css (decision A — no identity/accent colour). */
 const BADGE_VARIANT = {
   running: 'orange',
   success: 'success',

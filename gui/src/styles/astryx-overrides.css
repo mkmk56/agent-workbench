@@ -330,9 +330,11 @@ html[data-theme="dark"] .astryx-button[data-variant="destructive"]:hover {
   white-space: nowrap;
 }
 
+/* "orange" is Astryx's built-in variant name for the running tone; the
+ * colours are neutral running tokens, not orange (decision A). */
 .astryx-badge[data-variant="orange"] {
-  background: var(--accent-subtle);
-  color: var(--accent-text);
+  background: var(--status-running-subtle);
+  color: var(--status-running);
 }
 
 .astryx-badge[data-variant="success"],
