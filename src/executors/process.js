@@ -40,9 +40,12 @@ const BLOCKED_ENV_KEYS = new Set([
   'WORKBENCH_ENV_FILE', 'WORKBENCH_CLAUDE_ENV_JSON'
 ]);
 
-// Set by the engine to a workspace directory. Inherited TEMP/TMP normally
-// point inside %LOCALAPPDATA%\Temp, which reveals the profile path even when
-// LOCALAPPDATA itself is removed from the allow-list.
+// Set by the engine to a dedicated temp directory outside the executor
+// workspace. Inherited TEMP/TMP normally point inside %LOCALAPPDATA%\Temp,
+// which reveals the profile path even when LOCALAPPDATA itself is removed from
+// the allow-list. Keeping the redirect outside the workspace also satisfies
+// the Windows ACL sandbox precondition (temp root must be outside the
+// workspace root); a nested path makes every dsh command fail closed.
 let executorTempDir = null;
 
 export function setExecutorTempDir(dir) {

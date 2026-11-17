@@ -44,7 +44,9 @@ const pidFile = join(config.logDir, 'server.pid');
 // ---------------------------------------------------------------------------
 mkdirSync(config.executorWorkspace, { recursive: true });
 // Executor TEMP/TMP is redirected here so the inherited temp path cannot
-// reveal %LOCALAPPDATA%. No secrets are written to this directory.
+// reveal %LOCALAPPDATA%. It must stay outside executorWorkspace: the Windows
+// ACL sandbox rejects a temp root nested in the workspace before spawning.
+// No secrets are written to this directory.
 mkdirSync(config.executorTempDir, { recursive: true });
 setExecutorTempDir(config.executorTempDir);
 mkdirSync(config.chatFilesDir, { recursive: true });

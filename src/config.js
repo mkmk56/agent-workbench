@@ -90,10 +90,15 @@ const port = intEnv('MCP_PORT', 8080);
 const dataDir = resolve(root, process.env.MCP_DATA_DIR || 'data');
 const executorWorkspace = resolve(root, process.env.WORKBENCH_WORKSPACE_DIR || 'workspace');
 // Executors inherit TEMP/TMP but must not inherit a path that points into the
-// user profile (%LOCALAPPDATA%\Temp). Redirect them to a workspace directory.
+// user profile (%LOCALAPPDATA%\Temp). Redirect them to a dedicated directory
+// beside the workspace, never inside it: the Windows ACL sandbox rejects a temp
+// root below its workspace root (such children would inherit the workspace's
+// standing write capability), and that check runs before any command is
+// spawned. The sibling default keeps the redirect off the user profile while
+// remaining a normal writable directory.
 const executorTempDir = process.env.WORKBENCH_EXECUTOR_TMP_DIR
   ? resolve(process.env.WORKBENCH_EXECUTOR_TMP_DIR)
-  : resolve(executorWorkspace, '.tmp');
+  : resolve(root, '.tmp-sandbox');
 // Local default stays loopback-only. Containers set MCP_BIND=0.0.0.0 so the
 // platform's reverse proxy can reach the engine.
 const bind = process.env.MCP_BIND || '127.0.0.1';

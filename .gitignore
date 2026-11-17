@@ -12,6 +12,8 @@ data/
 logs/
 # Executor workspace (P0-1): no credentials, never committed
 workspace/
+# Executor TEMP/TMP target: outside the workspace, never committed
+.tmp-sandbox/
 *.db
 *.db-shm
 *.db-wal

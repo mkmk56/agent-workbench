@@ -42,12 +42,13 @@ muse  = HMAC-SHA256(MCP_BEARER_TOKEN, "principal-token:muse")
 
 `src/executors/process.js:buildExecutorEnv()` 只复制运行所需的系统变量（Windows：`PATH`、`SystemRoot`、`ComSpec`、`TEMP`、`TMP` 等；POSIX：`PATH`、`HOME`、`TMPDIR` 等），再加上调用方显式提供的执行器变量。`MCP_BEARER_TOKEN`、`MCP_HUMAN_TOKEN`、`MCP_MUSE_TOKEN`、`MCP_DATA_DIR`、`MCP_DB_PATH`、`MCP_LOG_DIR`、`WORKBENCH_ENV_FILE`、`WORKBENCH_CLAUDE_ENV_JSON` 即使被误传也会被删除。
 
-Windows 白名单额外移除了 `APPDATA`、`LOCALAPPDATA`、`USERPROFILE`、`HOMEDRIVE`、`HOMEPATH`、`USERNAME`，并把 `TEMP`/`TMP` 重定向到 workspace 下的 `.tmp`（否则 `%TEMP%` 本身就会暴露 `%LOCALAPPDATA%`）。实测 claude 与 dsh 在移除这些变量后仍能完成真实任务。
+Windows 白名单额外移除了 `APPDATA`、`LOCALAPPDATA`、`USERPROFILE`、`HOMEDRIVE`、`HOMEPATH`、`USERNAME`，并把 `TEMP`/`TMP` 重定向到 **workspace 之外**的专属目录 `.tmp-sandbox`（默认 `<repo>/.tmp-sandbox`，与 `<repo>/workspace` 平级；可用 `WORKBENCH_EXECUTOR_TMP_DIR` 覆盖），否则 `%TEMP%` 本身就会暴露 `%LOCALAPPDATA%`。实测 claude 与 dsh 在移除这些变量后仍能完成真实任务。
 
 > 限制（诚实记录，实测结论）：
 > - `APPDATA` / `LOCALAPPDATA` 确实被移除；执行器不能再从这两个变量推导 `%APPDATA%\agent-workbench\credentials\engine.env`。
 > - `USERPROFILE` / `HOMEDRIVE` / `HOMEPATH` / `USERNAME` 确实从执行器 env 中消失：按真实执行器形态（非空 env、仅省略这四个键）spawn 的子进程实测四项全为 `null`（dsh 复审 2026-11-17 实测）。**但** `os.homedir()` 不依赖这些 env：Windows 上它在 env 缺失时回退到用户目录 API（Known Folder / `GetUserProfileDirectory`），仍返回 `C:\Users\<user>`。因此执行器仍可显式拼出 engine.env 路径并读取。
 > - 结论：移除白名单变量只能减少“顺手可读”，**不能**声称“执行器物理上读不到 master 文件”。真正切断权限提升的是独立 human/muse token：master 泄漏不再等于 Muse 派发权，也不再能冒充 human/muse。要物理阻断同用户读取，需要独立 Windows 用户/容器/DPAPI + 启动期解密等 OS 级隔离（本批未做）。
+> - `TEMP`/`TMP` 的重定向目标必须位于 dsh 的 sandbox workspace **之外**：Windows ACL 沙箱在 spawn 之前执行 `assertTempRootOutsideWorkspace`，若 temp root 在 workspace 之下，其子目录会继承 workspace 的常驻写权限，因此校验直接 fail-closed（`Windows ACL temp root must be outside the workspace`）。默认 `<repo>/.tmp-sandbox` 与执行器 workspace 平级；**不要**用 `WORKBENCH_EXECUTOR_TMP_DIR` 把它指回 workspace 内部。该前置校验不放宽。
 
 `spawnProcess()` 不再使用 `{ ...process.env }`。
 
@@ -168,7 +169,7 @@ node scripts/install-credentials.mjs --remove-legacy
 
 `test/security-isolation.test.js`（端到端，真实 HTTP MCP + 临时端口/数据目录）：
 
-1. 执行器子进程 `MCP_BEARER_TOKEN`/`MCP_HUMAN_TOKEN`/`MCP_MUSE_TOKEN`/`MCP_DATA_DIR`/`MCP_DB_PATH` 为空；cwd 为 workspace；仓库 `workbench.env`、仓库真实 `data/claude-mcp.json`/`data/dsh-mcp.json` 读取返回 ENOENT；Windows 上 `APPDATA`/`LOCALAPPDATA` 为空，执行器无法用 `%APPDATA%\agent-workbench\credentials\engine.env` 推导真实 master 路径；`TEMP`/`TMP` 被重定向到 executor workspace（不再是继承的 `%LOCALAPPDATA%\Temp`）。`USERPROFILE`/`HOMEDRIVE`/`HOMEPATH`/`USERNAME` 不在执行器 env 中（实测为 `null`）；测试只记录 `realMasterViaHome`——`os.homedir()` 会回退到 Windows 用户目录 API，仍能解析真实路径——不声称执行器物理读不到 master（见 §3.1 限制）。
+1. 执行器子进程 `MCP_BEARER_TOKEN`/`MCP_HUMAN_TOKEN`/`MCP_MUSE_TOKEN`/`MCP_DATA_DIR`/`MCP_DB_PATH` 为空；cwd 为 workspace；仓库 `workbench.env`、仓库真实 `data/claude-mcp.json`/`data/dsh-mcp.json` 读取返回 ENOENT；Windows 上 `APPDATA`/`LOCALAPPDATA` 为空，执行器无法用 `%APPDATA%\agent-workbench\credentials\engine.env` 推导真实 master 路径；`TEMP`/`TMP` 被重定向到 **executor workspace 之外**的专属目录（默认 `<repo>/.tmp-sandbox`，不再是继承的 `%LOCALAPPDATA%\Temp`），启动时创建，且测试断言重定向目标不在 executor workspace 之内（Windows ACL 沙箱的前置条件）。`USERPROFILE`/`HOMEDRIVE`/`HOMEPATH`/`USERNAME` 不在执行器 env 中（实测为 `null`）；测试只记录 `realMasterViaHome`——`os.homedir()` 会回退到 Windows 用户目录 API，仍能解析真实路径——不声称执行器物理读不到 master（见 §3.1 限制）。
 2. 知道 master 也不能用 `HMAC(master, "principal-token:human|muse")` 登录；默认不派生，只有 `WORKBENCH_DERIVE_PRINCIPAL_TOKENS=1` 才启用。
 3. 静态 agent token（`HMAC(master, "agent-token:<agent>")`）默认被拒绝（401）。
 4. legacy master 只能 `from=user`；不能设置 `act_recipients`。

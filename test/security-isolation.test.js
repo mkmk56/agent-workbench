@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -50,6 +50,12 @@ const REQUEST_IDS = {
   muse: 'req-muse-1',
   agent: 'req-agent-1'
 };
+
+// True when `child` is `parent` itself or lives below it.
+function isInside(parent, child) {
+  const rel = relative(parent, child);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
 
 function freePort() {
   return new Promise((resolvePort, reject) => {
@@ -258,11 +264,21 @@ test('P0-1 executor processes receive no engine secrets and no repository creden
       out.paths.repoDataDshConfig, 'ENOENT',
       'the real data/dsh-mcp.json static config still exists'
     );
-    // TEMP/TMP must be redirected to the executor workspace, not inherited
-    // from the engine process (the inherited value points at %LOCALAPPDATA%).
-    assert.equal(resolve(out.env.temp), resolve(engine.config.executorTempDir));
-    assert.equal(resolve(out.env.tmp), resolve(engine.config.executorTempDir));
-    assert.notEqual(resolve(out.env.temp), resolve(process.env.TEMP));
+    // TEMP/TMP must be redirected outside the executor workspace, and not
+    // inherited from the engine process (the inherited value points at
+    // %LOCALAPPDATA%). The Windows ACL sandbox rejects a temp root nested in
+    // the workspace before spawning any command, so this is a hard
+    // precondition for the dsh executor.
+    const tempDir = resolve(out.env.temp);
+    assert.equal(tempDir, resolve(engine.config.executorTempDir));
+    assert.equal(resolve(out.env.tmp), tempDir);
+    assert.equal(tempDir, resolve(repoRoot, '.tmp-sandbox'), 'the default executor temp root moved');
+    assert.notEqual(tempDir, resolve(process.env.TEMP));
+    assert.equal(
+      isInside(resolve(engine.config.executorWorkspace), tempDir), false,
+      'executor TEMP/TMP points inside the workspace; the Windows ACL sandbox rejects it'
+    );
+    assert.ok(existsSync(engine.config.executorTempDir), 'the executor temp dir was not created');
   }
   assert.equal(out.paths.repoEnv, 'ENOENT', 'the repository workbench.env is still readable');
   assert.equal(out.paths.claudeStaticConfig, 'ENOENT', 'a static agent MCP config still exists');
