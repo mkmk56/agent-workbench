@@ -118,6 +118,41 @@ test('shared context is bounded by the token budget and keeps the newest message
   }
 });
 
+test('list_chat_messages returns attachment objects and legacy_paths separately', () => {
+  const dir = tempDir();
+  const { store, files, chats, messages } = makeServices(dir);
+  try {
+    const chat = chats.create({ name: 'Attachments' });
+    const uploaded = uploadBuffer(files, chat.chat_id, 'report.txt', Buffer.from('hello attachment'));
+    const attached = chats.send({
+      chat_id: chat.chat_id, from: 'user', to: 'muse', body: 'with file',
+      files: [uploaded.file_id]
+    });
+
+    // An internal legacy card: files_json carries a host path, not a file_id.
+    const legacy = messages.send({
+      chat_id: chat.chat_id, from: 'user', to: 'muse', body: 'with legacy path',
+      files: ['out/old-report.pdf'], legacy_files: true
+    });
+
+    const page = chats.listMessages({ chat_id: chat.chat_id, limit: 50 });
+    const withFile = page.messages.find((row) => row.message_id === attached.message_id);
+    assert.equal(withFile.files.length, 1);
+    assert.equal(withFile.files[0].file_id, uploaded.file_id);
+    assert.equal(withFile.files[0].name, 'report.txt');
+    assert.equal(withFile.files[0].size, Buffer.byteLength('hello attachment'));
+    assert.equal(withFile.files[0].parse_status, 'parsed');
+    assert.ok('parse_error' in withFile.files[0]);
+    assert.deepEqual(withFile.legacy_paths, []);
+
+    const withLegacy = page.messages.find((row) => row.message_id === legacy.message_id);
+    assert.deepEqual(withLegacy.files, []);
+    assert.deepEqual(withLegacy.legacy_paths, ['out/old-report.pdf']);
+  } finally {
+    store.close();
+  }
+});
+
 test('XLSX and PPTX text extraction', () => {
   const dir = tempDir();
   const { store, files, chats } = makeServices(dir);
