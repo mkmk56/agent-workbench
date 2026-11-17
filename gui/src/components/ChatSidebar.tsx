@@ -1,9 +1,39 @@
-import { Archive, ArchiveRestore, ChevronDown, Plus, RefreshCw, UserRound } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import {
+  Archive,
+  ArchiveRestore,
+  ChevronDown,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plus,
+  RefreshCw,
+  UserRound,
+} from 'lucide-react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import claudeMark from '../assets/sidebar/claude-mark.png';
 import dshMark from '../assets/sidebar/dsh-mark.png';
 import museMark from '../assets/sidebar/muse-mark.png';
 import { archiveChat, createChat, listChatsOnce, unarchiveChat } from '../lib/chat';
+import {
+  CHAT_SIDEBAR_DEFAULT_WIDTH,
+  CHAT_SIDEBAR_MAX_WIDTH,
+  CHAT_SIDEBAR_MIN_WIDTH,
+  applyViewportWidth,
+  chatSidebarColumnWidth,
+  dragChatSidebarWidth,
+  initialChatSidebarLayout,
+  nudgeChatSidebarWidth,
+  readChatSidebarLayout,
+  writeChatSidebarLayout,
+  type ChatSidebarLayout,
+  type ChatSidebarStorage,
+} from '../lib/chat-sidebar-layout';
 import { useChatListView } from '../lib/chat-store';
 import { formatRelative } from '../lib/labels';
 import { navigate } from '../lib/router';
@@ -32,7 +62,23 @@ const FILTER_LABELS: Record<ListFilter, string> = {
  * Header is the "全部会话" filter dropdown; each card shows the name,
  * member avatars, last-message preview, time and unread count. New sessions
  * start from the "+ 新建会话" text link at the foot of the list.
+ *
+ * The column is freely resizable (drag the 8px separator, ←/→ ±16px, Home or
+ * double-click = 336px) and collapsible (12px strip). Width and collapsed
+ * state are a view-layer preference in localStorage — never ChatStore, the
+ * engine or the database. ≤1180px defaults to 280px, ≤1080px auto-collapses.
  */
+
+/** localStorage, or null when the context forbids it. */
+function sidebarStorage(): ChatSidebarStorage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    // Restricted contexts: the layout still works, it just cannot persist.
+    return null;
+  }
+}
+
 export function ChatSidebar({ route }: { route: Route }) {
   const { chats, loading, error, refresh: refreshStore } = useChatListView();
   const [archivedChats, setArchivedChats] = useState<ChatSummary[]>([]);
@@ -45,6 +91,131 @@ export function ChatSidebar({ route }: { route: Route }) {
   const [filter, setFilter] = useState<ListFilter>('all');
   const [filterOpen, setFilterOpen] = useState(false);
   const [acting, setActing] = useState<string | null>(null);
+
+  // --- Width / collapse (task §4) ------------------------------------
+  const bootRef = useRef<{ layout: ChatSidebarLayout; autoCollapsed: boolean } | null>(null);
+  if (bootRef.current == null) {
+    bootRef.current = initialChatSidebarLayout(
+      window.innerWidth,
+      readChatSidebarLayout(sidebarStorage()),
+    );
+  }
+  const boot = bootRef.current;
+  const [layout, setLayout] = useState<ChatSidebarLayout>(boot.layout);
+  const layoutRef = useRef<ChatSidebarLayout>(boot.layout);
+  const autoCollapsedRef = useRef<boolean>(boot.autoCollapsed);
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startWidth: number;
+    width: number;
+  } | null>(null);
+
+  const applyLayout = useCallback((next: ChatSidebarLayout, persist: boolean) => {
+    layoutRef.current = next;
+    setLayout(next);
+    if (persist) {
+      // Only user actions are written: the ≤1080px auto-collapse is derived
+      // from the window size and must not overwrite the user's preference.
+      writeChatSidebarLayout(sidebarStorage(), next);
+    }
+  }, []);
+
+  // The grid reads --chat-sidebar-width, so the column has one source of truth.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty('--chat-sidebar-width', `${chatSidebarColumnWidth(layout)}px`);
+    return () => {
+      root.style.removeProperty('--chat-sidebar-width');
+      // A drag that ends because the component unmounted must not leave the
+      // whole document stuck in "no text selection".
+      root.classList.remove('is-resizing-chat-sidebar');
+    };
+  }, [layout]);
+
+  // Breakpoints: ≤1180px defaults to 280px (fresh state only), ≤1080px
+  // auto-collapses. Crossing back above 1080px restores an auto-collapse.
+  useEffect(() => {
+    const onViewportResize = () => {
+      const current = layoutRef.current;
+      const next = applyViewportWidth(window.innerWidth, current, autoCollapsedRef.current);
+      autoCollapsedRef.current = next.autoCollapsed;
+      if (next.layout.collapsed !== current.collapsed || next.layout.width !== current.width) {
+        applyLayout(next.layout, false);
+      }
+    };
+    window.addEventListener('resize', onViewportResize);
+    onViewportResize();
+    return () => window.removeEventListener('resize', onViewportResize);
+  }, [applyLayout]);
+
+  const toggleCollapsed = () => {
+    autoCollapsedRef.current = false;
+    const current = layoutRef.current;
+    applyLayout({ width: current.width, collapsed: !current.collapsed }, true);
+  };
+
+  const resetWidth = () => {
+    applyLayout({ width: CHAT_SIDEBAR_DEFAULT_WIDTH, collapsed: false }, true);
+  };
+
+  const onSplitterPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || layoutRef.current.collapsed) {
+      return;
+    }
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: layoutRef.current.width,
+      width: layoutRef.current.width,
+    };
+    document.documentElement.classList.add('is-resizing-chat-sidebar');
+  };
+
+  const onSplitterPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (drag == null || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    const width = dragChatSidebarWidth(drag.startWidth, event.clientX - drag.startX);
+    if (width === drag.width) {
+      return;
+    }
+    drag.width = width;
+    // Updated straight on the CSS variable: the list never re-renders mid-drag,
+    // so the resize stays frame-accurate (no transition, no layout jitter).
+    document.documentElement.style.setProperty('--chat-sidebar-width', `${width}px`);
+    event.currentTarget.setAttribute('aria-valuenow', String(width));
+  };
+
+  const onSplitterPointerEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (drag == null) {
+      return;
+    }
+    dragRef.current = null;
+    document.documentElement.classList.remove('is-resizing-chat-sidebar');
+    if (event.currentTarget.hasPointerCapture(drag.pointerId)) {
+      event.currentTarget.releasePointerCapture(drag.pointerId);
+    }
+    applyLayout({ width: drag.width, collapsed: false }, true);
+  };
+
+  const onSplitterKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const width = layoutRef.current.width;
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      applyLayout({ width: nudgeChatSidebarWidth(width, -1), collapsed: false }, true);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      applyLayout({ width: nudgeChatSidebarWidth(width, 1), collapsed: false }, true);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      resetWidth();
+    }
+  };
 
   const selectedId = route.name === 'chat' ? route.id : null;
 
@@ -176,6 +347,25 @@ export function ChatSidebar({ route }: { route: Route }) {
     );
   };
 
+  if (layout.collapsed) {
+    // Collapsed: a 12px clickable strip is all that is left of the column. The
+    // rail keeps its place and the chat area takes the freed width.
+    return (
+      <aside className="chat-sidebar chat-sidebar--collapsed" aria-label="群聊列表（已收起）">
+        <button
+          type="button"
+          className="chat-sidebar__strip"
+          aria-label="展开会话列表"
+          aria-expanded={false}
+          title="展开会话列表"
+          onClick={toggleCollapsed}
+        >
+          <PanelLeftOpen size={12} aria-hidden="true" />
+        </button>
+      </aside>
+    );
+  }
+
   return (
     <aside className="chat-sidebar" aria-label="群聊列表">
       <div className="chat-sidebar__head">
@@ -188,6 +378,15 @@ export function ChatSidebar({ route }: { route: Route }) {
         >
           {FILTER_LABELS[filter]}
           <ChevronDown size={15} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="chat-sidebar__collapse"
+          aria-label="收起会话列表"
+          title="收起会话列表"
+          onClick={toggleCollapsed}
+        >
+          <PanelLeftClose size={15} aria-hidden="true" />
         </button>
         {filterOpen && (
           <ul className="chat-sidebar__filter-menu" role="menu">
@@ -293,6 +492,31 @@ export function ChatSidebar({ route }: { route: Route }) {
           </button>
         )}
       </div>
+
+      {/*
+        Resize separator: an 8px hit area inside the sidebar's right edge with a
+        1px visible line — it draws the divider that used to be the sidebar's
+        border-right, so the resting line and the hover state are the same
+        pixel. Pointer capture keeps the drag working over the chat area;
+        ←/→ = ±16px, Home / double-click = 336px.
+      */}
+      <div
+        className="chat-sidebar__splitter"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整会话列表宽度"
+        aria-valuenow={layout.width}
+        aria-valuemin={CHAT_SIDEBAR_MIN_WIDTH}
+        aria-valuemax={CHAT_SIDEBAR_MAX_WIDTH}
+        tabIndex={0}
+        title="拖动调整宽度，双击恢复默认"
+        onPointerDown={onSplitterPointerDown}
+        onPointerMove={onSplitterPointerMove}
+        onPointerUp={onSplitterPointerEnd}
+        onPointerCancel={onSplitterPointerEnd}
+        onKeyDown={onSplitterKeyDown}
+        onDoubleClick={resetWidth}
+      />
     </aside>
   );
 }

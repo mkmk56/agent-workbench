@@ -6,6 +6,7 @@ import {
   ipcMain,
   Menu,
   safeStorage,
+  screen,
   session,
   shell,
   type IpcMainInvokeEvent,
@@ -31,6 +32,12 @@ import {
 } from './chat-protocol';
 import { EngineManager, errorMessage } from './engine';
 import { UpdateManager, type UpdateChannel, type UpdateState } from './update';
+import {
+  clampWindowBounds,
+  initialWindowGeometry,
+  isStoredWindowState,
+  type StoredWindowState,
+} from './window-state';
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const DEV_URL = process.env.VITE_DEV_SERVER_URL ?? 'http://127.0.0.1:5173';
@@ -48,6 +55,12 @@ const DATA_DIR = app.getPath('userData');
 const CREDENTIALS_DIR = path.join(DATA_DIR, 'credentials');
 const TOKEN_FILE = path.join(CREDENTIALS_DIR, 'token.enc');
 const HUD_CONFIG_FILE = path.join(DATA_DIR, 'hud.json');
+/**
+ * Window geometry next to hud.json (same per-user data directory). Only x/y/
+ * width/height and the maximised flag — no user content, no backend state.
+ */
+const WINDOW_STATE_FILE = path.join(DATA_DIR, 'window.json');
+const WINDOW_STATE_SAVE_DELAY = 400;
 const ATTACHMENTS_TEMP_DIR = path.join(DATA_DIR, 'attachments', 'pending');
 const ATTACHMENTS_CACHE_DIR = path.join(DATA_DIR, 'attachments', 'cache');
 
@@ -118,6 +131,42 @@ function writeHudConfig(patch: unknown): HudConfig {
 
 let mainWindow: BrowserWindow | null = null;
 let updateManager: UpdateManager | null = null;
+
+/**
+ * Last known window geometry, or `null` when there is none (first run, corrupt
+ * file, wrong shape). Never fatal: geometry is a convenience.
+ */
+function readStoredWindowState(): StoredWindowState | null {
+  try {
+    const raw: unknown = JSON.parse(fs.readFileSync(WINDOW_STATE_FILE, 'utf8'));
+    return isStoredWindowState(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Persist geometry + maximised flag atomically (temp file + rename). */
+function saveStoredWindowState(win: BrowserWindow | null): void {
+  if (win == null || win.isDestroyed() || win.isMinimized()) {
+    return;
+  }
+  try {
+    ensureDataDir();
+    const bounds = win.getNormalBounds();
+    const state: StoredWindowState = {
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+      isMaximized: win.isMaximized(),
+    };
+    const tempFile = `${WINDOW_STATE_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tempFile, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+    fs.renameSync(tempFile, WINDOW_STATE_FILE);
+  } catch {
+    // Non-fatal: the window still works, it just opens at the default size.
+  }
+}
 
 const VERIFY_MODE = process.argv.includes('--update-verify');
 const PRINT_VERSION_MODE = process.argv.includes('--print-version');
@@ -1038,11 +1087,28 @@ function createWindow(): void {
     'agent-workbench.ico',
   );
 
-  mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 1080,
-    minHeight: 700,
+  // Geometry: clamp the default size to the display the window will open on and
+  // clamp a restored position/size the same way, so a removed or resized display
+  // can never leave the window off-screen (Phase 1 audit LAY-2).
+  const stored = readStoredWindowState();
+  const workArea =
+    stored != null
+      ? screen.getDisplayMatching({
+          x: stored.x,
+          y: stored.y,
+          width: stored.width,
+          height: stored.height,
+        }).workArea
+      : screen.getPrimaryDisplay().workArea;
+  const geometry = initialWindowGeometry(workArea);
+  const restored = stored != null ? clampWindowBounds(stored, workArea) : null;
+
+  const win = new BrowserWindow({
+    width: restored?.width ?? geometry.width,
+    height: restored?.height ?? geometry.height,
+    ...(restored != null ? { x: restored.x, y: restored.y } : {}),
+    minWidth: geometry.minWidth,
+    minHeight: geometry.minHeight,
     show: false,
     backgroundColor: '#090A0B',
     autoHideMenuBar: true,
@@ -1057,36 +1123,62 @@ function createWindow(): void {
       spellcheck: false,
     },
   });
+  mainWindow = win;
 
-  mainWindow.once('ready-to-show', () => {
-    mainWindow?.show();
+  if (stored?.isMaximized === true) {
+    win.maximize();
+  }
+
+  // Debounced geometry persistence: continuous resizes must not hammer the disk.
+  let saveTimer: NodeJS.Timeout | null = null;
+  const scheduleWindowStateSave = () => {
+    if (saveTimer != null) {
+      clearTimeout(saveTimer);
+    }
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      saveStoredWindowState(win);
+    }, WINDOW_STATE_SAVE_DELAY);
+  };
+  win.on('resize', scheduleWindowStateSave);
+  win.on('move', scheduleWindowStateSave);
+  win.on('close', () => {
+    if (saveTimer != null) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    saveStoredWindowState(win);
   });
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  win.once('ready-to-show', () => {
+    win.show();
+  });
+
+  win.webContents.setWindowOpenHandler(({ url }) => {
     openAllowedExternal(url);
     return { action: 'deny' };
   });
 
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    const current = mainWindow?.webContents.getURL() ?? '';
+  win.webContents.on('will-navigate', (event, url) => {
+    const current = win.webContents.getURL();
     if (url !== current) {
       event.preventDefault();
       openAllowedExternal(url);
     }
   });
 
-  mainWindow.webContents.on('will-attach-webview', (event) => {
+  win.webContents.on('will-attach-webview', (event) => {
     event.preventDefault();
   });
 
-  mainWindow.on('closed', () => {
+  win.on('closed', () => {
     mainWindow = null;
   });
 
   if (isDev) {
-    void mainWindow.loadURL(DEV_URL);
+    void win.loadURL(DEV_URL);
   } else {
-    void mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+    void win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
 }
 

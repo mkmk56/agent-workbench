@@ -1,6 +1,12 @@
 import { Files, History, Info, LayoutDashboard, MessagesSquare, Moon, Settings as SettingsIcon, Sun } from 'lucide-react';
 import type { ReactNode } from 'react';
-import appMark from '@brand/source/mark-only.svg';
+// The real application icon (Converge「汇聚」, direction A): paper tile +
+// 10% ink hairline, Y arms 72/512, node r=56/512. This is the same mark as
+// assets/branding/app-icon/agent-workbench.ico (the window/taskbar icon), so
+// the rail and the taskbar can never show two different versions of the mark.
+// The old placeholder (source/mark-only.svg, Y arms 54/512, node r=42/512) is
+// no longer referenced here.
+import appMark from '@brand/source/icon-master.svg';
 import { navigate } from '../lib/router';
 import type { AppTheme } from '../lib/theme';
 import type { AppInfo, EngineStatus, Route } from '../types';

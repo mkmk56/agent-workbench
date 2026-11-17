@@ -15,6 +15,7 @@
     "dev": "concurrently -k -n vite,tsc,electron -c cyan,yellow,green \"vite --host 127.0.0.1\" \"tsc -p tsconfig.electron.json --watch --preserveWatchOutput\" \"wait-on tcp:127.0.0.1:5173 dist-electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
     "build": "npm run theme:build && npm run build:main && npm run build:renderer",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
+    "test:layout": "node --test --experimental-strip-types --experimental-test-isolation=none test/chat-sidebar-layout.test.ts test/window-state.test.ts",
     "start": "electron .",
     "preview": "npm run build && electron .",
     "dist": "npm run build && electron-builder --win nsis --publish never",
