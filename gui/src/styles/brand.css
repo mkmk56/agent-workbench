@@ -41,6 +41,11 @@
   --text-muted: #62656b;
   --text-disabled: #b9bdc4;
 
+  /* Decorative dots are shapes, not text: 1.4.3 does not apply to them, so
+   * they must NOT ride the aux text token (that would repaint the HUD/engine
+   * neutral dot). Pinned to the pre-AA-bump neutral value. */
+  --dot-neutral: #8a8f98;
+
   --accent: #5f656e;
   --accent-secondary: #8a8f98;
   --accent-hover: #4b5159;
@@ -148,6 +153,10 @@ html[data-theme="dark"] {
    * far below --text (17.8:1), so the aux tier keeps its weight. */
   --text-muted: #88919c;
   --text-disabled: #4b5159;
+
+  /* Decorative dots are shapes, not text; pinned to the pre-AA-bump neutral
+   * so the rail engine dot, typing indicator and offline dot look unchanged. */
+  --dot-neutral: #686f78;
 
   --accent: #c5cbd3;
   --accent-secondary: #a3abb5;
@@ -448,7 +457,10 @@ html[data-theme="dark"] .logo--dark {
 
 .nav-rail__item.is-selected {
   background: var(--accent);
-  color: #fff;
+  /* Was #fff: 1.63:1 on the light accent of the dark theme. Same class of
+   * defect as the selected conversation row; --on-accent is 11.49 dark and
+   * 5.30 light. Light-theme look is unchanged (#fff -> #f5f3ee). */
+  color: var(--on-accent);
 }
 
 .nav-rail__item:focus-visible {
@@ -515,7 +527,7 @@ html[data-theme="dark"] .logo--dark {
 }
 
 .nav-rail__engine-dot--neutral {
-  background: var(--text-muted);
+  background: var(--dot-neutral);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2680,11 +2692,16 @@ html.is-resizing-chat-sidebar * {
 .chat-item.is-selected .chat-item__name,
 .chat-item.is-selected .chat-item__time,
 .chat-item.is-selected .chat-item__preview {
-  color: #fff;
+  /* Hard-coded #fff on --accent measured 1.63:1 in the dark theme (light
+   * accent fill). --on-accent is 11.49:1 dark / 5.30:1 light; the row fill
+   * and the selected look stay exactly the same. */
+  color: var(--on-accent);
 }
 
 .chat-item.is-selected .chat-item__dot {
-  background: #fff;
+  /* Same swap as the row text: a #fff status dot on the light accent was
+   * 1.63:1 (below the 3:1 non-text floor) in dark. */
+  background: var(--on-accent);
 }
 
 .chat-item.is-selected .chat-item__avatar {
@@ -2692,8 +2709,13 @@ html.is-resizing-chat-sidebar * {
 }
 
 .chat-item.is-selected .chat-item__unread {
-  background: #fff;
-  color: var(--accent-text);
+  /* Inverse chip: the badge fill is the row's text colour, the badge text is
+   * the row fill. #fff fill + --accent-text text was 1.28:1 in dark. Note the
+   * text token cannot literally stay --on-accent here: --on-accent on a #fff
+   * chip is 1.11:1 in the light theme, so the pair is swapped instead, which
+   * keeps the same visual (light chip, dark digits) at 11.49 dark / 5.30 light. */
+  background: var(--on-accent);
+  color: var(--accent);
 }
 
 .chat-item__avatars {
@@ -2750,7 +2772,9 @@ html.is-resizing-chat-sidebar * {
   padding: 0 5px;
   border-radius: 9px;
   background: var(--accent);
-  color: #fff;
+  /* Badge text on the accent fill: #fff was 1.63:1 in dark. --on-accent is
+   * 11.49:1 dark / 5.30:1 light. */
+  color: var(--on-accent);
   font-size: 11px;
   line-height: 18px;
   font-weight: 600;

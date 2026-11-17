@@ -1104,7 +1104,8 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--text-muted);
+  /* Decorative: pinned to the pre-AA-bump neutral, not the text token. */
+  background: var(--dot-neutral);
   animation: chat-thinking-pulse 900ms ease-out infinite;
 }
 
@@ -1173,7 +1174,8 @@
 }
 
 .chat-presence__online-dot--off {
-  background: var(--text-muted);
+  /* Decorative: pinned to the pre-AA-bump neutral, not the text token. */
+  background: var(--dot-neutral);
 }
 
 /* Message files: FileCard rows inside a bubble. */
