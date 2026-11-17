@@ -202,15 +202,21 @@ test('P0-1 executor processes receive no engine secrets and no repository creden
     };
     // Probe the real master credential location exactly the way an executor
     // would: derive %APPDATA%\\agent-workbench\\credentials\\engine.env from the
-    // inherited environment. With the profile variables removed this must be
-    // null even though the file exists on the operator's PC.
+    // inherited environment. APPDATA is absent from the whitelist and Node does
+    // not re-inject it on Windows spawn, so this must be null even though the
+    // file exists on the operator's PC.
     out.realMasterViaAppData = out.env.appData
       ? path.join(out.env.appData, 'agent-workbench', 'credentials', 'engine.env')
       : null;
-    // The executor env block omits USERPROFILE/HOMEDRIVE/HOMEPATH/USERNAME
-    // (observed as null). Record os.homedir() anyway: it falls back to the
-    // Windows user-profile API even without those variables, so the residual
-    // OS limitation stays visible in the test output.
+    // USERPROFILE/HOMEDRIVE/HOMEPATH/USERNAME are not a whitelist guarantee: on
+    // Windows, Node's child_process copies these four from the spawning Node
+    // process's own process.env into the child env block even when they are
+    // absent from the supplied env (probe, task 6fedd93c: deleting them in the
+    // parent makes them disappear in the child; faking them in the parent
+    // passes the fakes through). They are therefore null only when the
+    // spawning process's env was cleaned, e.g. in tests. Record os.homedir()
+    // anyway: it falls back to the Windows user-profile API even without those
+    // variables, so the residual OS limitation stays visible in the output.
     const os = require('os');
     out.realMasterViaHome = (() => {
       try { return path.join(os.homedir(), 'AppData', 'Roaming', 'agent-workbench', 'credentials', 'engine.env'); }
@@ -248,10 +254,13 @@ test('P0-1 executor processes receive no engine secrets and no repository creden
   if (process.platform === 'win32') {
     assert.equal(out.env.appData, null, 'APPDATA leaked into the executor');
     assert.equal(out.env.localAppData, null, 'LOCALAPPDATA leaked into the executor');
-    // USERPROFILE/HOMEDRIVE/HOMEPATH/USERNAME are absent from the env block
-    // (observed as null). The profile is still reachable through os.homedir(),
-    // which falls back to the Windows user-directory API; record that residual
-    // gap via realMasterViaHome instead of asserting physical isolation.
+    // USERPROFILE/HOMEDRIVE/HOMEPATH/USERNAME are intentionally not asserted:
+    // Node re-injects them on Windows from the spawning process's own env, so
+    // their presence in the child does not mean the whitelist leaked them
+    // (probe, task 6fedd93c). The profile is still reachable through
+    // os.homedir(), which falls back to the Windows user-directory API; record
+    // that residual gap via realMasterViaHome instead of asserting physical
+    // isolation.
     assert.equal(
       out.realMasterViaAppData, null,
       'the executor can derive the real master credential path from APPDATA'
