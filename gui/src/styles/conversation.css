@@ -114,7 +114,7 @@
   border: 1px solid var(--error);
   border-radius: var(--radius-sm);
   background: var(--error-subtle);
-  color: var(--error-text);
+  color: var(--error-on-subtle);
   font-size: 12px;
   line-height: 18px;
 }

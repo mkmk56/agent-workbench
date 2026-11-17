@@ -73,6 +73,13 @@
    * its own value. Paper white already passes on the subtle fill (5.66:1),
    * so this is identical to --error-text and the light chip is unchanged. */
   --badge-error-text: #8f443c;
+  /* Flat status surfaces — notice / banner / 12px inline error — paint the
+   * same --error-subtle / --success-subtle fill as the badges, so their text
+   * needs the same AA value. Paper white already passes (5.66:1 error,
+   * 6.50:1 success), so these are identical to --error-text / --success-text
+   * here; the dark theme needs lighter values (see below). */
+  --error-on-subtle: #8f443c;
+  --success-on-subtle: #2f5d46;
   --info: #6b8ca8;
   --info-text: #4a6a80;
   --info-subtle: #e8eff3;
@@ -83,6 +90,10 @@
   --on-success: #f5f3ee;
   --on-warning: #1e2126;
   --on-error: #f5f3ee;
+  /* Destructive buttons keep the --error fill in both themes; #f5f3ee is only
+   * 4.46:1 there, so their label uses paper white instead (4.94:1). Separate
+   * token so --on-error stays as-is for any other --error usage. */
+  --on-danger: #ffffff;
   --on-info: #f5f3ee;
 
   /* No identity colours (decision A). Identity is glyph + name + tag.
@@ -198,6 +209,13 @@ html[data-theme="dark"] {
    * (L 60% -> 65%), which measures 5.19:1; the fill and every other error
    * usage (page surfaces: 4.82–5.60:1) are untouched. */
   --badge-error-text: #c88b84;
+  /* Same pairing on the flat notice / banner / inline-error surfaces. Both
+   * values match the badge ones: same 12px text, same fill, same AA rule.
+   * --error-text (4.35:1) / --success-text (3.72:1) stay untouched because
+   * they are tuned against page surfaces, where they measure 4.88–5.91:1 and
+   * 4.93–5.98:1 respectively. */
+  --error-on-subtle: #c88b84;
+  --success-on-subtle: #6ab690;
   --info: #6b8ca8;
   --info-text: #6b8ca8;
   --info-subtle: #1c2833;
@@ -207,6 +225,10 @@ html[data-theme="dark"] {
   --on-success: #101214;
   --on-warning: #101214;
   --on-error: #101214;
+  /* Destructive buttons: near-black is only 3.80:1 on the --error fill, so
+   * the label flips to paper white (4.94:1). The dark hover fill (#f6a99f)
+   * keeps --on-error, see the :hover rule below. */
+  --on-danger: #ffffff;
   --on-info: #101214;
 
   /* No identity colours (decision A). */
@@ -672,7 +694,7 @@ html[data-theme="dark"] .logo--dark {
 .btn-danger {
   background: var(--error);
   border-color: var(--error);
-  color: var(--on-error);
+  color: var(--on-danger);
 }
 
 .btn-danger:hover {
@@ -683,6 +705,8 @@ html[data-theme="dark"] .logo--dark {
 html[data-theme="dark"] .btn-danger:hover {
   background: #f6a99f;
   border-color: #f6a99f;
+  /* The dark hover fill is light: paper white would be 1.89:1. */
+  color: var(--on-error);
 }
 
 .btn-sm {
@@ -2214,11 +2238,14 @@ html[data-theme="dark"] .log-row {
   }
 }
 .field__hint--error {
-  color: var(--status-error, #b42318);
+  /* --status-error was never defined, so these hints fell back to the raw
+   * #b42318 (3.01:1 on the dark page). They sit on page surfaces, which is
+   * exactly what --error-text is tuned for (5.60:1 dark / 6.85:1 light). */
+  color: var(--error-text);
 }
 
 .rail-note--error {
-  color: var(--status-error, #b42318);
+  color: var(--error-text);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -2474,7 +2501,10 @@ html.is-resizing-chat-sidebar * {
   font-size: 10px;
   line-height: 12px;
   font-weight: 600;
-  color: var(--on-accent);
+  /* The tile is --avatar-ink in BOTH themes, so the initial must be a light
+   * ink too — --on-accent is dark in the dark theme and measured 1.16:1.
+   * Same rule the .chat-item__avatar--* tiles already follow. */
+  color: #f5f3ee;
 }
 
 .status-strip__name {

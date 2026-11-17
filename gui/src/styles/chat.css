@@ -465,7 +465,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--error-subtle);
-  color: var(--error-text);
+  color: var(--error-on-subtle);
   font-size: 12px;
   line-height: 18px;
 }
@@ -586,6 +586,12 @@
 
 .chat-card__status.is-error {
   color: var(--error-text);
+}
+
+/* Inside a failed card the tint is --error-subtle, where --error-text only
+ * measures 4.35:1 in the dark theme; use the on-subtle value there. */
+.chat-card--failed .chat-card__status.is-error {
+  color: var(--error-on-subtle);
 }
 
 .chat-card__footer {
@@ -862,7 +868,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--error-subtle);
-  color: var(--error-text);
+  color: var(--error-on-subtle);
   font-size: 12px;
   line-height: 18px;
 }
@@ -1844,7 +1850,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--error-subtle);
-  color: var(--error-text);
+  color: var(--error-on-subtle);
   font-size: 12px;
   line-height: 18px;
 }

@@ -77,7 +77,7 @@
 .astryx-button[data-variant="destructive"] {
   background: var(--error);
   border-color: var(--error);
-  color: var(--on-error);
+  color: var(--on-danger);
 }
 
 .astryx-button[data-variant="destructive"]:hover {
@@ -88,6 +88,8 @@
 html[data-theme="dark"] .astryx-button[data-variant="destructive"]:hover {
   background: #f6a99f;
   border-color: #f6a99f;
+  /* The dark hover fill is light: paper white would be 1.89:1. */
+  color: var(--on-error);
 }
 
 .astryx-button[aria-disabled="true"],
@@ -394,13 +396,13 @@ html[data-theme="dark"] .astryx-button[data-variant="destructive"]:hover {
 .brand-banner .astryx-banner[data-status="error"] {
   background: var(--error-subtle);
   border-color: var(--error-subtle);
-  color: var(--error-text);
+  color: var(--error-on-subtle);
 }
 
 .brand-banner .astryx-banner[data-status="success"] {
   background: var(--success-subtle);
   border-color: var(--success-subtle);
-  color: var(--success-text);
+  color: var(--success-on-subtle);
 }
 
 .brand-banner .astryx-banner-icon {
@@ -608,11 +610,11 @@ html[data-theme="dark"] .astryx-button[data-variant="destructive"]:hover {
 .notice--success {
   border-color: var(--success);
   background: var(--success-subtle);
-  color: var(--success-text);
+  color: var(--success-on-subtle);
 }
 
 .notice--success strong {
-  color: var(--success-text);
+  color: var(--success-on-subtle);
 }
 
 .notice--warning {
@@ -628,9 +630,9 @@ html[data-theme="dark"] .astryx-button[data-variant="destructive"]:hover {
 .notice--error {
   border-color: var(--error);
   background: var(--error-subtle);
-  color: var(--error-text);
+  color: var(--error-on-subtle);
 }
 
 .notice--error strong {
-  color: var(--error-text);
+  color: var(--error-on-subtle);
 }
