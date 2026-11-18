@@ -52,6 +52,14 @@ export function setExecutorTempDir(dir) {
   executorTempDir = dir ? String(dir) : null;
 }
 
+// Append a directory to a PATH-style value once (case-insensitive
+// dedup, so repeated restarts never stack the same entry).
+export function appendPathOnce(pathValue, dir) {
+  const parts = String(pathValue || '').split(';').filter(Boolean);
+  if (!parts.some((part) => part.toLowerCase() === String(dir).toLowerCase())) parts.push(dir);
+  return parts.join(';');
+}
+
 export function buildExecutorEnv(extra = {}) {
   const keys = process.platform === 'win32' ? BASE_ENV_KEYS_WIN : BASE_ENV_KEYS_POSIX;
   const env = {};

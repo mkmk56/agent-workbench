@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { describeResolution, resolveDshCommand } from '../config.js';
 import { writeTaskMcpConfig } from '../mcp-config.js';
-import { spawnProcess, killTree } from './process.js';
+import { spawnProcess, killTree, appendPathOnce } from './process.js';
 
 const MAX_HISTORY_CHARS = 12000;
 
@@ -112,7 +112,19 @@ export const dshExecutor = {
     // dsh has no built-in MCP client today, but its scoped credential and
     // config path are injected so a future tool bridge cannot accidentally
     // inherit the master token.
-    let env = {};
+    // 2026-11-18 user decision: full permissions for all agents.
+    // dsh sandbox is broken on Win10 19045 (restricted-token spawn
+    // dies 0xC0000142), so run it unconfined. Overridable via the
+    // engine environment (DSH_PERMISSION_MODE).
+    // These non-credential keys live outside the try: if the MCP config
+    // write throws, env must still carry them, otherwise dsh silently
+    // falls back to workspace-write and 0xC0000142 recurs (review 7fcc225).
+    // Engine session predates the registry user-PATH update; append the
+    // PowerShell 7 dir so bare `pwsh` resolves for dsh children.
+    let env = {
+      DSH_PERMISSION_MODE: process.env.DSH_PERMISSION_MODE || 'danger-full-access',
+      PATH: appendPathOnce(process.env.PATH, 'C:\\Claude\\pwsh7')
+    };
     try {
       const mcpConfigPath = writeTaskMcpConfig(ctx.config, {
         agent: 'dsh',
@@ -121,16 +133,9 @@ export const dshExecutor = {
         chatId: task.chat_id || null
       });
       env = {
+        ...env,
         WORKBENCH_MCP_CONFIG: mcpConfigPath,
         WORKBENCH_MCP_URL: ctx.config.mcpUrl,
-        // 2026-11-18 user decision: full permissions for all agents.
-        // dsh sandbox is broken on Win10 19045 (restricted-token spawn
-        // dies 0xC0000142), so run it unconfined. Overridable via the
-        // engine environment (DSH_PERMISSION_MODE).
-        DSH_PERMISSION_MODE: process.env.DSH_PERMISSION_MODE || 'danger-full-access',
-        // Engine session predates the registry user-PATH update; append
-        // the PowerShell 7 dir so bare `pwsh` resolves for dsh children.
-        PATH: [process.env.PATH, 'C:\\Claude\\pwsh7'].filter(Boolean).join(';'),
         WORKBENCH_MCP_TOKEN: task.auth_token
       };
       ctx.log('system', `dsh task-bound mcp config=${mcpConfigPath} (token injected via env)`);

@@ -1,6 +1,6 @@
 import { describeResolution, resolveClaudeCommand } from '../config.js';
 import { writeTaskMcpConfig } from '../mcp-config.js';
-import { spawnProcess, killTree } from './process.js';
+import { spawnProcess, killTree, appendPathOnce } from './process.js';
 
 function buildArgs(task, config) {
   const args = [
@@ -111,7 +111,7 @@ export const claudeExecutor = {
     const env = { ...ctx.config.claudeEnv };
     // 2026-11-18 user decision: full permissions for all agents (Claude
     // already runs --dangerously-skip-permissions). Same PATH note as dsh.
-    env.PATH = [env.PATH || process.env.PATH, 'C:\\Claude\\pwsh7'].filter(Boolean).join(';');
+    env.PATH = appendPathOnce(env.PATH || process.env.PATH, 'C:\\Claude\\pwsh7');
     if (ctx.config.agentApprovalGate) {
       // request_approval blocks until the user answers. Raise the MCP tool
       // timeout above the approval timeout so the client does not abort first.
