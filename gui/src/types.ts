@@ -399,6 +399,58 @@ export interface ChatStatusPayload {
   participants?: ChatParticipant[];
 }
 
+/* ------------------------------------------------------------------ *
+ * REA Phase 2 (docs/rea/TARGET_ARCHITECTURE.md D1/D3/D4)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Per-chat unread counters of one agent, straight from the engine `inbox`
+ * tool. `unread` counts every message after the cursor; the category counters
+ * exclude the agent's own messages.
+ */
+export interface ChatInboxEntry {
+  chat_id: string;
+  name: string;
+  status: string;
+  last_read_seq: number;
+  unread: number;
+  mentions_you: number;
+  replies_to_you: number;
+  from_owner: number;
+  recalled: number;
+  last_message_at: string | null;
+}
+
+/** Self-check block the engine returns with every inbox read. */
+export interface ChatInboxIdentity {
+  agent_id: string;
+  participant_id: string | null;
+  owner: string | null;
+  platform: string | null;
+  display_name: string;
+  human: boolean;
+  status: string;
+}
+
+export interface ChatInboxPayload {
+  you: ChatInboxIdentity;
+  total_unread: number;
+  chats: ChatInboxEntry[];
+}
+
+/** Profile Card of one agent (engine `agent_profile`). */
+export interface AgentProfileCard {
+  agent_id: string;
+  participant_id: ChatParticipantId | null;
+  owner: string | null;
+  platform: string | null;
+  display_name: string;
+  profile: string | null;
+  color: string | null;
+  status: string;
+  created_at: number;
+}
+
 /** Draft returned by the main process after a dialog / drop / paste intake. */
 export interface ChatUploadDraft {
   draftId: string;
@@ -520,9 +572,17 @@ export interface WorkbenchApi {
   ) => Promise<EngineResult<{ chat_id: string; participants: ChatParticipant[] }>>;
   chatMarkRead: (input: {
     chatId: string;
+    /** Master token only: advance a built-in agent's cursor (Inbox view). */
+    participantId?: string;
     upToSeq?: number;
     messageId?: string;
   }) => Promise<EngineResult<{ chat_id: string; last_read_seq: number; unread: number }>>;
+  /** REA Phase 2: per-agent per-chat unread counters (`inbox` tool). */
+  chatInbox: (input?: { agentId?: string; chatId?: string }) => Promise<EngineResult<ChatInboxPayload>>;
+  /** REA Phase 2: read a Profile Card or update one (≤300 characters). */
+  agentProfile: (input?: { agentId?: string; profile?: string }) => Promise<
+    EngineResult<AgentProfileCard>
+  >;
   pickChatFiles: () => Promise<EngineResult<{ drafts: ChatUploadDraft[] }>>;
   registerChatFiles: (
     files: File[],
@@ -583,6 +643,7 @@ export interface WorkbenchApi {
 
 export type Route =
   | { name: 'chats' }
+  | { name: 'inbox' }
   | { name: 'chat'; id: string }
   | { name: 'tasks'; scope?: 'history' }
   | { name: 'task'; id: string }

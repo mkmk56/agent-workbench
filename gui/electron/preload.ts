@@ -152,8 +152,16 @@ const workbench = {
   chatStatus: (chatId: string) => ipcRenderer.invoke('engine:chat-status', chatId),
   chatParticipants: (chatId: string) =>
     ipcRenderer.invoke('engine:chat-participants', chatId),
-  chatMarkRead: (input: { chatId: string; upToSeq?: number; messageId?: string }) =>
-    ipcRenderer.invoke('engine:chat-mark-read', input),
+  chatMarkRead: (input: {
+    chatId: string;
+    participantId?: string;
+    upToSeq?: number;
+    messageId?: string;
+  }) => ipcRenderer.invoke('engine:chat-mark-read', input),
+  chatInbox: (input?: { agentId?: string; chatId?: string }) =>
+    ipcRenderer.invoke('engine:chat-inbox', input ?? {}),
+  agentProfile: (input?: { agentId?: string; profile?: string }) =>
+    ipcRenderer.invoke('engine:agent-profile', input ?? {}),
   pickChatFiles: () => ipcRenderer.invoke('chat:pick-files'),
   registerChatFiles: (files: File[], source?: IntakeSource) =>
     registerChatFiles(files, source ?? 'drop'),

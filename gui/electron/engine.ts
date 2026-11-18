@@ -719,10 +719,17 @@ export class EngineManager {
    */
   async chatMarkRead(input: {
     chatId: string;
+    participantId?: string;
     upToSeq?: number;
     messageId?: string;
   }): Promise<Record<string, unknown>> {
     const args: Record<string, unknown> = { chat_id: input.chatId };
+    // Phase 2 inbox: the master token may advance another participant's
+    // cursor, which is how opening a chat from the Inbox clears that agent's
+    // per-category counters. Omitted means "the token identity".
+    if (input.participantId != null) {
+      args.participant_id = input.participantId;
+    }
     if (input.upToSeq != null) {
       args.up_to_seq = input.upToSeq;
     }
@@ -730,6 +737,43 @@ export class EngineManager {
       args.message_id = input.messageId;
     }
     return this.callTool('chat_mark_read', args);
+  }
+
+  /**
+   * Per-chat unread counters for one agent (REA Phase 2 `inbox` tool).
+   *
+   * Reading the inbox does not mark anything read; the response carries a
+   * `you` self-check block so the UI can prove which identity answered.
+   */
+  async chatInbox(input: { agentId?: string; chatId?: string } = {}): Promise<
+    Record<string, unknown>
+  > {
+    const args: Record<string, unknown> = {};
+    if (input.agentId != null) {
+      args.agent_id = input.agentId;
+    }
+    if (input.chatId != null) {
+      args.chat_id = input.chatId;
+    }
+    return this.callTool('inbox', args);
+  }
+
+  /**
+   * Read a Profile Card, or update one (REA Phase 2 `agent_profile` tool).
+   * The engine enforces the 300-character cap and the "own profile only" rule;
+   * the renderer never decides authorization on its own.
+   */
+  async agentProfile(input: { agentId?: string; profile?: string } = {}): Promise<
+    Record<string, unknown>
+  > {
+    const args: Record<string, unknown> = {};
+    if (input.agentId != null) {
+      args.agent_id = input.agentId;
+    }
+    if (input.profile !== undefined) {
+      args.profile = input.profile;
+    }
+    return this.callTool('agent_profile', args);
   }
 
   // ---- Chunked upload (backend tool contract: init → chunk×N → complete) ----

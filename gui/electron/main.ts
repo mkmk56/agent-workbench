@@ -63,6 +63,8 @@ const WINDOW_STATE_FILE = path.join(DATA_DIR, 'window.json');
 const WINDOW_STATE_SAVE_DELAY = 400;
 const ATTACHMENTS_TEMP_DIR = path.join(DATA_DIR, 'attachments', 'pending');
 const ATTACHMENTS_CACHE_DIR = path.join(DATA_DIR, 'attachments', 'cache');
+/** REA Phase 2 Profile Card limit (docs/rea/DATABASE_DESIGN.md, D1). */
+const PROFILE_MAX_CHARS = 300;
 
 // The renderer never handles host paths: drafts are opaque ids in this service.
 const attachments = new AttachmentService({
@@ -554,7 +556,61 @@ function registerIpc(): void {
       if (upToSeq == null && messageId == null) {
         throw new Error('标记已读需要 upToSeq 或 messageId。');
       }
-      return engine.chatMarkRead({ chatId: requireChatId(value.chatId), upToSeq, messageId });
+      // Phase 2 Inbox: `participantId` lets the master token advance a built-in
+      // agent's cursor when the owner opens that chat. Absent = token identity.
+      const participantId =
+        value.participantId == null || value.participantId === ''
+          ? undefined
+          : requireParticipantId(value.participantId);
+      return engine.chatMarkRead({
+        chatId: requireChatId(value.chatId),
+        participantId,
+        upToSeq,
+        messageId,
+      });
+    }),
+  );
+
+  // REA Phase 2: per-agent unread counters (`inbox` tool).
+  handle('engine:chat-inbox', (input) =>
+    engineResult(() => {
+      const value = input == null ? {} : asRecord(input);
+      const agentId =
+        value.agentId == null || value.agentId === ''
+          ? undefined
+          : requireAgentId(value.agentId);
+      const chatId =
+        value.chatId == null || value.chatId === ''
+          ? undefined
+          : requireChatId(value.chatId);
+      return engine.chatInbox({ agentId, chatId });
+    }),
+  );
+
+  // REA Phase 2: Profile Card read / update (`agent_profile` tool). The engine
+  // enforces the 300-character cap and the "own profile only" authorization;
+  // the main process only rejects obviously malformed input.
+  handle('engine:agent-profile', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      const agentId =
+        value.agentId == null || value.agentId === ''
+          ? undefined
+          : requireAgentId(value.agentId);
+      let profile: string | undefined;
+      if (value.profile !== undefined) {
+        if (typeof value.profile !== 'string') {
+          throw new Error('简介必须是字符串。');
+        }
+        if (value.profile.length > PROFILE_MAX_CHARS) {
+          throw new Error(`简介不能超过 ${PROFILE_MAX_CHARS} 个字符。`);
+        }
+        profile = value.profile;
+      }
+      if (agentId == null && profile === undefined) {
+        throw new Error('读取简介需要 agentId。');
+      }
+      return engine.agentProfile({ agentId, profile });
     }),
   );
 
@@ -901,6 +957,28 @@ function requireFileId(value: unknown): string {
 function requireMessageId(value: unknown, label: string): string {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/.test(value)) {
     throw new Error(`${label} 无效。`);
+  }
+  return value;
+}
+
+/** Built-in participant handles plus paired agent ids (agent_<random>). */
+function requireParticipantId(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    !/^(?:user|muse|claude|dsh|agent_[A-Za-z0-9_-]{1,64})$/.test(value)
+  ) {
+    throw new Error('参与者 ID 无效。');
+  }
+  return value;
+}
+
+/** Agent ids accept both the canonical agent_* id and the participant handle. */
+function requireAgentId(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    !/^(?:muse|claude|dsh|agent_[A-Za-z0-9_-]{1,64})$/.test(value)
+  ) {
+    throw new Error('Agent ID 无效。');
   }
   return value;
 }

@@ -1,8 +1,12 @@
 import type {
+  AgentProfileCard,
   ChatFile,
   ChatFileKind,
   ChatFileQuery,
   ChatFileReadResult,
+  ChatInboxEntry,
+  ChatInboxIdentity,
+  ChatInboxPayload,
   ChatMessage,
   ChatMessageQuery,
   ChatMention,
@@ -28,10 +32,14 @@ import type {
  */
 
 export type {
+  AgentProfileCard,
   ChatFile,
   ChatFileKind,
   ChatFileQuery,
   ChatFileReadResult,
+  ChatInboxEntry,
+  ChatInboxIdentity,
+  ChatInboxPayload,
   ChatMessage,
   ChatMessageQuery,
   ChatMention,
@@ -47,6 +55,8 @@ export type {
 
 const NO_MAIN = '主进程未连接（浏览器预览）。';
 const NO_CHAT_BRIDGE = '聊天接口尚未接通（IPC 桥未就绪）。';
+/** Profile Card limit, mirrored from docs/rea/DATABASE_DESIGN.md (D1). */
+export const PROFILE_MAX_LENGTH = 300;
 
 export type ChatSender = ChatParticipantId | 'unknown';
 
@@ -107,8 +117,17 @@ interface ChatBridge {
   ) => Promise<EngineResult<{ participants?: unknown[] } | unknown>>;
   chatMarkRead?: (input: {
     chatId: string;
+    participantId?: string;
     upToSeq?: number;
     messageId?: string;
+  }) => Promise<EngineResult<unknown>>;
+  chatInbox?: (input?: {
+    agentId?: string;
+    chatId?: string;
+  }) => Promise<EngineResult<unknown>>;
+  agentProfile?: (input?: {
+    agentId?: string;
+    profile?: string;
   }) => Promise<EngineResult<unknown>>;
   listChatMessages?: (input: ChatMessageQuery) => Promise<EngineResult<unknown>>;
   readChatFile?: (input: ChatFileQuery) => Promise<EngineResult<unknown>>;
@@ -818,6 +837,7 @@ export async function chatParticipantsOnce(
 
 export async function markChatRead(input: {
   chatId: string;
+  participantId?: string;
   upToSeq?: number;
   messageId?: string;
 }): Promise<EngineResult<{ lastReadSeq: number; unread: number }>> {
@@ -843,6 +863,155 @@ export async function markChatRead(input: {
     };
   } catch {
     return { ok: false, error: '标记已读失败（主进程调用异常）。' };
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * REA Phase 2: Inbox and Profile Card
+ * ------------------------------------------------------------------ */
+
+export function normalizeInboxEntry(raw: unknown): ChatInboxEntry | null {
+  const record = asRecord(raw);
+  const chatId = readString(record, 'chat_id', 'chatId');
+  if (chatId == null) {
+    return null;
+  }
+  return {
+    chat_id: chatId,
+    name: readString(record, 'name') ?? '未命名群聊',
+    status: readString(record, 'status') ?? 'active',
+    last_read_seq: readNumber(record, 'last_read_seq', 'lastReadSeq') ?? 0,
+    unread: readNumber(record, 'unread') ?? 0,
+    mentions_you: readNumber(record, 'mentions_you', 'mentionsYou') ?? 0,
+    replies_to_you: readNumber(record, 'replies_to_you', 'repliesToYou') ?? 0,
+    from_owner: readNumber(record, 'from_owner', 'fromOwner') ?? 0,
+    recalled: readNumber(record, 'recalled') ?? 0,
+    last_message_at: readString(record, 'last_message_at', 'lastMessageAt'),
+  };
+}
+
+export function normalizeInbox(raw: unknown): ChatInboxPayload | null {
+  const record = asRecord(raw);
+  const you = asRecord(record.you);
+  const agentId = readString(you, 'agent_id', 'agentId');
+  if (agentId == null) {
+    return null;
+  }
+  const identity: ChatInboxIdentity = {
+    agent_id: agentId,
+    participant_id: readString(you, 'participant_id', 'participantId'),
+    owner: readString(you, 'owner'),
+    platform: readString(you, 'platform'),
+    display_name: readString(you, 'display_name', 'displayName') ?? agentId,
+    human: you.human === true,
+    status: readString(you, 'status') ?? 'active',
+  };
+  const chats = unwrapList(record, ['chats'])
+    .map(normalizeInboxEntry)
+    .filter((entry): entry is ChatInboxEntry => entry != null);
+  return {
+    you: identity,
+    total_unread: readNumber(record, 'total_unread', 'totalUnread')
+      ?? chats.reduce((sum, entry) => sum + entry.unread, 0),
+    chats,
+  };
+}
+
+export function normalizeAgentProfile(raw: unknown): AgentProfileCard | null {
+  const record = asRecord(raw);
+  const agentId = readString(record, 'agent_id', 'agentId', 'id');
+  if (agentId == null) {
+    return null;
+  }
+  return {
+    agent_id: agentId,
+    participant_id: toParticipantId(record.participant_id ?? record.participantId),
+    owner: readString(record, 'owner'),
+    platform: readString(record, 'platform'),
+    display_name: readString(record, 'display_name', 'displayName') ?? agentId,
+    profile: readString(record, 'profile'),
+    color: readString(record, 'color'),
+    status: readString(record, 'status') ?? 'active',
+    created_at: readNumber(record, 'created_at', 'createdAt') ?? 0,
+  };
+}
+
+/** Per-chat unread counters of one agent. Reading the inbox marks nothing read. */
+export async function chatInboxOnce(
+  agentId?: string,
+): Promise<EngineResult<ChatInboxPayload>> {
+  if (!window.workbench) {
+    return { ok: false, error: NO_MAIN };
+  }
+  const api = bridge();
+  if (!api?.chatInbox) {
+    return { ok: false, error: NO_CHAT_BRIDGE };
+  }
+  try {
+    const result = await api.chatInbox(agentId == null ? {} : { agentId });
+    if (!result.ok) {
+      return { ok: false, error: failureMessage(result.error, '读取 Inbox 失败。') };
+    }
+    const inbox = normalizeInbox(result.data);
+    return inbox != null
+      ? { ok: true, data: inbox }
+      : { ok: false, error: '引擎未返回有效的 Inbox 数据。' };
+  } catch {
+    return { ok: false, error: '读取 Inbox 失败（主进程调用异常）。' };
+  }
+}
+
+/** Read one Profile Card. */
+export async function agentProfileOnce(
+  agentId: string,
+): Promise<EngineResult<AgentProfileCard>> {
+  if (!window.workbench) {
+    return { ok: false, error: NO_MAIN };
+  }
+  const api = bridge();
+  if (!api?.agentProfile) {
+    return { ok: false, error: NO_CHAT_BRIDGE };
+  }
+  try {
+    const result = await api.agentProfile({ agentId });
+    if (!result.ok) {
+      return { ok: false, error: failureMessage(result.error, '读取简介失败。') };
+    }
+    const card = normalizeAgentProfile(result.data);
+    return card != null
+      ? { ok: true, data: card }
+      : { ok: false, error: '引擎未返回有效的简介数据。' };
+  } catch {
+    return { ok: false, error: '读取简介失败（主进程调用异常）。' };
+  }
+}
+
+/** Update one Profile Card (engine enforces ≤300 chars and own-profile-only). */
+export async function updateAgentProfile(
+  agentId: string,
+  profile: string,
+): Promise<EngineResult<AgentProfileCard>> {
+  if (!window.workbench) {
+    return { ok: false, error: NO_MAIN };
+  }
+  const api = bridge();
+  if (!api?.agentProfile) {
+    return { ok: false, error: NO_CHAT_BRIDGE };
+  }
+  if (profile.length > PROFILE_MAX_LENGTH) {
+    return { ok: false, error: `简介不能超过 ${PROFILE_MAX_LENGTH} 个字符。` };
+  }
+  try {
+    const result = await api.agentProfile({ agentId, profile });
+    if (!result.ok) {
+      return { ok: false, error: failureMessage(result.error, '保存简介失败。') };
+    }
+    const card = normalizeAgentProfile(result.data);
+    return card != null
+      ? { ok: true, data: card }
+      : { ok: false, error: '引擎未返回有效的简介数据。' };
+  } catch {
+    return { ok: false, error: '保存简介失败（主进程调用异常）。' };
   }
 }
 
