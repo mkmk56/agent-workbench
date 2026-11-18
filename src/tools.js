@@ -7,6 +7,7 @@ import {
 import {
   AgentService, agentIdForParticipant, participantForAgentId
 } from './agents.js';
+import { auditEvent } from './audit.js';
 
 const asText = (value) => ({
   content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }]
@@ -78,9 +79,23 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
   // the store keeps older test harnesses working without new wiring.
   const agentService = agents ?? new AgentService({ store, config });
 
+  const auditDenied = (fields) => {
+    auditEvent(config?.dataDir ?? store?.dataDir, 'access_denied', {
+      auth: `${auth?.token_kind ?? 'none'}:${auth?.participant ?? 'none'}`,
+      request_id: requestId,
+      ...fields
+    });
+  };
+
   // Chat CRUD is a human/Muse collaboration action, not an executor action.
   const requireChatAdmin = (action) => {
     if (!master && auth?.role !== 'human') {
+      auditDenied({
+        surface: `tool:${action}`,
+        code: 'not_admin',
+        status: 403,
+        detail: `${action} requires a human or master token`
+      });
       throw new Error(`${action} requires a human or master token`);
     }
   };
@@ -101,6 +116,17 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
       try {
         result = await handler(args, extra);
       } catch (error) {
+        // 403-class denials are part of the connection audit trail. Services
+        // mark errors they already recorded so each rejection is written once.
+        if (error?.status === 403 && !error.audited) {
+          auditDenied({
+            surface: `tool:${name}`,
+            code: error.code ?? 'error',
+            status: 403,
+            detail: error.message
+          });
+          if (typeof error === 'object') error.audited = true;
+        }
         console.log(`tool=${name} request_id=${requestId} auth=${auth?.token_kind ?? 'none'}:${auth?.participant ?? 'none'}`
           + ` duration_ms=${Date.now() - started} result=error params=${summarizeArgs(args)} error=${truncate(error.message, 160)}`);
         throw error;
@@ -429,7 +455,9 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
       + 'act_recipients start sub-tasks. The sender is derived from the bearer token: human/master may post only '
       + 'as user; the muse token only as muse (and must send client_msg_id); an executor may only post as itself '
       + 'with its own task_id. Only the muse token may set act_recipients. A user message increments the chat '
-      + 'epoch; a dispatch carrying a stale epoch is rejected. files must be file_id values.',
+      + 'epoch; a dispatch carrying a stale epoch is rejected. files must be file_id values. '
+      + 'A 409 new_messages error means the recipient has unread messages: pull them with list_chat_messages '
+      + 'or chat_get_context first, then retry the send (only the chat owner may pass ignore_new).',
     inputSchema: {
       chat_id: z.string().min(1).describe('Chat id'),
       from: z.string().min(1).describe('Sender; must match the token identity (user/muse/claude/dsh/agent_*)'),
@@ -750,6 +778,13 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
       const own = auth?.agent_id ?? agentIdForParticipant(auth?.participant);
       const target = agent_id ?? own;
       if (!readAll && target !== own) {
+        auditDenied({
+          surface: 'tool:agent_profile',
+          code: 'forbidden_profile',
+          status: 403,
+          target: String(target ?? ''),
+          detail: `agent '${auth?.participant}' can only read or update its own profile`
+        });
         throw new Error(`agent '${auth?.participant}' can only read or update its own profile`);
       }
       if (profile !== undefined) {

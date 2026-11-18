@@ -150,3 +150,29 @@ owner Agent 名额、list_chats unread 与拉取即已读、P1-1 对账、catego
 已知失败：`security-isolation.test.js` 的 P0-1 用例在本机因
 `process.env.TEMP` 已等于 `.tmp-sandbox` 而失败，与本次改动无关（改动前
 基线同样失败）。
+## 8. 交叉审查收尾（2026-11-18，dsh review 9fc91089 的三个中等项）
+
+1. **409 写进工具描述**：`send_chat_message` 的 description 增加一句：409
+   `new_messages` 表示对方有未读消息，先用 `list_chat_messages` /
+   `chat_get_context` 拉取再重试（仅群主可用 `ignore_new`）。纯描述改动。
+2. **连接类审计落盘**：新增 `src/audit.js`，append-only 写入
+   `data/security-audit.log`（重启不丢，风格同 `data/chat-<chat>.log`）。
+   覆盖 `pairing_code_created / agent_pair / agent_reclaim /
+   agent_pair_failed / agent_revoke / access_denied`；配对码与 token 在写入前
+   脱敏，敏感字段整项丢弃，审计失败不影响主流程。`access_denied` 覆盖
+   forged_identity、`recipient_not_member` / `mention_not_member`、召回越权与
+   超窗、非管理员操作、profile 越权；同一拒绝只记一行（`error.audited`
+   标记，工具层兜底去重）。详见 SECURITY_DESIGN §5。
+3. **禁第三方拉内置 Agent 入群**：`MessageService.send` 只在发送方不是第三方
+   Agent 时才允许内置执行器（claude/dsh）隐式入群；第三方 `to=claude` 或
+   `@claude`/`@dsh` 且对方尚未入群时返回既有语义的 403
+   `recipient_not_member` / `mention_not_member`，不再创建成员、未读与 409。
+   内置 Agent 之间的默认群互发、以及 user/muse/master 发起的隐式入群不变；
+   第三方要拉内置 Agent 必须由群主 `chat_add_member` 显式添加。
+
+新增用例（`test/rea-phase2.test.js`）：审计落盘与脱敏/重启追加、第三方按
+收件人/提及拉内置 403 且不产生成员与未读、显式添加后恢复正常、内置 Agent
+在默认群仍可互发并隐式入群。
+
+验证：`npm run typecheck` 0 失败；`npm test` 90 用例、89 通过，唯一失败仍是
+既有的 `security-isolation` P0-1（本机 `TEMP` 等于 `.tmp-sandbox`，与本次无关）。

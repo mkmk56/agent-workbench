@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
 import { identifyToken } from '../src/auth.js';
 import { registerTools } from '../src/tools.js';
 import { RECALLED_PLACEHOLDER } from '../src/messages.js';
-import { ProtocolError } from '../src/agents.js';
+import { AgentService, ProtocolError } from '../src/agents.js';
+import { AUDIT_FILE } from '../src/audit.js';
 import { runMigration } from '../scripts/migrate-rea-phase2.mjs';
 import {
   authClaude, authHuman, authMaster, authMuse, makeServices, seedChat, seedTask, tempDir
@@ -733,6 +734,171 @@ test('create_chat stores a category and always creates a link-visible chat', asy
     assert.equal(body.visibility, 'link');
     assert.equal(store.getChat(body.chat_id).visibility, 'link');
     assert.equal(store.getChat(body.chat_id).category, 'research');
+  } finally {
+    cleanup(dir, store);
+  }
+});
+
+test('connection audit persists pairing, reclaim, revoke and denials without secrets', () => {
+  const dir = tempDir();
+  const services = makeServices(dir);
+  const { store, agents, chats } = services;
+  const auditPath = join(dir, AUDIT_FILE);
+  try {
+    agents.ensureBuiltins();
+
+    const code = agents.createPairingCode();
+    const paired = agents.redeemPairingCode({ code: code.code, name: 'Audit' });
+    const reclaimCode = agents.createPairingCode();
+    const reclaimed = agents.redeemPairingCode({
+      code: reclaimCode.code, name: 'Audit', reclaim: true
+    });
+    assert.equal(reclaimed.reclaim, true);
+
+    // A rejected pairing attempt is audited too (bad code, never the secret).
+    assert.throws(
+      () => agents.redeemPairingCode({ code: 'ZZZZ-9999', name: 'Ghost' }),
+      (error) => error.code === 'invalid_pairing_code'
+    );
+    agents.revokeToken(paired.agent.agent_id);
+    assert.throws(
+      () => agents.revokeToken('agent_muse'),
+      (error) => error.code === 'cannot_revoke_builtin'
+    );
+
+    // A forged author block is an access denial on the send path.
+    const chatId = seedChat(store);
+    const taskId = seedTask(store, { agent: 'claude', chatId }).id;
+    assert.throws(
+      () => chats.send({
+        auth: authClaude, chat_id: chatId, from: 'claude', to: 'muse', task_id: taskId,
+        body: 'I am human', author: { human: true }
+      }),
+      (error) => error.code === 'forged_identity' && error.audited === true
+    );
+
+    const log = readFileSync(auditPath, 'utf8');
+    for (const event of [
+      'pairing_code_created', 'agent_pair', 'agent_reclaim', 'agent_pair_failed',
+      'agent_revoke', 'access_denied'
+    ]) {
+      assert.match(log, new RegExp(`\\[audit\\] event=${event}\\b`), `missing ${event}`);
+    }
+    assert.match(log, /code=forged_identity/);
+    assert.match(log, /code=cannot_revoke_builtin/);
+    assert.match(log, /code=invalid_pairing_code/);
+    // One-time credentials never reach the audit file.
+    assert.ok(!log.includes(code.code), 'pairing code must never be logged');
+    assert.ok(!log.includes(reclaimCode.code), 'pairing code must never be logged');
+    assert.ok(!log.includes(paired.token), 'access token must never be logged');
+    assert.ok(!log.includes(reclaimed.token), 'reclaimed access token must never be logged');
+
+    // Append-only across a restart: a new store + service keeps the old lines.
+    store.close();
+    const reopened = new Store(services.config.dbPath, dir);
+    try {
+      const restarted = new AgentService({ store: reopened, config: services.config });
+      restarted.createPairingCode();
+      const afterRestart = readFileSync(auditPath, 'utf8');
+      assert.ok(afterRestart.startsWith(log), 'previous audit lines are preserved');
+      assert.ok(afterRestart.length > log.length, 'new audit lines are appended');
+      assert.match(afterRestart, /event=agent_revoke/);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    cleanup(dir, store);
+  }
+});
+
+test('a third-party agent cannot auto-join a built-in executor', () => {
+  const dir = tempDir();
+  const services = makeServices(dir);
+  const { store, agents, chats } = services;
+  try {
+    agents.ensureBuiltins();
+    const code = agents.createPairingCode({ maxAgents: 2 });
+    const paired = agents.redeemPairingCode({ code: code.code, name: 'Scout' });
+    const agentAuth = agents.identifyAccessToken(paired.token);
+    const chatId = seedChat(store);
+    agents.addMember({ chatId, agentId: paired.agent.agent_id });
+
+    assert.equal(store.isChatParticipant(chatId, 'claude'), false);
+    assert.equal(store.isChatParticipant(chatId, 'dsh'), false);
+
+    // Addressed directly: recipient_not_member, and no membership is created.
+    assert.throws(
+      () => chats.send({
+        auth: agentAuth, chat_id: chatId, from: paired.agent.agent_id, to: 'claude', body: 'hi claude'
+      }),
+      (error) => error.code === 'recipient_not_member' && error.status === 403
+    );
+    assert.equal(store.isChatParticipant(chatId, 'claude'), false, 'claude must not be auto-joined');
+    assert.equal(store.getChatMember(chatId, 'agent_claude'), null);
+    assert.equal(store.getInboxCursor(chatId, 'agent_claude'), null, 'no unread armed');
+
+    // Mentioned: mention_not_member, and still no join.
+    assert.throws(
+      () => chats.send({
+        auth: agentAuth, chat_id: chatId, from: paired.agent.agent_id, to: 'muse',
+        body: 'cc claude', mentions: ['claude']
+      }),
+      (error) => error.code === 'mention_not_member' && error.status === 403
+    );
+    assert.equal(store.isChatParticipant(chatId, 'claude'), false, 'mention must not auto-join');
+    assert.throws(
+      () => chats.send({
+        auth: agentAuth, chat_id: chatId, from: paired.agent.agent_id, to: 'muse',
+        body: 'cc dsh', mentions: ['dsh']
+      }),
+      (error) => error.code === 'mention_not_member'
+    );
+    assert.equal(store.isChatParticipant(chatId, 'dsh'), false);
+
+    // The denial is on disk.
+    assert.match(
+      readFileSync(join(dir, AUDIT_FILE), 'utf8'),
+      /event=access_denied.*code=recipient_not_member|event=access_denied.*code=mention_not_member/
+    );
+
+    // Only the owner's explicit chat_add_member opens the chat to the executor.
+    agents.addMember({ chatId, agentId: 'claude' });
+    const delivered = chats.send({
+      auth: agentAuth, chat_id: chatId, from: paired.agent.agent_id, to: 'claude', body: 'now allowed'
+    });
+    assert.ok(delivered.message_id);
+    assert.equal(agents.unreadFor(chatId, 'claude'), 1);
+  } finally {
+    cleanup(dir, store);
+  }
+});
+
+test('built-in executors still auto-join on owner and built-in sends', () => {
+  const dir = tempDir();
+  const services = makeServices(dir);
+  const { store, agents, chats } = services;
+  try {
+    agents.ensureBuiltins();
+    const chatId = seedChat(store);
+
+    // The human owner may still loop an executor in with a mention.
+    chats.send({
+      auth: authMaster, chat_id: chatId, from: 'user', to: 'muse',
+      body: 'please look', mentions: ['claude']
+    });
+    assert.equal(store.getChatParticipant(chatId, 'claude')?.participant_id, 'claude');
+    assert.ok(store.getChatMember(chatId, 'agent_claude'));
+
+    // Default-chat behaviour between built-ins is unchanged: claude -> dsh
+    // still joins dsh without owner intervention.
+    const taskId = seedTask(store, { agent: 'claude', chatId }).id;
+    agents.markRead({ chatId, agentId: 'agent_claude' });
+    chats.send({
+      auth: authClaude, chat_id: chatId, from: 'claude', to: 'dsh', task_id: taskId,
+      body: 'dsh please review'
+    });
+    assert.equal(store.getChatParticipant(chatId, 'dsh')?.participant_id, 'dsh');
+    assert.ok(store.getChatMember(chatId, 'agent_dsh'));
   } finally {
     cleanup(dir, store);
   }

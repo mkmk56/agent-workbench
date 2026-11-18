@@ -47,3 +47,27 @@
 
 - 每次接入、reclaim、吊销、越权拒绝都记日志（logs 表）。
 - 架构与安全变更记入 RESUME.md（append-only）并推送到 GitHub。
+
+落地方式（Phase 2 收尾，追加于 2026-11-18）：连接类审计写入
+`data/security-audit.log` —— append-only 文件，重启不丢，与召回审计
+`data/chat-<chat>.log` 同一风格（SECURITY_DESIGN 所说的 "logs 表" 由
+per-task `logs` 表演化为该文件，因为连接事件没有 task_id）。每行格式：
+
+```
+[ISO8601] [audit] event=<事件> key=value ...
+```
+
+覆盖事件：
+
+| event | 触发点 | 关键字段 |
+|---|---|---|
+| `pairing_code_created` | `agent_pairing_code` 成功 | pairing_id、owner、max_agents、expires_at |
+| `agent_pair` | `agent_pair` 成功（新建或 reclaim） | pairing_id、agent_id、display_name、owner、reclaim |
+| `agent_reclaim` | 同名重配对接管旧身份 | pairing_id、agent_id、display_name |
+| `agent_pair_failed` | 配对码无效/过期/名额/重名等 | code、status、display_name |
+| `agent_revoke` | 吊销成功 | agent_id、display_name |
+| `access_denied` | 403 类：forged_identity、recipient/mention_not_member、recall 越权/超窗、非管理员操作、profile 越权 | code、status、surface、from/to、chat_id |
+
+脱敏：配对码（`XXXX-XXXX`）与访问 token（`pachat_...`）在写入前一律替换为
+`<redacted>`，敏感字段名整项丢弃；审计写失败不影响主流程。同一拒绝只记
+一行（服务层写入后标记 `error.audited`，工具层兜底不重复）。
