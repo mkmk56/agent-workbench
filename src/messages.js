@@ -7,8 +7,10 @@ import {
   authKindFor, canDispatch, principalIdFor, resolveSender
 } from './auth.js';
 import {
-  ProtocolError, agentIdForParticipant, describeAuthor, isAgentParticipant, isKnownParticipant
+  ProtocolError, agentIdForParticipant, describeAuthor, isAgentParticipant, isKnownParticipant,
+  isThirdPartyAgentId
 } from './agents.js';
+import { auditEvent } from './audit.js';
 
 export { estimateTokens, truncateSummary };
 
@@ -283,6 +285,29 @@ export class MessageService {
     // Phase 3 wake hook. Phase 2 only records the event; a later listener can
     // replace this callback without touching the message path.
     this.onMention = typeof onMention === 'function' ? onMention : null;
+    // Connection-layer audit (SECURITY_DESIGN.md §5): access denials are
+    // appended to data/security-audit.log and survive a restart.
+    this.audit = typeof config?.audit === 'function'
+      ? config.audit
+      : (event, fields) => auditEvent(store?.dataDir ?? config?.dataDir, event, fields);
+  }
+
+  _audit(event, fields = {}) {
+    try { this.audit?.(event, fields); } catch { /* ignore */ }
+  }
+
+  // Record a 403-class protocol rejection exactly once, then hand the error
+  // back so the caller can `throw this._deny(...)`. The `audited` marker stops
+  // the tool boundary from writing a second line for the same rejection.
+  _deny(error, context = {}) {
+    this._audit('access_denied', {
+      code: error?.code ?? 'error',
+      status: error?.status ?? null,
+      detail: error?.message ?? null,
+      ...context
+    });
+    if (error && typeof error === 'object') error.audited = true;
+    return error;
   }
 
   describeMessage(row, { deliveries = false } = {}) {
@@ -358,25 +383,35 @@ export class MessageService {
 
     // Human/agent is a server-side fact. A client may echo the expected value,
     // but claiming the other kind (or another identity) is rejected outright.
-    if (input.author !== undefined && input.author !== null) {
-      const claimed = input.author;
-      if (typeof claimed !== 'object') {
-        throw new ProtocolError('forged_identity', 403, 'author must be an object');
+    try {
+      if (input.author !== undefined && input.author !== null) {
+        const claimed = input.author;
+        if (typeof claimed !== 'object') {
+          throw new ProtocolError('forged_identity', 403, 'author must be an object');
+        }
+        const senderHuman = from === 'user';
+        const claimedHuman = claimed.human === true || claimed.kind === 'human' || claimed.type === 'human';
+        if (claimedHuman !== senderHuman) {
+          throw new ProtocolError('forged_identity', 403,
+            `the server derives author.human=${senderHuman} for '${from}'`);
+        }
+        if (claimed.id !== undefined && claimed.id !== null && String(claimed.id) !== from) {
+          throw new ProtocolError('forged_identity', 403,
+            `author.id '${claimed.id}' does not match the authenticated sender '${from}'`);
+        }
       }
-      const senderHuman = from === 'user';
-      const claimedHuman = claimed.human === true || claimed.kind === 'human' || claimed.type === 'human';
-      if (claimedHuman !== senderHuman) {
+      if (input.human !== undefined && Boolean(input.human) !== (from === 'user')) {
         throw new ProtocolError('forged_identity', 403,
-          `the server derives author.human=${senderHuman} for '${from}'`);
+          `the server derives human=${from === 'user'} for '${from}'`);
       }
-      if (claimed.id !== undefined && claimed.id !== null && String(claimed.id) !== from) {
-        throw new ProtocolError('forged_identity', 403,
-          `author.id '${claimed.id}' does not match the authenticated sender '${from}'`);
-      }
-    }
-    if (input.human !== undefined && Boolean(input.human) !== (from === 'user')) {
-      throw new ProtocolError('forged_identity', 403,
-        `the server derives human=${from === 'user'} for '${from}'`);
+    } catch (error) {
+      throw this._deny(error, {
+        surface: 'send_chat_message',
+        from,
+        to: input.to ?? null,
+        chat_id: input.chat_id ?? null,
+        auth: `${auth?.token_kind ?? 'none'}:${auth?.participant ?? 'none'}`
+      });
     }
 
     const taskId = typeof input.task_id === 'string' && input.task_id ? input.task_id : null;
@@ -574,8 +609,11 @@ export class MessageService {
     if (chatId && isAgentParticipant(from)) {
       const isOwner = auth?.master === true || auth?.role === 'human';
       if (input.ignore_new === true && !isOwner) {
-        throw new ProtocolError('forbidden_ignore_new', 403,
-          'ignore_new may only be used by the chat owner');
+        throw this._deny(new ProtocolError('forbidden_ignore_new', 403,
+          'ignore_new may only be used by the chat owner'), {
+          surface: 'send_chat_message', from, chat_id: chatId,
+          auth: `${auth?.token_kind ?? 'none'}:${auth?.participant ?? 'none'}`
+        });
       }
       const agentId = agentIdForParticipant(from);
       const cursor = this.store.getInboxCursor(chatId, agentId);
@@ -638,26 +676,39 @@ export class MessageService {
       // The primary recipient is a participant even when the message is
       // visibility-only; otherwise its per-participant delivery row would not
       // exist and the agent could not read the chat later. Built-in executors
-      // auto-join on mention (existing behaviour); a paired agent must already
-      // be a member, so a stray mention cannot widen its access.
+      // auto-join on mention; a paired agent must already be a member, so a
+      // stray mention cannot widen its access.
+      //
+      // Phase 2 closure: a third-party agent cannot pull a built-in executor
+      // into a chat by addressing it. Only the human owner (user/master/human
+      // tokens) and Muse trigger the implicit join; anyone else must have the
+      // executor added explicitly by the chat owner via chat_add_member.
+      const senderIsThirdParty = isThirdPartyAgentId(from);
+      const allowBuiltinAutoJoin = !senderIsThirdParty;
       const participantTargets = AGENTS.has(to) ? [...mentions, to] : mentions;
       this._ensureParticipants(chatId, {
         from,
         mentions: [...new Set(participantTargets)],
-        actRecipients
+        actRecipients,
+        allowBuiltinAutoJoin
       });
-      // Built-in handles keep the pre-Phase-2 behaviour (the four-person chat is
-      // implicitly open to them); a paired agent must already be a member.
+      // Built-in handles keep the pre-Phase-2 behaviour for owner/Muse and
+      // built-in senders; a paired agent must already be a member.
       const isBuiltinHandle = (id) => ['user', 'muse', 'claude', 'dsh'].includes(id);
+      const mayJoinImplicitly = (id) => isBuiltinHandle(id) && allowBuiltinAutoJoin;
       for (const mentioned of mentions) {
-        if (!isBuiltinHandle(mentioned) && !this.store.isChatParticipant(chatId, mentioned)) {
-          throw new ProtocolError('mention_not_member', 403,
-            `mentioned participant '${mentioned}' is not a member of chat ${chatId}`);
+        if (!mayJoinImplicitly(mentioned) && !this.store.isChatParticipant(chatId, mentioned)) {
+          throw this._deny(new ProtocolError('mention_not_member', 403,
+            `mentioned participant '${mentioned}' is not a member of chat ${chatId}`), {
+            surface: 'send_chat_message', from, chat_id: chatId, target: mentioned
+          });
         }
       }
-      if (!isBuiltinHandle(to) && !this.store.isChatParticipant(chatId, to)) {
-        throw new ProtocolError('recipient_not_member', 403,
-          `recipient '${to}' is not a member of chat ${chatId}`);
+      if (!mayJoinImplicitly(to) && !this.store.isChatParticipant(chatId, to)) {
+        throw this._deny(new ProtocolError('recipient_not_member', 403,
+          `recipient '${to}' is not a member of chat ${chatId}`), {
+          surface: 'send_chat_message', from, chat_id: chatId, target: to
+        });
       }
     }
 
@@ -775,7 +826,7 @@ export class MessageService {
     return this.describeMessage(this.store.getMessage(id), { deliveries: true });
   }
 
-  _ensureParticipants(chatId, { from, mentions, actRecipients }) {
+  _ensureParticipants(chatId, { from, mentions, actRecipients, allowBuiltinAutoJoin = true }) {
     if (from === 'user') {
       this.store.getChatParticipant(chatId, 'user')
         || this.store.upsertChatParticipant({
@@ -796,6 +847,10 @@ export class MessageService {
     }
     for (const participantId of [...mentions, ...actRecipients]) {
       if (!AGENTS.has(participantId)) continue;
+      // A third-party sender cannot widen the chat with a built-in executor;
+      // the membership check in send() turns this into a 403. Existing
+      // participants still get their canonical member row repaired.
+      if (!allowBuiltinAutoJoin && !this.store.getChatParticipant(chatId, participantId)) continue;
       if (!this.store.getChatParticipant(chatId, participantId)) {
         const cap = Math.max(2, Number(this.config.chatMaxMembers) || 50);
         if (this.store.countChatMembers(chatId) >= cap) {
@@ -879,7 +934,10 @@ export class MessageService {
     const isOwner = auth?.master === true || auth?.role === 'human';
     const isAuthor = Boolean(actor) && message.from_agent === actor;
     if (!isAuthor && !isOwner) {
-      throw new ProtocolError('recall_forbidden', 403, 'only the author or the chat owner may recall this message');
+      throw this._deny(new ProtocolError('recall_forbidden', 403,
+        'only the author or the chat owner may recall this message'), {
+        surface: 'chat_recall', chat_id: chatId, actor: actor ?? 'unknown', message_id: messageId
+      });
     }
     if (message.recalled_at !== null && message.recalled_at !== undefined) {
       return { ...this.describeMessage(message, { deliveries: true }), already_recalled: true };
@@ -887,9 +945,11 @@ export class MessageService {
     const windowMs = Math.max(0, Number(this.config.recallWindowMs ?? 2 * 60 * 1000));
     const age = Date.now() - Date.parse(message.created_at);
     if (!Number.isFinite(age) || age > windowMs) {
-      throw new ProtocolError('recall_window_expired', 403,
+      throw this._deny(new ProtocolError('recall_window_expired', 403,
         `messages can only be recalled within ${Math.round(windowMs / 1000)} seconds`,
-        { created_at: message.created_at, window_ms: windowMs });
+        { created_at: message.created_at, window_ms: windowMs }), {
+        surface: 'chat_recall', chat_id: chatId, actor: actor ?? 'unknown', message_id: messageId
+      });
     }
 
     const recalledBy = actor || 'user';
