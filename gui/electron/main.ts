@@ -471,7 +471,12 @@ function registerIpc(): void {
     });
   });
 
-  handle('engine:chat-list', () => engineResult(() => engine.listChats()));
+  handle('engine:chat-list', (input) =>
+    engineResult(() => {
+      const value = input == null ? {} : asRecord(input);
+      return engine.listChats({ includeArchived: value.includeArchived === true });
+    }),
+  );
 
   handle('engine:chat-create', (input) =>
     engineResult(() => {

@@ -140,7 +140,8 @@ const workbench = {
   listTasks: (limit?: number) => ipcRenderer.invoke('engine:task-list', limit),
   listMessages: (input?: { limit?: number; taskId?: string }) =>
     ipcRenderer.invoke('engine:message-list', input),
-  listChats: () => ipcRenderer.invoke('engine:chat-list'),
+  listChats: (options?: { includeArchived?: boolean }) =>
+    ipcRenderer.invoke('engine:chat-list', options ?? {}),
   createChat: (name?: string) =>
     ipcRenderer.invoke('engine:chat-create', name == null ? {} : { name }),
   renameChat: (chatId: string, name: string) =>

@@ -613,8 +613,15 @@ export class EngineManager {
     return this.callTool('list_messages', args);
   }
 
-  async listChats(): Promise<{ chats: Array<Record<string, unknown>> }> {
-    return this.callTool('list_chats', {});
+  async listChats(options: { includeArchived?: boolean } = {}): Promise<{
+    chats: Array<Record<string, unknown>>;
+  }> {
+    // `include_archived` is the list_chats switch between "active only" (the
+    // default list) and "active + archived" (the sidebar's 已归档 filter).
+    return this.callTool(
+      'list_chats',
+      options.includeArchived === true ? { include_archived: true } : {},
+    );
   }
 
   async createChat(name?: string): Promise<Record<string, unknown>> {
