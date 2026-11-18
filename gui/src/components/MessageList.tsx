@@ -1,5 +1,5 @@
 import { MessageSquare, RefreshCw } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import type { ChatMessage, ChatStatus } from '../lib/chat';
 import { AGENT_STATE_LABELS } from '../lib/chat';
 import { MessageBubble } from './MessageBubble';
@@ -76,6 +76,17 @@ export function MessageList({
       ? messages
       : messages.filter((message) => message.summary.toLowerCase().includes(needle));
 
+  // reply_to carries the message id (MESSAGE_PROTOCOL.md §3); older engines only
+  // sent the seq, so both are indexed. A miss simply means "not loaded yet".
+  const quotedIndex = useMemo(() => {
+    const map = new Map<string, ChatMessage>();
+    for (const message of messages) {
+      map.set(message.message_id, message);
+      map.set(String(message.seq), message);
+    }
+    return map;
+  }, [messages]);
+
   return (
     <div className="chat-stream-wrap">
       {error != null && (
@@ -107,6 +118,11 @@ export function MessageList({
                 key={message.message_id}
                 message={message}
                 chatId={chatId}
+                quoted={
+                  message.reply_to != null
+                    ? (quotedIndex.get(message.reply_to) ?? null)
+                    : null
+                }
               />
             ))}
             {needle.length === 0 &&

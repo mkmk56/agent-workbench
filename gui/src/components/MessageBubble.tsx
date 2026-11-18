@@ -152,6 +152,15 @@ function parseBlocks(text: string): Block[] {
 
 const INLINE = /(`[^`\n]+`|\*\*[^*\n]+\*\*|@[Mm]use|@[Cc]laude|@[Dd]sh)/g;
 
+/** Identity handle behind an @mention, so the token layer can colour it. */
+function mentionIdFor(token: string): 'muse' | 'claude' | 'dsh' | null {
+  const handle = token.slice(1).toLowerCase();
+  if (handle === 'muse' || handle === 'claude' || handle === 'dsh') {
+    return handle;
+  }
+  return null;
+}
+
 function renderInline(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   let last = 0;
@@ -178,9 +187,16 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
         </strong>,
       );
     } else {
-      const name = MENTION_NAMES[token.slice(1).toLowerCase()] ?? token.slice(1);
+      const mentionId = mentionIdFor(token);
+      const name = MENTION_NAMES[mentionId ?? ''] ?? token.slice(1);
       nodes.push(
-        <span key={key} className="chat-mention">
+        <span
+          key={key}
+          // Identity colours come from the --color-bubble-* tokens (Muse's token
+          // layer, d09c428): no new colour values are invented here.
+          className={`chat-mention${mentionId != null ? ` chat-mention--${mentionId}` : ''}`}
+          data-mention={mentionId ?? undefined}
+        >
           @{name}
         </span>,
       );
@@ -312,13 +328,54 @@ function StructuredNotice() {
 
 const FOLD_CHARS = 1200;
 const FOLD_LINES = 30;
+const QUOTE_CHARS = 140;
+
+/**
+ * Quoted message block (MESSAGE_PROTOCOL.md §3): the quote carries the quoted
+ * agent's identity colour from the --color-bubble-* tokens. When the quoted
+ * message is not in the loaded window the block says so instead of inventing a
+ * preview.
+ */
+function QuoteBlock({
+  quoted,
+  replyTo,
+}: {
+  quoted: ChatMessage | null;
+  replyTo: string | null;
+}) {
+  const senderId = quoted?.from ?? 'unknown';
+  const name =
+    quoted == null
+      ? '引用的消息'
+      : identityFor(quoted.from).name;
+  const text =
+    quoted == null
+      ? '不在已加载的消息范围内'
+      : quoted.summary.length > QUOTE_CHARS
+        ? `${quoted.summary.slice(0, QUOTE_CHARS)}…`
+        : quoted.summary;
+  return (
+    <div
+      className={`chat-quote chat-quote--${senderId}`}
+      data-reply-to={replyTo ?? undefined}
+      role="note"
+      aria-label={`引用 ${name} 的消息`}
+    >
+      <span className="chat-quote__name">{name}</span>
+      <span className="chat-quote__text">{text.length > 0 ? text : '（无文字）'}</span>
+    </div>
+  );
+}
 
 export function MessageBubble({
   message,
   chatId,
+  quoted,
 }: {
   message: ChatMessage;
   chatId: string;
+  /** Message referenced by `reply_to`, resolved by the stream (null: not loaded). */
+  quoted?: ChatMessage | null;
 }) {
   const identity = identityFor(message.from);
   const isUser = identity.kind === 'user';
@@ -347,6 +404,9 @@ export function MessageBubble({
           )}
         </div>
         <div className={`chat-bubble${failed ? ' chat-bubble--failed' : ''}${folded ? ' chat-bubble--folded' : ''}`}>
+          {message.reply_to != null && message.reply_to.length > 0 && (
+            <QuoteBlock quoted={quoted ?? null} replyTo={message.reply_to} />
+          )}
           {message.summary.length === 0 ? (
             <span className="chat-bubble__empty">（这条消息没有文字摘要）</span>
           ) : structured ? (
