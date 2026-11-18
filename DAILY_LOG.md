@@ -2056,3 +2056,33 @@ Muse 经公网隧道调用 `/mcp` 持续收到 401，保险库中的 token 与�
 - `RESUME.md` 追加 `## V 阶段六/七：群聊升级最终验收（2026-11-17）`（V.1–V.6）。
 - `DAILY_LOG.md` 追加本节（2026-11-17）。
 - 只读核查 + 一次 live 群聊；未重启引擎、未改代码、未触碰其他既有任务。
+
+## 2026-11-18
+
+### 割接与引擎
+
+- 10:27–10:48 MOG 割接完成：引擎迁至 MOG，隧道 wb.mkmk56.uk 正常，用户录入新 muse token，心跳在线，29 工具。niumoi 引擎停、数据留、机器留着开机。
+- 22:05 引擎重启（PID 13444 → 6872），深重构 Batch 1 正式上线；重启前确认无运行中任务。
+
+### 深重构 Batch 1
+
+- P1-1/P1-2/P1-5 + 性能基线提交 a85fc5b、4e80fda、a9c9761，12:47 推送；两次派发中途死亡（cb1caf90、9599f7ed），死前已提交；对账冒烟本机跑通；Muse 的验收复核与 dsh 交叉审待补。
+
+### GUI 与网络
+
+- 归档按钮遮时间修复 3707962，GUI 重装 14:48（126.94 MiB）。
+- 网关 15:21 切到 192.168.1.200，全通；教训：中文 .ps1 存 UTF-8 with BOM，走 schtasks /ru SYSTEM。
+
+### MCP
+
+- GitHub / Context7 / Playwright 均 Connected 且实测通过；Cloudflare 待用户在 MOG 浏览器做 OAuth。
+
+### dsh 故障
+
+- shell 全部 0xC0000142；PS7 7.7.0 已装（C:\Claude\pwsh7）；根因定位为沙箱受限令牌 runner（Win10 19045 下 pwsh/5.1/node/where 全死，cmd/ping 正常）；修复方向待用户 grill 定夺。另：引擎 PATH 尚无 pwsh7。
+
+### 其他
+
+- Tailscale ~21:40 掉线一次（托盘进程退出），Claude 重启恢复。
+- Pachat REA 项目启动（21:07）；grill Q1–Q5 全确认；Phase 0 审计快照 + 深度研究完成，文档待写。
+- 气泡颜色预览已发给用户待挑（Muse 墨色 / Claude 陶土 / dsh 石板蓝）。

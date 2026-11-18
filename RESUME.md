@@ -1082,3 +1082,52 @@ dsh：
 | 5 | Live 三方真实回复 | **PASS** |
 
 阶段六的既有验收记录（`data/ops/phase6-test-report.md`）：Test 1/2/4 PASS；Test 3 上传/列表/解析 5/5 + 下载复测 5/5 PASS；Test 5/6/7 PASS。阶段七本次复核未发现回归。
+
+## VI 2026-11-18：MOG 割接收尾、深重构 Batch 1 上线、Pachat REA 启动
+
+### VI.1 MOG 割接完成（10:27–10:48）
+
+- 引擎迁至 MOG（DESKTOP-MOGQKNK，C:\Claude\agent-workbench），Cloudflare 隧道 agent-workbench → wb.mkmk56.uk 正常；10:48 用户录入 MOG 的新 muse token 并验证通过，心跳在线，29 个工具。
+- niumoi 引擎已停，数据保留；用户决定 niumoi 先留着开机，不关机。Tailscale 开机自启已在两台机器加上（HKCU Run）。
+
+### VI.2 深重构 Batch 1 落地并上线
+
+- 范围：性能基线（docs/PERF_BASELINE.md）+ 后端 P1-1 启动对账、P1-2 投递重试与死信、P1-5 executions/model_calls 表。
+- 两次 Claude 派发都在 Bash 调用中途死亡（cb1caf90 11:30 exit 1；9599f7ed 12:07 同样方式），但死前已提交全部改动：a85fc5b（基线文档）、4e80fda（P1-1/2/5 后端）、a9c9761（测试）；12:47 由 Muse 经 MOG SSH 推送，远端 HEAD a9c9761。
+- 对账冒烟脚本在 MOG 本机直接跑通过（5s，exit 0）；完整 typecheck / 全量 npm test 尚未由 Muse 亲自验证；dsh 交叉审未做（dsh shell 故障，见 VI.6）。
+- 22:05 引擎重启（PID 13444 → 6872），Batch 1 正式上线。重启由 Muse 直接执行（先确认无运行中任务；只杀引擎进程，WorkBuddy 的 node 进程未动）。
+
+### VI.3 GUI：归档按钮遮时间修复 + 重装
+
+- 修复提交 3707962（ChatSidebar.tsx + brand.css）：悬停/聚焦时时间 visibility:hidden（零重排），归档按钮 right 6px → 12px，未读徽标包进 32px 定宽槽；Electron 实测 42 状态 0 违规。
+- GUI 重装完成 14:48（安装包 126.94 MiB，verify:release 通过，静默覆盖安装；安装时生产引擎未重启）。
+
+### VI.4 网关切换 192.168.1.2 → 192.168.1.200（15:21）
+
+- MOG 默认网关 + 主 DNS 改为 192.168.1.200（兄弟的专线），IP 192.168.1.56 不变；ping/DNS/TCP443/Cloudflare/Tailscale 全通。
+- 教训：含中文的 .ps1 必须存为 UTF-8 with BOM（否则 PowerShell 5.1 按 GBK 解码导致解析失败）；改走 schtasks /ru SYSTEM 定时执行才成功。
+
+### VI.5 MCP 安装（MOG 的 Claude）
+
+- GitHub MCP：官方 github-mcp-server v2.2.0（C:\Claude\tools\github-mcp-server\），gh CLI 2.104.0 已登录 mkmk56，实测列出 4 个仓库，Connected。
+- Context7：npm 全局安装后注册成功，实测 resolve-library-id 返回 /reactjs/react.dev。
+- Playwright：@playwright/mcp 0.0.85 需 chromium-1254，补装后实测打开 example.com 取到标题，Connected。
+- Cloudflare MCP 已注册（https://mcp.cloudflare.com/mcp），Needs authentication，需在 MOG 本机浏览器完成一次 OAuth（localhost 回调），待用户定。
+
+### VI.6 dsh shell 故障：根因已定位，修复方向待定
+
+- 现象：引擎派发的 dsh 任务 shell 全部在启动阶段死，exit 3221225794 = 0xC0000142（STATUS_DLL_INIT_FAILED），命令一行未执行；文件工具正常。
+- 排除：PowerShell 7.7.0 已装好（ZIP 解压至 C:\Claude\pwsh7，用户 PATH 已加；winget 三次失败：机器范围 0x80070520、用户范围 MSIX 下载 0x80072efd/卡住），引擎重启 22:05 后复测仍坏——与 pwsh 是否安装无关。
+- 根因（Claude 复现实验，脱离 dsh）：dsh 沙箱的 Windows-ACL 受限令牌 runner（CreateProcessAsUserW + WRITE_RESTRICTED token）。同 runner 下绝对路径 pwsh 7.7.0、PowerShell 5.1、node、where.exe 全部 0xC0000142；cmd.exe、ping.exe 正常；read-only 模式同样；给真控制台（conhost）也不修复；不经 runner 直接 spawn 同一 pwsh 正常。沙箱注释称在 Win11 26200 验证，MOG 是 Win10 19045，疑似 Win10 加载器行为差异。
+- 独立问题：引擎进程的 PATH 里还没有 C:\Claude\pwsh7（会话环境在 setx 之前建立），引擎下裸叫 pwsh 会先报 Win32 2（找不到文件）。
+- 修复方向待用户定（grill Q1，2026-11-18 22:14 发出）：A 给 dsh 开 danger-full-access 绕过沙箱（推荐）；B 继续挖 Win10 兼容/报上游；C shell 活全走 Claude，dsh 只出补丁。
+
+### VI.7 Tailscale 中断一次（~21:40）
+
+- MOG 的 Tailscale 节点从 tailnet 消失，SSH/scp 连不上；引擎与隧道正常。原因与今早 niumoi 相同：tailscaled 服务正常，但托盘客户端 tailscale-ipn.exe 退出了。Claude 重启托盘进程（PID 14096）后恢复，SSH 验证通过。自启项已注册，这次是运行时退出，非缺失自启。
+
+### VI.8 Pachat REA 项目启动（21:07，最高优先级）
+
+- 用户上传自写项目文档 Agent_Workbench_Pachat_REA.md：对 Pachat 做深度 REA 逆向工程并重构 workbench（Phase 0 审计 → Phase 1 目标架构 → Phase 2 核心实现 → Phase 3 后台自主协作 → Phase 4 产品体验 → Phase 5 社区暂缓 → Phase 6 验收）。
+- grill-me Q1–Q5 用户全部确认：Q1 REA 启动，先做 Phase 0 再汇报；Q2 仅聊天气泡推翻无身份色方案 A（其余地方继续无身份色）；Q3 先修 dsh，修好前前端走 Claude + Muse 亲自审；Q4 气泡颜色方向 Muse 墨色中性 / Claude 哑光陶土 / dsh 哑光石板蓝，先出预览给用户挑；Q5 Phase 0 交付审计 + 研究 + 差距分析与口头汇报，再出目标架构待用户签核后写代码。
+- Phase 0 进展：MOG 审计快照已取（分支 gui/group-chat-upgrade @ 3707962，干净；DB 514,940,928 B）；Pachat 深度研究已完成（身份配对、群组、消息、唤醒/Listener、MCP 协议均有证据分级结论）；ARCHITECTURE_AUDIT.md / PACHAT_RESEARCH.md / FEATURE_GAP_ANALYSIS.md 待写；本节即 RESUME/DAILY_LOG 的 11-18 补记。
