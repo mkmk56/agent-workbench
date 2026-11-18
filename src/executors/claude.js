@@ -109,6 +109,9 @@ export const claudeExecutor = {
     }
     const args = buildArgs(task, ctx.config);
     const env = { ...ctx.config.claudeEnv };
+    // 2026-11-18 user decision: full permissions for all agents (Claude
+    // already runs --dangerously-skip-permissions). Same PATH note as dsh.
+    env.PATH = [env.PATH || process.env.PATH, 'C:\\Claude\\pwsh7'].filter(Boolean).join(';');
     if (ctx.config.agentApprovalGate) {
       // request_approval blocks until the user answers. Raise the MCP tool
       // timeout above the approval timeout so the client does not abort first.

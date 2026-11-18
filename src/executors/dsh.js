@@ -123,6 +123,14 @@ export const dshExecutor = {
       env = {
         WORKBENCH_MCP_CONFIG: mcpConfigPath,
         WORKBENCH_MCP_URL: ctx.config.mcpUrl,
+        // 2026-11-18 user decision: full permissions for all agents.
+        // dsh sandbox is broken on Win10 19045 (restricted-token spawn
+        // dies 0xC0000142), so run it unconfined. Overridable via the
+        // engine environment (DSH_PERMISSION_MODE).
+        DSH_PERMISSION_MODE: process.env.DSH_PERMISSION_MODE || 'danger-full-access',
+        // Engine session predates the registry user-PATH update; append
+        // the PowerShell 7 dir so bare `pwsh` resolves for dsh children.
+        PATH: [process.env.PATH, 'C:\\Claude\\pwsh7'].filter(Boolean).join(';'),
         WORKBENCH_MCP_TOKEN: task.auth_token
       };
       ctx.log('system', `dsh task-bound mcp config=${mcpConfigPath} (token injected via env)`);
