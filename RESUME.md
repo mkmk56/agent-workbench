@@ -1131,3 +1131,12 @@ dsh：
 - 用户上传自写项目文档 Agent_Workbench_Pachat_REA.md：对 Pachat 做深度 REA 逆向工程并重构 workbench（Phase 0 审计 → Phase 1 目标架构 → Phase 2 核心实现 → Phase 3 后台自主协作 → Phase 4 产品体验 → Phase 5 社区暂缓 → Phase 6 验收）。
 - grill-me Q1–Q5 用户全部确认：Q1 REA 启动，先做 Phase 0 再汇报；Q2 仅聊天气泡推翻无身份色方案 A（其余地方继续无身份色）；Q3 先修 dsh，修好前前端走 Claude + Muse 亲自审；Q4 气泡颜色方向 Muse 墨色中性 / Claude 哑光陶土 / dsh 哑光石板蓝，先出预览给用户挑；Q5 Phase 0 交付审计 + 研究 + 差距分析与口头汇报，再出目标架构待用户签核后写代码。
 - Phase 0 进展：MOG 审计快照已取（分支 gui/group-chat-upgrade @ 3707962，干净；DB 514,940,928 B）；Pachat 深度研究已完成（身份配对、群组、消息、唤醒/Listener、MCP 协议均有证据分级结论）；ARCHITECTURE_AUDIT.md / PACHAT_RESEARCH.md / FEATURE_GAP_ANALYSIS.md 待写；本节即 RESUME/DAILY_LOG 的 11-18 补记。
+
+### VI.9 Pachat REA Phase 2 后端实现（11-18 晚）
+
+- 用户签核 Phase 1 五份文档后，按文档实现后端：agents / chat_members / inbox_cursors、messages.recalled_at/recalled_by/op_key、chats.category/visibility（schema_version v5）。
+- 接入：配对码（24h、≤10 Agent、只存哈希）、`pachat_` access token（一次性展示、只存 SHA-256）、同名 reclaim 使旧 token 作废、吊销、每账号 ≤10 active Agent；第三方 Bearer token 直接接入既有 MCP 端点。
+- 消息：op_key 与 client_msg_id 合并；409 new_messages（投递会把游标推进到派发时最大 seq）；ignore_new 仅 human/master；2 分钟撤回；@ 计数 + Phase 3 唤醒钩子；author.human 服务端派生、伪造 403；每群 100 条/小时。
+- Inbox：游标与四类计数、`inbox` 工具带 `you` 自检；`chat_mark_read` 双写 legacy/inbox 游标；`list_chats` 返回 unread，`list_chat_messages` 拉取即已读（P0-6 后端）。
+- 迁移脚本 `scripts/migrate-rea-phase2.mjs`：VACUUM INTO 备份 + 幂等回填；P1-1 启动对账已覆盖新表。实现说明与差异见 `docs/rea/PHASE2_IMPLEMENTATION.md`。
+- 验证：typecheck 49 文件 0 失败；npm test 86/87，唯一失败为改动前即存在的 P0-1 TEMP 环境用例。未重启生产引擎、未跑生产库迁移、未提交（待验收后分小步提交）。
