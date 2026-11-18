@@ -10,6 +10,7 @@ import { Store } from './store.js';
 import { Scheduler } from './scheduler.js';
 import { MessageService } from './messages.js';
 import { ChatService } from './chats.js';
+import { AgentService } from './agents.js';
 import { ApprovalService } from './approvals.js';
 import { FileService } from './files.js';
 import { removeLegacyAgentMcpConfigs } from './mcp-config.js';
@@ -20,11 +21,15 @@ import { registerTools } from './tools.js';
 const store = new Store(config.dbPath, config.dataDir);
 const scheduler = new Scheduler(store, config);
 const files = new FileService({ store, config });
-const messages = new MessageService({ store, scheduler, config, files });
+const agents = new AgentService({ store, config });
+const messages = new MessageService({ store, scheduler, config, files, agents });
 const chats = new ChatService({ store, messages, config });
 const approvals = new ApprovalService({ store, config, messages, scheduler });
 scheduler.messages = messages;
 scheduler.approvals = approvals;
+// P1-1 reconciliation also repairs the Phase 2 tables (agents/chat_members/
+// inbox_cursors) before any pending delivery is replayed.
+scheduler.agents = agents;
 // A running tool call cannot survive a restart; release any thread that was
 // parked in WAITING_USER by a pending approval.
 approvals.recover();
@@ -130,7 +135,7 @@ function createMcpServer(auth) {
     { name: 'agent-workbench', version: '0.1.0' },
     { capabilities: { logging: {} } }
   );
-  registerTools(server, { scheduler, store, messages, approvals, chats, files, config }, auth);
+  registerTools(server, { scheduler, store, messages, approvals, chats, files, config, agents }, auth);
   return server;
 }
 
@@ -234,7 +239,9 @@ const server = http.createServer(async (req, res) => {
   if (downloadMatch && req.method === 'GET') {
     // Same bearer-token identity check as /mcp, then the master check: this
     // route is the GUI's raw download path and has no per-chat agent scope.
-    const auth = enrichAuth(identifyToken(extractBearer(req), config), req);
+    const credential = extractBearer(req);
+    const auth = enrichAuth(
+      identifyToken(credential, config) || agents.identifyAccessToken(credential), req);
     if (!auth) {
       sendJson(res, 401, { error: 'unauthorized' });
       return;
@@ -287,8 +294,12 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Identity comes from the credential, never from the request body.
-  const auth = enrichAuth(identifyToken(extractBearer(req), config), req);
+  // Identity comes from the credential, never from the request body. A paired
+  // third-party agent authenticates with its pachat_ access token, which is
+  // resolved by hash against the agents table.
+  const credential = extractBearer(req);
+  const auth = enrichAuth(
+    identifyToken(credential, config) || agents.identifyAccessToken(credential), req);
   if (!auth) {
     const header = req.headers.authorization;
     console.error(header
@@ -382,4 +393,4 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 // Exported for the isolated verification harness (scripts/verify-upgrade.mjs).
 // Importing this module still starts the listener; callers close `server` and
 // `store` when finished.
-export { server, store, scheduler, messages, chats, approvals, files, config };
+export { server, store, scheduler, messages, chats, approvals, files, agents, config };

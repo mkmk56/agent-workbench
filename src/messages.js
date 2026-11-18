@@ -6,13 +6,15 @@ import { buildChatContext, userRequestFromContext } from './context.js';
 import {
   authKindFor, canDispatch, principalIdFor, resolveSender
 } from './auth.js';
+import {
+  ProtocolError, agentIdForParticipant, describeAuthor, isAgentParticipant, isKnownParticipant
+} from './agents.js';
 
 export { estimateTokens, truncateSummary };
 
 const AGENTS = new Set(['claude', 'dsh']);
-const SENDERS = new Set(['claude', 'dsh', 'user', 'muse']);
-const PARTICIPANTS = new Set(['user', 'muse', 'claude', 'dsh']);
 const ACTIVE_TASK_STATES = new Set(['PENDING', 'STARTING', 'WORKING', 'WAITING', 'BLOCKED']);
+export const RECALLED_PLACEHOLDER = '（此消息已撤回）';
 
 // A chat coordination thread holds the messages that belong to no sub-task:
 // user -> Muse requests, Muse assignments and Muse replies. Its id is derived
@@ -55,10 +57,16 @@ export function normalizeFileIds(files) {
 function normalizeMentions(mentions) {
   if (mentions === undefined || mentions === null) return [];
   if (!Array.isArray(mentions)) throw new Error('mentions must be an array of participant ids');
+  // A chat holds at most 50 members, so a longer mention list cannot be
+  // satisfied and is rejected before any per-member bookkeeping.
+  if (mentions.length > 50) throw new Error('mentions may contain at most 50 participant ids');
   const out = [];
   for (const mention of mentions) {
-    const value = String(mention ?? '').trim().replace(/^@/, '').toLowerCase();
-    if (!PARTICIPANTS.has(value)) throw new Error(`invalid mention: ${mention}`);
+    const raw = String(mention ?? '').trim().replace(/^@/, '');
+    // Built-in handles are case-insensitive; a paired agent id is opaque and
+    // keeps its case so it can be looked up exactly.
+    const value = raw.startsWith('agent_') ? raw : raw.toLowerCase();
+    if (!isKnownParticipant(value)) throw new Error(`invalid mention: ${mention}`);
     if (!out.includes(value)) out.push(value);
   }
   return out;
@@ -263,11 +271,18 @@ export function parseAgentReply(text) {
 }
 
 export class MessageService {
-  constructor({ store, scheduler, config, files = null }) {
+  constructor({ store, scheduler, config, files = null, agents = null, onMention = null }) {
     this.store = store;
     this.scheduler = scheduler;
     this.config = config;
     this.files = files;
+    // Optional AgentService. When present, messages written through the tool
+    // layer use it for inbox bookkeeping; the direct service path rebuilds the
+    // same rows through Store so unit tests do not need the full wiring.
+    this.agents = agents;
+    // Phase 3 wake hook. Phase 2 only records the event; a later listener can
+    // replace this callback without touching the message path.
+    this.onMention = typeof onMention === 'function' ? onMention : null;
   }
 
   describeMessage(row, { deliveries = false } = {}) {
@@ -290,7 +305,13 @@ export class MessageService {
       depth: Number(row.depth ?? 0),
       epoch: Number(row.epoch ?? 0),
       client_msg_id: row.client_msg_id ?? null,
+      op_key: row.op_key ?? row.client_msg_id ?? null,
       context_version: Number(row.context_version ?? 0),
+      recalled: row.recalled_at !== null && row.recalled_at !== undefined,
+      recalled_at: row.recalled_at ?? null,
+      recalled_by: row.recalled_by ?? null,
+      // Server-derived identity block (author.human is never read from input).
+      author: describeAuthor(this.store, row.from_agent),
       auth_kind: row.auth_kind ?? null,
       principal_id: row.principal_id ?? null,
       request_id: row.request_id ?? null,
@@ -332,19 +353,56 @@ export class MessageService {
     const auth = input.auth ?? null;
     const from = resolveSender(auth, input.from);
     const to = input.to;
-    if (!SENDERS.has(to)) throw new Error(`invalid to: ${to}`);
+    if (!isKnownParticipant(to)) throw new Error(`invalid to: ${to}`);
     if (from === to) throw new Error('from and to must be different');
+
+    // Human/agent is a server-side fact. A client may echo the expected value,
+    // but claiming the other kind (or another identity) is rejected outright.
+    if (input.author !== undefined && input.author !== null) {
+      const claimed = input.author;
+      if (typeof claimed !== 'object') {
+        throw new ProtocolError('forged_identity', 403, 'author must be an object');
+      }
+      const senderHuman = from === 'user';
+      const claimedHuman = claimed.human === true || claimed.kind === 'human' || claimed.type === 'human';
+      if (claimedHuman !== senderHuman) {
+        throw new ProtocolError('forged_identity', 403,
+          `the server derives author.human=${senderHuman} for '${from}'`);
+      }
+      if (claimed.id !== undefined && claimed.id !== null && String(claimed.id) !== from) {
+        throw new ProtocolError('forged_identity', 403,
+          `author.id '${claimed.id}' does not match the authenticated sender '${from}'`);
+      }
+    }
+    if (input.human !== undefined && Boolean(input.human) !== (from === 'user')) {
+      throw new ProtocolError('forged_identity', 403,
+        `the server derives human=${from === 'user'} for '${from}'`);
+    }
 
     const taskId = typeof input.task_id === 'string' && input.task_id ? input.task_id : null;
     const task = taskId ? this.store.getTask(taskId) : null;
     if (taskId && !task) throw new Error(`task not found: ${taskId}`);
-    const requestedClientMsgId = input.client_msg_id
-      ? String(input.client_msg_id).slice(0, 200)
+    // op_key is the protocol name for the existing client_msg_id idempotency
+    // key. Supplying both with different values is a client bug, not a retry.
+    const rawOpKey = input.op_key !== undefined && input.op_key !== null
+      ? String(input.op_key)
+      : null;
+    const rawClientMsgId = input.client_msg_id !== undefined && input.client_msg_id !== null
+      ? String(input.client_msg_id)
+      : null;
+    if (rawOpKey && rawClientMsgId && rawOpKey !== rawClientMsgId) {
+      throw new ProtocolError('op_key_conflict', 400,
+        'op_key and client_msg_id are the same idempotency key and must match');
+    }
+    const requestedClientMsgId = (rawOpKey || rawClientMsgId || '')
+      ? String(rawOpKey || rawClientMsgId).slice(0, 200)
       : null;
 
-    // P0: an executor may only speak through a task it owns. The old loophole
-    // (omit task_id, send with chat_id, claim any from) is closed here, not in
-    // the tool schema, so every internal path is covered too.
+    // P0: a built-in executor may only speak through a task it owns. The old
+    // loophole (omit task_id, send with chat_id, claim any from) is closed
+    // here, not in the tool schema, so every internal path is covered too.
+    // A paired third-party agent has no local task; its access token plus chat
+    // membership is the authority instead.
     if (AGENTS.has(from)) {
       if (!taskId) throw new Error(`agent '${from}' messages require an owned task_id`);
       if (task.agent !== from) throw new Error(`task ${taskId} belongs to ${task.agent}, not ${from}`);
@@ -413,7 +471,7 @@ export class MessageService {
       // answered by Muse, Claude and dsh. The old unique index is gone.
     }
 
-    const agentMessage = AGENTS.has(from) && AGENTS.has(to);
+    const agentMessage = isAgentParticipant(from) && isAgentParticipant(to);
 
     if (from === 'user') {
       this.store.updateThread(threadId, { state: 'ACTIVE', exchange_count: 0 });
@@ -488,12 +546,52 @@ export class MessageService {
     }
 
     // Idempotency is resolved before the epoch bump: retrying the same
-    // client_msg_id must return the original row without advancing the epoch.
+    // client_msg_id (or op_key) must return the original row without advancing
+    // the epoch. A duplicate is returned before the 409 gate: it is a retry of
+    // a message that was already accepted, not a new send.
     const clientMsgId = requestedClientMsgId;
     if (clientMsgId) {
       const existing = this.store.getMessageByClientId(chatId, clientMsgId);
       if (existing) {
         return { ...this.describeMessage(existing, { deliveries: true }), deduplicated: true };
+      }
+    }
+
+    // Per-chat rate limit (MESSAGE_PROTOCOL §1): at most 100 messages per hour.
+    if (chatId) {
+      const perHour = Math.max(1, Number(this.config.chatMessagesPerHour ?? 100));
+      const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const recent = this.store.countChatMessagesSince(chatId, since);
+      if (recent >= perHour) {
+        throw new ProtocolError('rate_limited', 429,
+          `chat ${chatId} reached ${perHour} messages in the last hour`,
+          { limit: perHour, window_ms: 60 * 60 * 1000 });
+      }
+    }
+
+    // 409 new_messages: an agent must read (or have been delivered) everything
+    // before it may speak again. Only the human owner may override the gate.
+    if (chatId && isAgentParticipant(from)) {
+      const isOwner = auth?.master === true || auth?.role === 'human';
+      if (input.ignore_new === true && !isOwner) {
+        throw new ProtocolError('forbidden_ignore_new', 403,
+          'ignore_new may only be used by the chat owner');
+      }
+      const agentId = agentIdForParticipant(from);
+      const cursor = this.store.getInboxCursor(chatId, agentId);
+      if (cursor) {
+        const lastRead = Number(cursor.last_read_seq) || 0;
+        const unread = this.store.countUnreadMessages(chatId, from, lastRead);
+        if (unread > 0 && !(input.ignore_new === true && isOwner)) {
+          throw new ProtocolError('new_messages', 409,
+            `${from} has ${unread} unread message(s) in chat ${chatId}; pull them first`,
+            {
+              chat_id: chatId,
+              unread,
+              last_read_seq: lastRead,
+              latest_seq: this.store.maxChatSeq(chatId)
+            });
+        }
       }
     }
 
@@ -510,9 +608,13 @@ export class MessageService {
         // the target epoch now so the delivery rows carry it too.
         epoch += 1;
         bumpEpoch = true;
-      } else if (AGENTS.has(from)) {
+      } else if (isAgentParticipant(from)) {
         const budget = Math.max(1, Number(this.config.chatEpochAgentBudget ?? 20));
-        const count = this.store.countChatAgentMessages(chatId, epoch);
+        const agentIds = this.store.listChatParticipants(chatId)
+          .map((participant) => participant.participant_id)
+          .filter((id) => isAgentParticipant(id));
+        const count = this.store.countChatAgentMessages(
+          chatId, epoch, agentIds.length > 0 ? agentIds : ['claude', 'dsh']);
         if (count >= budget) {
           throw new Error(
             `chat epoch ${epoch} reached the agent message budget (${budget}); wait for the next user message`
@@ -535,13 +637,28 @@ export class MessageService {
     if (chatId) {
       // The primary recipient is a participant even when the message is
       // visibility-only; otherwise its per-participant delivery row would not
-      // exist and the agent could not read the chat later.
+      // exist and the agent could not read the chat later. Built-in executors
+      // auto-join on mention (existing behaviour); a paired agent must already
+      // be a member, so a stray mention cannot widen its access.
       const participantTargets = AGENTS.has(to) ? [...mentions, to] : mentions;
       this._ensureParticipants(chatId, {
         from,
         mentions: [...new Set(participantTargets)],
         actRecipients
       });
+      // Built-in handles keep the pre-Phase-2 behaviour (the four-person chat is
+      // implicitly open to them); a paired agent must already be a member.
+      const isBuiltinHandle = (id) => ['user', 'muse', 'claude', 'dsh'].includes(id);
+      for (const mentioned of mentions) {
+        if (!isBuiltinHandle(mentioned) && !this.store.isChatParticipant(chatId, mentioned)) {
+          throw new ProtocolError('mention_not_member', 403,
+            `mentioned participant '${mentioned}' is not a member of chat ${chatId}`);
+        }
+      }
+      if (!isBuiltinHandle(to) && !this.store.isChatParticipant(chatId, to)) {
+        throw new ProtocolError('recipient_not_member', 403,
+          `recipient '${to}' is not a member of chat ${chatId}`);
+      }
     }
 
     const atLimit = agentMessage && agentCountBefore + 1 >= limit;
@@ -599,6 +716,9 @@ export class MessageService {
         depth,
         epoch,
         client_msg_id: clientMsgId,
+        op_key: clientMsgId,
+        recalled_at: null,
+        recalled_by: null,
         context_version: contextVersion,
         auth_kind: authKindFor(auth, from),
         principal_id: principalIdFor(auth, from),
@@ -639,6 +759,8 @@ export class MessageService {
       + `${summary.truncated ? ' truncated' : ''}${atLimit ? ' held=limit' : ''}`
     );
 
+    if (chatId) this._recordInboxEvents({ row, from, mentions, reply });
+
     if (atLimit) {
       this._log(row, 'system', `thread ${threadId} reached exchange limit ${limit}; waiting for user input`);
     } else if (input.deliver !== false && this.config.agentAutoDeliver) {
@@ -659,17 +781,28 @@ export class MessageService {
         || this.store.upsertChatParticipant({
           chat_id: chatId, participant_id: 'user', kind: 'human', role: 'user', display_name: 'User'
         });
+      this.store.insertChatMember({
+        chat_id: chatId, agent_id: 'user', role: 'owner', joined_at: Date.now()
+      });
     }
     if (from === 'muse') {
       this.store.getChatParticipant(chatId, 'muse')
         || this.store.upsertChatParticipant({
           chat_id: chatId, participant_id: 'muse', kind: 'orchestrator', role: 'muse', display_name: 'Muse'
         });
+      this.store.insertChatMember({
+        chat_id: chatId, agent_id: agentIdForParticipant('muse'), role: 'member', joined_at: Date.now()
+      });
     }
     for (const participantId of [...mentions, ...actRecipients]) {
       if (!AGENTS.has(participantId)) continue;
-      this.store.getChatParticipant(chatId, participantId)
-        || this.store.upsertChatParticipant({
+      if (!this.store.getChatParticipant(chatId, participantId)) {
+        const cap = Math.max(2, Number(this.config.chatMaxMembers) || 50);
+        if (this.store.countChatMembers(chatId) >= cap) {
+          throw new ProtocolError('chat_member_limit', 403,
+            `chat ${chatId} already has ${cap} members; cannot auto-join ${participantId}`);
+        }
+        this.store.upsertChatParticipant({
           chat_id: chatId,
           participant_id: participantId,
           kind: 'agent',
@@ -677,7 +810,111 @@ export class MessageService {
           display_name: participantId === 'claude' ? 'Claude' : 'dsh',
           auto_participate: true
         });
+      }
+      this.store.insertChatMember({
+        chat_id: chatId,
+        agent_id: agentIdForParticipant(participantId),
+        role: 'member',
+        joined_at: Date.now()
+      });
     }
+  }
+
+  // Phase 2 @/reply/owner events. Counters are a cache over the message stream
+  // (inbox() recomputes them); this keeps an existing cursor's summary current
+  // without creating a cursor for an agent that was never delivered to.
+  _recordInboxEvents({ row, from, mentions, reply }) {
+    const chatId = row.chat_id;
+    if (!chatId) return;
+    const mentioned = [...new Set(mentions)].filter((id) => id !== from);
+    for (const participant of mentioned) {
+      this.store.bumpInboxCounter(chatId, agentIdForParticipant(participant), 'mentions_you');
+    }
+    if (from === 'user') {
+      for (const participant of this.store.listChatParticipants(chatId)) {
+        if (participant.participant_id === 'user') continue;
+        this.store.bumpInboxCounter(
+          chatId, agentIdForParticipant(participant.participant_id), 'from_owner');
+      }
+    }
+    if (reply && reply.from_agent !== from) {
+      this.store.bumpInboxCounter(
+        chatId, agentIdForParticipant(reply.from_agent), 'replies_to_you');
+    }
+    if (mentioned.length > 0) {
+      const event = {
+        chat_id: chatId,
+        message_id: row.id,
+        seq: row.seq ?? null,
+        from,
+        mentions: mentioned,
+        created_at: row.created_at
+      };
+      if (this.onMention) {
+        try {
+          this.onMention(event);
+        } catch (error) {
+          this._log(row, 'system', `mention hook failed: ${error.message}`);
+        }
+      } else {
+        // Phase 2 has no listener yet; keep the event in the per-chat audit log
+        // so Phase 3 can consume/replay it and the hook is observable now.
+        this._log(row, 'system',
+          `mention event from=${from} mentions=${mentioned.join(',')} seq=${row.seq ?? 'none'}`);
+      }
+    }
+  }
+
+  // Recall (2-minute window enforced by the engine). Only the author or the
+  // human owner may recall; the body is replaced with a placeholder and every
+  // other member's unread recalled counter advances.
+  recall({ chatId, messageId, auth = null } = {}) {
+    const chat = this.store.getChat(chatId);
+    if (!chat) throw new ProtocolError('chat_not_found', 404, `chat not found: ${chatId}`);
+    const message = this.store.getMessage(messageId);
+    if (!message || message.chat_id !== chatId) {
+      throw new ProtocolError('message_not_found', 404, `message not found in chat ${chatId}: ${messageId}`);
+    }
+    const actor = auth?.participant ?? null;
+    const isOwner = auth?.master === true || auth?.role === 'human';
+    const isAuthor = Boolean(actor) && message.from_agent === actor;
+    if (!isAuthor && !isOwner) {
+      throw new ProtocolError('recall_forbidden', 403, 'only the author or the chat owner may recall this message');
+    }
+    if (message.recalled_at !== null && message.recalled_at !== undefined) {
+      return { ...this.describeMessage(message, { deliveries: true }), already_recalled: true };
+    }
+    const windowMs = Math.max(0, Number(this.config.recallWindowMs ?? 2 * 60 * 1000));
+    const age = Date.now() - Date.parse(message.created_at);
+    if (!Number.isFinite(age) || age > windowMs) {
+      throw new ProtocolError('recall_window_expired', 403,
+        `messages can only be recalled within ${Math.round(windowMs / 1000)} seconds`,
+        { created_at: message.created_at, window_ms: windowMs });
+    }
+
+    const recalledBy = actor || 'user';
+    const row = this.store.recallMessage(messageId, {
+      recalledBy,
+      placeholder: RECALLED_PLACEHOLDER,
+      now: Date.now()
+    });
+    // If the recalled message is the newest one, the sidebar preview must not
+    // keep showing its original text.
+    if (this.store.lastChatMessage(chatId)?.id === messageId) {
+      this.store.updateChat(chatId, {
+        last_message_preview: RECALLED_PLACEHOLDER.slice(0, 120)
+      });
+    }
+    for (const participant of this.store.listChatParticipants(chatId)) {
+      if (participant.participant_id === message.from_agent) continue;
+      this.store.bumpInboxCounter(
+        chatId, agentIdForParticipant(participant.participant_id), 'recalled');
+    }
+    try {
+      appendFileSync(join(this.store.dataDir, `chat-${chatId}.log`),
+        `[${new Date().toISOString()}] [system] message ${messageId} recalled by ${recalledBy}\n`, 'utf8');
+    } catch { /* audit logging must not fail the recall */ }
+    return this.describeMessage(row, { deliveries: true });
   }
 
   // A Muse message has no task to log against, so its audit trail goes to a
@@ -888,6 +1125,18 @@ export class MessageService {
       return this._failDelivery(message, agent, new Error('chat not found'));
     }
 
+    // A member removed after the delivery row was written must not receive a
+    // task. This is permanent: re-adding the member does not resurrect it.
+    if (!this.store.isChatParticipant(chat.chat_id, agent)) {
+      const error = `agent '${agent}' is no longer a participant of chat ${chat.chat_id}`;
+      this.store.updateDelivery(messageId, agent, {
+        status: 'skipped', error, error_kind: 'permanent', next_attempt_at: null, task_id: null
+      });
+      this._log(message, 'system', `delivery to ${agent} skipped: ${error}`);
+      this._applyMessageStatus(messageId);
+      return { status: 'skipped', error };
+    }
+
     // Epoch gate: a dispatch prepared against an older epoch must not start
     // after the user has spoken again. This is permanent by nature.
     const currentEpoch = Number(chat.epoch ?? 0);
@@ -936,6 +1185,20 @@ export class MessageService {
         next_attempt_at: null, dead_lettered_at: null
       });
       this.store.updateMessage(messageId, { delivery_task_id: created.task_id });
+      // The prompt embeds the current chat context, so the agent is read up to
+      // the chat maximum at dispatch time. Later messages stay unread and arm
+      // the 409 gate.
+      try {
+        const agentId = agentIdForParticipant(agent);
+        const maxSeq = this.store.maxChatSeq(chat.chat_id);
+        this.store.ensureInboxCursor({ chatId: chat.chat_id, agentId, now: Date.now() });
+        this.store.advanceInboxToMax(chat.chat_id, agentId, agent);
+        // Keep the legacy participant cursor in step so chat_status agrees
+        // with the inbox view.
+        this.store.updateParticipantRead(chat.chat_id, agent, maxSeq);
+      } catch (error) {
+        this._log(message, 'system', `inbox advance for ${agent} failed: ${error.message}`);
+      }
       this._log(message, 'system',
         `message ${messageId} delivered as chat sub-task ${created.task_id} agent=${agent} chat=${chat.chat_id}`);
       this._applyMessageStatus(messageId);

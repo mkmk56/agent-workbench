@@ -548,8 +548,21 @@ export class Scheduler {
       origin_messages_failed: [],
       deliveries_failed: [],
       replayed: { legacy: 0, chat: 0 },
+      agents: null,
       sweep_interval_ms: null
     };
+
+    // P1-1 also covers the REA Phase 2 tables: built-in identities, canonical
+    // chat_members and inbox_cursors. It runs before delivery replay so a
+    // replayed task sees a consistent inbox.
+    if (this.agents) {
+      try {
+        summary.agents = this.agents.reconcile();
+      } catch (error) {
+        summary.agents = { error: error.message };
+        console.error(`reconcile: agent table reconciliation failed: ${error.message}`);
+      }
+    }
 
     for (const task of this.store.nonTerminalTasks()) {
       this._markTaskFailed(task, reason, summary);
@@ -571,6 +584,9 @@ export class Scheduler {
       + ` origin_messages_failed=${summary.origin_messages_failed.length}`
       + ` deliveries_failed=${summary.deliveries_failed.length}`
       + ` replayed_legacy=${summary.replayed.legacy} replayed_chat=${summary.replayed.chat}`
+      + ` agents_builtins=${summary.agents?.builtins_inserted ?? 0}`
+      + ` agents_members=${summary.agents?.memberships_inserted ?? 0}`
+      + ` agents_cursors=${summary.agents?.cursors_inserted ?? 0}`
     );
     return summary;
   }

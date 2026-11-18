@@ -4,6 +4,9 @@ import {
   accessibleChatIds, agentScope, assertChatAccess, assertTaskAccess, isMaster, isReadAll,
   requireMaster, requireOperator
 } from './auth.js';
+import {
+  AgentService, agentIdForParticipant, participantForAgentId
+} from './agents.js';
 
 const asText = (value) => ({
   content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }]
@@ -13,6 +16,26 @@ const asError = (message) => ({
   content: [{ type: 'text', text: `Error: ${message}` }],
   isError: true
 });
+
+// Protocol errors carry an HTTP-style status and a machine code (409
+// new_messages, 403 recall_window_expired, ...). MCP has no per-tool status
+// field, so the structured body is returned as the error content.
+const asProtocolError = (error) => ({
+  content: [{
+    type: 'text',
+    text: JSON.stringify({
+      error: error.code,
+      status: error.status,
+      message: error.message,
+      ...(error.details ?? {})
+    })
+  }],
+  isError: true
+});
+
+const serviceError = (error) => (
+  error && error.code && error.status ? asProtocolError(error) : asError(error.message)
+);
 
 function truncate(value, max = 300) {
   const text = String(value ?? '');
@@ -47,10 +70,13 @@ function summarizeResult(result) {
   return text ? truncate(text.replace(/\s+/g, ' '), 160) : 'ok';
 }
 
-export function registerTools(server, { scheduler, store, messages, approvals, chats, files, config }, auth = { master: true, participant: 'user', token_kind: 'master' }) {
+export function registerTools(server, { scheduler, store, messages, approvals, chats, files, config, agents = null }, auth = { master: true, participant: 'user', token_kind: 'master' }) {
   const master = isMaster(auth);
   const readAll = isReadAll(auth);
   const requestId = auth?.request_id || '-';
+  // Phase 2 tools need the agent service; constructing a lightweight one from
+  // the store keeps older test harnesses working without new wiring.
+  const agentService = agents ?? new AgentService({ store, config });
 
   // Chat CRUD is a human/Muse collaboration action, not an executor action.
   const requireChatAdmin = (action) => {
@@ -79,8 +105,18 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
           + ` duration_ms=${Date.now() - started} result=error params=${summarizeArgs(args)} error=${truncate(error.message, 160)}`);
         throw error;
       }
+      // Pairing responses contain a one-time secret (the code or the token).
+      // Never echo them into the audit log, even truncated.
+      const resultSummary = (name === 'agent_pair' || name === 'agent_pairing_code')
+        ? 'credential issued (redacted)'
+        : summarizeResult(result);
       console.log(`tool=${name} request_id=${requestId} auth=${auth?.token_kind ?? 'none'}:${auth?.participant ?? 'none'}`
-        + ` duration_ms=${Date.now() - started} result=${summarizeResult(result)} params=${summarizeArgs(args)}`);
+        + ` duration_ms=${Date.now() - started} result=${resultSummary}`
+        + ` params=${summarizeArgs(
+          name === 'agent_pair' && args && typeof args === 'object'
+            ? { ...args, code: '<redacted>' }
+            : args
+        )}`);
       return result;
     });
   };
@@ -223,8 +259,8 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
       + 'When the target agent is idle the message is delivered by starting a task; otherwise it is queued. Each '
       + 'sub-task thread still stops after 10 agent-to-agent messages.',
     inputSchema: {
-      from: z.enum(['claude', 'dsh', 'user', 'muse']).describe('Sender; must match the token identity'),
-      to: z.enum(['claude', 'dsh', 'user', 'muse']).describe('Recipient agent, user for a final report, or muse'),
+      from: z.string().min(1).describe('Sender; must match the token identity (user/muse/claude/dsh/agent_*)'),
+      to: z.string().min(1).describe('Recipient participant, user for a final report, or muse'),
       task_id: z.string().min(1).optional()
         .describe('Task sending the message; required for claude/dsh. {{task_id}} is rendered into agent prompts'),
       chat_id: z.string().optional().describe('Group chat this message belongs to'),
@@ -235,17 +271,27 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
         .describe('In a chat: file_id values only (bare paths are rejected). Outside a chat: legacy path notes'),
       question: z.string().optional().describe('Question the recipient must answer'),
       deliver: z.boolean().optional().describe('Auto-start a task for the recipient; default true'),
-      is_final: z.boolean().optional().describe('Marks that no further agent turn is expected')
+      is_final: z.boolean().optional().describe('Marks that no further agent turn is expected'),
+      client_msg_id: z.string().max(200).optional().describe('Idempotency key (legacy name)'),
+      op_key: z.string().max(200).optional().describe('Idempotency key; same as client_msg_id'),
+      ignore_new: z.boolean().optional().describe('Owner only: send despite unread messages'),
+      author: z.object({
+        id: z.string().optional(), human: z.boolean().optional(), kind: z.string().optional()
+      }).passthrough().optional().describe('Echo of the server-derived author; a mismatch is rejected')
     }
-  }, async ({ from, to, task_id, chat_id, reply_to, summary, body, files, question, deliver, is_final }) => {
+  }, async ({
+    from, to, task_id, chat_id, reply_to, summary, body, files, question, deliver, is_final,
+    client_msg_id, op_key, ignore_new, author
+  }) => {
     try {
       return asText(messages.send({
         from, to, task_id, chat_id, reply_to, summary, body, files, question, deliver, is_final,
+        client_msg_id, op_key, ignore_new, author,
         request_id: auth?.request_id,
         auth
       }));
     } catch (error) {
-      return asError(error.message);
+      return serviceError(error);
     }
   });
 
@@ -256,8 +302,8 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
       thread_id: z.string().optional().describe('Conversation thread id'),
       task_id: z.string().optional().describe('Task id; alone, lists that task\'s whole thread'),
       chat_id: z.string().optional().describe('Group chat id'),
-      from: z.enum(['claude', 'dsh', 'user', 'muse']).optional(),
-      to: z.enum(['claude', 'dsh', 'user', 'muse']).optional(),
+      from: z.string().optional(),
+      to: z.string().optional(),
       reply_to: z.string().optional().describe('Only messages replying to this message_id'),
       status: z.string().optional().describe('queued|delivered|answered|held|stored|failed'),
       limit: z.number().int().min(1).max(500).optional()
@@ -291,15 +337,19 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
   register('create_chat', {
     description: 'Create a group chat. Human or master token only. Returns the new chat with epoch 0.',
     inputSchema: {
-      name: z.string().max(200).optional().describe('Chat name; defaults to 新群聊')
+      name: z.string().max(200).optional().describe('Chat name; defaults to 新群聊'),
+      category: z.string().max(40).optional()
+        .describe('Optional category label. visibility is always link; public is local-only and not exposed here.')
     }
-  }, async ({ name }) => {
+  }, async ({ name, category }) => {
     try {
       requireChatAdmin('create_chat');
-      const chat = chats.create({ name });
+      const chat = chats.create({ name, category });
       return asText({
         chat_id: chat.chat_id,
         name: chat.name,
+        category: chat.category ?? null,
+        visibility: chat.visibility ?? 'link',
         epoch: chat.epoch,
         created_at: chat.created_at
       });
@@ -320,7 +370,11 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
   }, async ({ status, include_archived, limit }) => {
     try {
       const chatIds = accessibleChatIds(store, auth);
-      return asText(chats.list({ status, include_archived, limit, chat_ids: chatIds }));
+      return asText(chats.list({
+        status, include_archived, limit, chat_ids: chatIds,
+        viewer: auth?.participant ?? null,
+        agentId: agentIdForParticipant(auth?.participant ?? null)
+      }));
     } catch (error) {
       return asError(error.message);
     }
@@ -378,27 +432,32 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
       + 'epoch; a dispatch carrying a stale epoch is rejected. files must be file_id values.',
     inputSchema: {
       chat_id: z.string().min(1).describe('Chat id'),
-      from: z.enum(['user', 'muse', 'claude', 'dsh']).describe('Sender; must match the token identity'),
-      to: z.enum(['muse', 'user', 'claude', 'dsh']).describe('Primary visible recipient'),
+      from: z.string().min(1).describe('Sender; must match the token identity (user/muse/claude/dsh/agent_*)'),
+      to: z.string().min(1).describe('Primary visible recipient (a chat member)'),
       summary: z.string().min(1).optional().describe('Short preview for the chat list; body carries the full text'),
       body: z.string().optional().describe('Full message text; defaults to summary'),
       files: z.array(z.string()).max(50).optional().describe('file_id values belonging to this chat'),
-      mentions: z.array(z.enum(['user', 'muse', 'claude', 'dsh'])).max(4).optional()
-        .describe('Participants mentioned (@); visibility only'),
+      mentions: z.array(z.string()).max(50).optional()
+        .describe('Participants mentioned (@); increments their mentions_you count'),
       act_recipients: z.array(z.enum(['claude', 'dsh'])).max(2).optional()
         .describe('Executors to start sub-tasks for; omitted means no action (legacy Muse->agent still dispatches)'),
       question: z.string().optional().describe('Question the recipient must answer'),
       task_id: z.string().optional().describe('Owned task id; required when from is claude or dsh'),
       reply_to: z.string().optional().describe('message_id this message answers'),
-      client_msg_id: z.string().max(200).optional().describe('Idempotency key per chat'),
+      client_msg_id: z.string().max(200).optional().describe('Idempotency key per chat (legacy name)'),
+      op_key: z.string().max(200).optional().describe('Idempotency key; same value as client_msg_id'),
+      ignore_new: z.boolean().optional().describe('Owner only: send despite unread messages'),
       epoch: z.number().int().min(0).optional().describe('Epoch the dispatch was prepared against'),
-      is_final: z.boolean().optional().describe('Marks that no further agent turn is expected')
+      is_final: z.boolean().optional().describe('Marks that no further agent turn is expected'),
+      author: z.object({
+        id: z.string().optional(), human: z.boolean().optional(), kind: z.string().optional()
+      }).passthrough().optional().describe('Echo of the server-derived author; a mismatch is rejected')
     }
   }, async (args) => {
     try {
       return asText(chats.send({ ...args, request_id: auth?.request_id, auth }));
     } catch (error) {
-      return asError(error.message);
+      return serviceError(error);
     }
   });
 
@@ -431,9 +490,26 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
   }, async ({ chat_id, limit, before, after_seq }) => {
     try {
       assertChatAccess(store, auth, chat_id);
-      return asText(chats.listMessages({ chat_id, limit, before, after_seq }));
+      const page = chats.listMessages({ chat_id, limit, before, after_seq });
+      // Pull-to-read: the authenticated viewer's cursor advances to the newest
+      // seq in the page. markRead only moves forward, so paging older history
+      // never rewinds it. Best effort: a read must still return its page.
+      if (auth?.participant && store.getChatParticipant(chat_id, auth.participant)) {
+        const newest = page.messages.reduce(
+          (max, message) => Math.max(max, Number(message.seq) || 0), 0);
+        if (newest > 0) {
+          try {
+            agentService.markRead({
+              chatId: chat_id,
+              agentId: agentIdForParticipant(auth.participant),
+              upToSeq: newest
+            });
+          } catch { /* read-state maintenance never fails the page */ }
+        }
+      }
+      return asText(page);
     } catch (error) {
-      return asError(error.message);
+      return serviceError(error);
     }
   });
 
@@ -443,7 +519,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
       + 'agent tokens may only mark themselves. Returns the stored last_read_seq and the remaining unread count.',
     inputSchema: {
       chat_id: z.string().min(1).describe('Chat id'),
-      participant_id: z.enum(['user', 'muse', 'claude', 'dsh']).optional()
+      participant_id: z.string().min(1).optional()
         .describe('Participant whose cursor advances; defaults to the token identity'),
       up_to_seq: z.number().int().min(0).optional().describe('Mark messages with seq <= this value as read'),
       message_id: z.string().min(1).optional().describe('Mark up to this message\'s seq instead of up_to_seq')
@@ -451,7 +527,10 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
   }, async ({ chat_id, participant_id, up_to_seq, message_id }) => {
     try {
       assertChatAccess(store, auth, chat_id);
-      const participant = participant_id ?? auth.participant;
+      // Accept both the canonical agent id (agent_claude) and the participant
+      // handle (claude) for built-ins.
+      const requested = participant_id ?? auth.participant;
+      const participant = participantForAgentId(agentIdForParticipant(requested));
       if (!participant) {
         throw new Error('unauthenticated');
       }
@@ -473,18 +552,34 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
         targetSeq = Number(store.lastChatMessage(chat_id)?.seq) || 0;
       }
 
-      const updated = store.updateParticipantRead(chat_id, participant, targetSeq);
-      const lastReadSeq = Number(updated.last_read_seq) || 0;
-      const unread = store.listChatMessages({ chatId: chat_id, afterSeq: lastReadSeq, limit: 500 }).length;
+      // Phase 2: the legacy participant cursor and the inbox_cursors row move
+      // together, and the per-category counters are recomputed from the
+      // message stream (P0-6 backend half).
+      const counts = agentService.markRead({
+        chatId: chat_id,
+        agentId: agentIdForParticipant(participant),
+        upToSeq: targetSeq
+      });
+      // `unread` keeps its pre-Phase-2 meaning for this tool: every message
+      // after the cursor, including the caller's own. The per-category inbox
+      // counters below are the protocol view and exclude the caller's own
+      // messages.
+      const unread = store.listChatMessages({
+        chatId: chat_id, afterSeq: counts.last_read_seq, limit: 500
+      }).length;
       return asText({
         ok: true,
         chat_id,
         participant_id: participant,
-        last_read_seq: lastReadSeq,
-        unread
+        last_read_seq: counts.last_read_seq,
+        unread,
+        mentions_you: counts.mentions_you,
+        replies_to_you: counts.replies_to_you,
+        from_owner: counts.from_owner,
+        recalled: counts.recalled
       });
     } catch (error) {
-      return asError(error.message);
+      return serviceError(error);
     }
   });
 
@@ -532,9 +627,202 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
         tokenBudget: max_tokens,
         includeFiles: include_files !== false
       });
+      // The context IS the pull. Advance the viewer's cursor so an agent that
+      // refreshed context can speak without tripping the 409 gate.
+      if (auth?.participant && store.getChatParticipant(chat_id, auth.participant)) {
+        const newest = context.messages.reduce(
+          (max, message) => Math.max(max, Number(message.seq) || 0), 0);
+        if (newest > 0) {
+          try {
+            agentService.markRead({
+              chatId: chat_id,
+              agentId: agentIdForParticipant(auth.participant),
+              upToSeq: newest
+            });
+          } catch { /* context retrieval never fails on read-state maintenance */ }
+        }
+      }
       return asText(context);
     } catch (error) {
       return asError(error.message);
+    }
+  });
+
+  // ------------------------------------------------------- REA Phase 2 tools
+  register('inbox', {
+    description: 'Per-chat unread counts for one agent: mentions_you, replies_to_you, from_owner and recalled. '
+      + 'The response carries a `you` self-check block. Agent tokens may only read their own inbox; '
+      + 'human/master may pass agent_id. Reading the inbox does not mark messages read.',
+    inputSchema: {
+      agent_id: z.string().min(1).optional()
+        .describe('Agent id (agent_claude, agent_<random>); defaults to the token identity'),
+      chat_id: z.string().min(1).optional().describe('Return only this chat')
+    }
+  }, async ({ agent_id, chat_id }) => {
+    try {
+      const own = auth?.agent_id ?? agentIdForParticipant(auth?.participant);
+      const target = agent_id ?? own;
+      if (!readAll && target !== own) {
+        throw new Error(`agent '${auth?.participant}' can only read its own inbox`);
+      }
+      const result = agentService.inbox({ agentId: target });
+      if (chat_id) {
+        result.chats = result.chats.filter((entry) => entry.chat_id === chat_id);
+        result.total_unread = result.chats.reduce((sum, entry) => sum + entry.unread, 0);
+      }
+      return asText(result);
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('agent_pairing_code', {
+    description: 'Create a one-time pairing code (default 24h, at most 10 agents). Human or master token only. '
+      + 'The code is returned once and only its hash is stored.',
+    inputSchema: {
+      ttl_hours: z.number().min(1).max(24).optional().describe('Validity in hours; default 24, max 24'),
+      max_agents: z.number().int().min(1).max(10).optional().describe('How many distinct agents may use it; default 10')
+    }
+  }, async ({ ttl_hours, max_agents }) => {
+    try {
+      requireChatAdmin('agent_pairing_code');
+      return asText(agentService.createPairingCode({
+        createdBy: auth?.participant || 'user',
+        ttlMs: ttl_hours === undefined ? null : ttl_hours * 60 * 60 * 1000,
+        maxAgents: max_agents
+      }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('agent_pair', {
+    description: 'Exchange a pairing code for an access token (pachat_...). The token is shown once; only its '
+      + 'SHA-256 hash is stored. Re-pairing an existing name requires reclaim=true, which takes over the identity '
+      + 'and invalidates the old token. Human/master only in Phase 2 (the code is the second factor).',
+    inputSchema: {
+      code: z.string().min(1).describe('Pairing code from agent_pairing_code'),
+      name: z.string().min(1).max(80).describe('Agent display name; a same-name reclaim takes over that identity'),
+      platform: z.string().max(40).optional().describe('Platform label, e.g. claude-code/custom'),
+      profile: z.string().max(300).optional().describe('Profile text, at most 300 characters'),
+      reclaim: z.boolean().optional().describe('Take over an existing same-name agent and invalidate its token'),
+      chat_ids: z.array(z.string()).max(50).optional().describe('Chats to join immediately')
+    }
+  }, async ({ code, name, platform, profile, reclaim, chat_ids }) => {
+    try {
+      requireChatAdmin('agent_pair');
+      return asText(agentService.redeemPairingCode({
+        code, name, platform, profile, reclaim, chatIds: chat_ids
+      }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('agent_revoke_token', {
+    description: 'Revoke an agent access token. An agent token may revoke itself; human/master may revoke any agent. '
+      + 'The agents row is kept with status=revoked and no token hash.',
+    inputSchema: {
+      agent_id: z.string().min(1).optional().describe('Agent to revoke; defaults to the caller')
+    }
+  }, async ({ agent_id }) => {
+    try {
+      const own = auth?.agent_id ?? agentIdForParticipant(auth?.participant);
+      const target = agent_id ?? own;
+      if (!master && auth?.role !== 'human' && target !== own) {
+        throw new Error(`agent '${auth?.participant}' can only revoke its own token`);
+      }
+      return asText(agentService.revokeToken(target));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('agent_profile', {
+    description: 'Read a Profile Card, or update your own profile (<=300 characters). Human/master may read '
+      + 'any agent; an agent token may only read/update itself.',
+    inputSchema: {
+      agent_id: z.string().min(1).optional().describe('Agent to read; defaults to the caller'),
+      profile: z.string().max(300).optional().describe('New profile text; omitted means read only')
+    }
+  }, async ({ agent_id, profile }) => {
+    try {
+      const own = auth?.agent_id ?? agentIdForParticipant(auth?.participant);
+      const target = agent_id ?? own;
+      if (!readAll && target !== own) {
+        throw new Error(`agent '${auth?.participant}' can only read or update its own profile`);
+      }
+      if (profile !== undefined) {
+        if (!readAll && target !== own) throw new Error('not allowed');
+        return asText(agentService.updateProfile(target, profile));
+      }
+      const found = agentService.profile(target);
+      if (!found) throw new Error(`agent not found: ${target}`);
+      return asText(found);
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('chat_recall', {
+    description: 'Recall a chat message within the engine-enforced 2-minute window. The author or the human '
+      + 'owner may recall. The body is replaced with a placeholder and recalled counters advance for the other '
+      + 'members. Returns 403 recall_window_expired after the window.',
+    inputSchema: {
+      chat_id: z.string().min(1).describe('Chat id'),
+      message_id: z.string().min(1).describe('Message to recall')
+    }
+  }, async ({ chat_id, message_id }) => {
+    try {
+      assertChatAccess(store, auth, chat_id);
+      return asText(messages.recall({ chatId: chat_id, messageId: message_id, auth }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('chat_members', {
+    description: 'List the canonical members of a group chat (agent_id, role, display name, platform, colour).',
+    inputSchema: {
+      chat_id: z.string().min(1).describe('Chat id')
+    }
+  }, async ({ chat_id }) => {
+    try {
+      assertChatAccess(store, auth, chat_id);
+      return asText({ chat_id, members: agentService.members(chat_id) });
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('chat_add_member', {
+    description: 'Add an agent to a group chat. Human or master token only. Enforces the 50-member chat cap; '
+      + 'the human owner is the only owner row.',
+    inputSchema: {
+      chat_id: z.string().min(1).describe('Chat id'),
+      agent_id: z.string().min(1).describe('Agent id or participant handle (agent_claude, claude, agent_<random>)')
+    }
+  }, async ({ chat_id, agent_id }) => {
+    try {
+      requireChatAdmin('chat_add_member');
+      return asText(agentService.addMember({ chatId: chat_id, agentId: agent_id }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('chat_remove_member', {
+    description: 'Remove an agent from a group chat. Human or master token only. The human owner cannot be removed.',
+    inputSchema: {
+      chat_id: z.string().min(1).describe('Chat id'),
+      agent_id: z.string().min(1).describe('Agent id or participant handle')
+    }
+  }, async ({ chat_id, agent_id }) => {
+    try {
+      requireChatAdmin('chat_remove_member');
+      return asText(agentService.removeMember({ chatId: chat_id, agentId: agent_id }));
+    } catch (error) {
+      return serviceError(error);
     }
   });
 

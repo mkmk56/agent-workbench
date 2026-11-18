@@ -1,4 +1,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import {
+  identifyAccessTokenWithStore, isAgentParticipant, isKnownParticipant
+} from './agents.js';
 
 // ---------------------------------------------------------------------------
 // Bearer tokens and principals
@@ -156,7 +159,7 @@ export function verifyAgentToken(token, masterToken, now = Date.now()) {
 
 // Returns null for an unknown/absent/expired token. The shape intentionally
 // contains no token material so it is safe to log or return in diagnostics.
-export function identifyToken(provided, config) {
+export function identifyToken(provided, config, store = null) {
   if (!provided) return null;
 
   // Legacy master (one compatibility version).
@@ -229,6 +232,9 @@ export function identifyToken(provided, config) {
       }
     }
   }
+  // Paired third-party agents authenticate with a pachat_ token. The store is
+  // optional so auth-only unit tests keep working without a database.
+  if (store) return identifyAccessTokenWithStore(provided, store);
   return null;
 }
 
@@ -272,7 +278,7 @@ export function requireDispatch(auth, action = 'dispatching sub-tasks') {
 // The sender identity comes from the token, never from the request body.
 export function resolveSender(auth, requestedFrom) {
   const from = requestedFrom;
-  if (!['user', 'muse', 'claude', 'dsh'].includes(from)) throw new Error(`invalid from: ${from}`);
+  if (!isKnownParticipant(from)) throw new Error(`invalid from: ${from}`);
   if (!auth) return from;
   if (isMaster(auth)) {
     const allowed = auth.can_post_as ?? ['user'];
@@ -305,7 +311,7 @@ export function resolveSender(auth, requestedFrom) {
 export function authKindFor(auth, from) {
   if (auth?.token_kind === 'muse' || from === 'muse') return 'muse';
   if (auth?.master || auth?.role === 'human' || from === 'user') return 'human';
-  if (AGENT_PARTICIPANTS.includes(from)) return `agent:${from}`;
+  if (auth?.role === 'agent' || isAgentParticipant(from)) return `agent:${from}`;
   return 'system';
 }
 

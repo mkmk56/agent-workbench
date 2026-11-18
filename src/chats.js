@@ -2,12 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { deriveState } from './state.js';
 import { resolveSender } from './auth.js';
 import { fileRef } from './context.js';
+import {
+  agentIdForParticipant, describeAuthor, isAgentParticipant, isKnownParticipant
+} from './agents.js';
 
 export const DEFAULT_CHAT_NAME = '新群聊';
 const NAME_MAX = 200;
+const CATEGORY_MAX = 40;
 const CHAT_STATUSES = new Set(['active', 'archived']);
 const CHAT_SENDERS = new Set(['user', 'muse']);
-const CHAT_RECIPIENTS = new Set(['muse', 'user', 'claude', 'dsh']);
 const AGENTS = new Set(['claude', 'dsh']);
 
 // Real task states mapped to the status words a chat participant shows. The
@@ -48,6 +51,8 @@ export class ChatService {
       chat_id: chat.chat_id,
       name: chat.name,
       status: chat.status ?? 'active',
+      category: chat.category ?? null,
+      visibility: chat.visibility ?? 'link',
       epoch: Number(chat.epoch ?? 0),
       created_at: chat.created_at,
       updated_at: chat.updated_at,
@@ -63,12 +68,21 @@ export class ChatService {
     return chat;
   }
 
-  create({ name } = {}) {
+  create({ name, category = null } = {}) {
     if (name !== undefined && name !== null && typeof name !== 'string') {
       throw new Error('name must be a string');
     }
     const trimmed = typeof name === 'string' ? name.trim() : '';
     if (trimmed.length > NAME_MAX) throw new Error(`name must be at most ${NAME_MAX} characters`);
+    let categoryValue = null;
+    if (category !== undefined && category !== null) {
+      if (typeof category !== 'string') throw new Error('category must be a string');
+      categoryValue = category.trim();
+      if (categoryValue.length > CATEGORY_MAX) {
+        throw new Error(`category must be at most ${CATEGORY_MAX} characters`);
+      }
+      if (categoryValue === '') categoryValue = null;
+    }
     const now = new Date().toISOString();
     const chat = this.store.insertChat({
       chat_id: randomUUID(),
@@ -76,7 +90,11 @@ export class ChatService {
       created_at: now,
       updated_at: now,
       status: 'active',
-      epoch: 0
+      epoch: 0,
+      category: categoryValue,
+      // Public visibility is a local-only setting in Phase 2; the API always
+      // creates link-visible chats.
+      visibility: 'link'
     });
     // The human and the Muse coordinator belong to every chat. Executors join
     // on their first mention/dispatch (see MessageService._ensureParticipants),
@@ -87,6 +105,18 @@ export class ChatService {
     this.store.upsertChatParticipant({
       chat_id: chat.chat_id, participant_id: 'muse', kind: 'orchestrator', role: 'muse', display_name: 'Muse'
     });
+    // Keep the Phase 2 canonical tables consistent from the first message, not
+    // only after the next restart reconciliation.
+    const joinedAt = Date.parse(now);
+    for (const [participantId, role] of [['user', 'owner'], ['muse', 'member']]) {
+      const agentId = agentIdForParticipant(participantId);
+      this.store.insertChatMember({
+        chat_id: chat.chat_id, agent_id: agentId, role, joined_at: joinedAt
+      });
+      this.store.ensureInboxCursor({
+        chatId: chat.chat_id, agentId, lastReadSeq: 0, now: joinedAt
+      });
+    }
     return this.describe(chat);
   }
 
@@ -218,7 +248,10 @@ export class ChatService {
     };
   }
 
-  list({ status, limit, chat_ids: chatIds, include_archived: includeArchived } = {}) {
+  list({
+    status, limit, chat_ids: chatIds, include_archived: includeArchived,
+    viewer = null, agentId = null
+  } = {}) {
     let filter = 'active';
     if (status === 'all') filter = null;
     else if (status !== undefined && status !== null) {
@@ -236,16 +269,51 @@ export class ChatService {
         return rank(a) - rank(b);
       });
     }
+    const viewerAgentId = agentId ?? agentIdForParticipant(viewer);
     return {
-      chats: chats.map((chat) => ({
-        ...this.describe(chat),
-        needs_muse: this.store.chatNeedsMuse(chat.chat_id),
-        agents: {
-          muse: this.museStatus(chat.chat_id).status,
-          claude: this.agentStatus(chat.chat_id, 'claude').status,
-          dsh: this.agentStatus(chat.chat_id, 'dsh').status
-        }
-      }))
+      chats: chats.map((chat) => {
+        const described = this.describe(chat);
+        if (!viewer) return {
+          ...described,
+          needs_muse: this.store.chatNeedsMuse(chat.chat_id),
+          agents: {
+            muse: this.museStatus(chat.chat_id).status,
+            claude: this.agentStatus(chat.chat_id, 'claude').status,
+            dsh: this.agentStatus(chat.chat_id, 'dsh').status
+          }
+        };
+        // P0-6 backend: the list itself carries the unread state, so a client
+        // no longer has to guess from an always-zero last_read_seq.
+        const cursor = this.store.getInboxCursor(chat.chat_id, viewerAgentId);
+        const legacy = this.store.getChatParticipant(chat.chat_id, viewer);
+        const lastRead = cursor
+          ? Number(cursor.last_read_seq) || 0
+          : Number(legacy?.last_read_seq) || 0;
+        const unread = legacy
+          ? this.store.countUnreadMessages(chat.chat_id, viewer, lastRead)
+          : 0;
+        const counts = cursor
+          ? this.store.recomputeInboxCounts(chat.chat_id, viewerAgentId, viewer)
+          : { mentions_you: 0, replies_to_you: 0, from_owner: 0, recalled: 0 };
+        return {
+          ...described,
+          needs_muse: this.store.chatNeedsMuse(chat.chat_id),
+          agents: {
+            muse: this.museStatus(chat.chat_id).status,
+            claude: this.agentStatus(chat.chat_id, 'claude').status,
+            dsh: this.agentStatus(chat.chat_id, 'dsh').status
+          },
+          unread,
+          inbox: {
+            last_read_seq: lastRead,
+            unread,
+            mentions_you: counts.mentions_you,
+            replies_to_you: counts.replies_to_you,
+            from_owner: counts.from_owner,
+            recalled: counts.recalled
+          }
+        };
+      })
     };
   }
 
@@ -293,6 +361,11 @@ export class ChatService {
           depth: Number(row.depth ?? 0),
           root_message_id: row.root_message_id ?? null,
           status: row.status,
+          op_key: row.op_key ?? row.client_msg_id ?? null,
+          recalled: row.recalled_at !== null && row.recalled_at !== undefined,
+          recalled_at: row.recalled_at ?? null,
+          recalled_by: row.recalled_by ?? null,
+          author: describeAuthor(this.store, row.from_agent),
           auth_kind: row.auth_kind ?? null,
           principal_id: row.principal_id ?? null,
           request_id: row.request_id ?? null,
@@ -314,15 +387,18 @@ export class ChatService {
 
   send({
     chat_id: chatId, from, to, summary, body, files, question, task_id: taskId, reply_to: replyTo,
-    mentions, act, act_recipients: actRecipients, client_msg_id: clientMsgId, epoch, is_final: isFinal,
+    mentions, act, act_recipients: actRecipients, client_msg_id: clientMsgId, op_key: opKey,
+    ignore_new: ignoreNew, author, epoch, is_final: isFinal,
     request_id: requestId, auth
   } = {}) {
     const chat = this.requireChat(chatId);
     const effectiveFrom = resolveSender(auth, from);
-    if (!CHAT_SENDERS.has(effectiveFrom) && !AGENTS.has(effectiveFrom)) {
-      throw new Error("from must be 'user', 'muse', 'claude' or 'dsh'");
+    if (!CHAT_SENDERS.has(effectiveFrom) && !isAgentParticipant(effectiveFrom)) {
+      throw new Error("from must be 'user', 'muse', 'claude', 'dsh' or a paired agent id");
     }
-    if (!CHAT_RECIPIENTS.has(to)) throw new Error(`invalid to: ${to}`);
+    if (!isKnownParticipant(to) && !this.store.isChatParticipant(chat.chat_id, to)) {
+      throw new Error(`invalid to: ${to}`);
+    }
     // Compatibility rule: a plain user request still goes to Muse. A user may
     // address an executor when they explicitly mention/act it.
     const explicitAction = Array.isArray(actRecipients) || Array.isArray(act)
@@ -344,6 +420,9 @@ export class ChatService {
       mentions,
       act_recipients: actRecipients ?? act,
       client_msg_id: clientMsgId,
+      op_key: opKey,
+      ignore_new: ignoreNew,
+      author,
       epoch,
       is_final: isFinal,
       chat_id: chat.chat_id,
