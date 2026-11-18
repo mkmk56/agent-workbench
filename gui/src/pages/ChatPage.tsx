@@ -8,6 +8,7 @@ import {
   useChatMessagesView,
   useChatStatusView,
   useChatStore,
+  useMarkChatRead,
 } from '../lib/chat-store';
 import { createChat } from '../lib/chat';
 import { invalidateChatFileIndex, useChatFileIndex } from '../lib/chat-file-index';
@@ -55,6 +56,12 @@ export function ChatPage({ chatId }: { chatId: string | null }) {
   );
 
   const chat = chatId != null ? (chats.find((item) => item.chat_id === chatId) ?? null) : null;
+
+  // P0-6 / REA Phase 2 §5: pulling messages is "read". The engine advances the
+  // cursor on list_chat_messages; this explicit chat_mark_read keeps the chat
+  // list's unread badge and the inbox counters in step with what is on screen.
+  const newestSeq = messages.reduce((max, message) => Math.max(max, message.seq), 0);
+  useMarkChatRead(chatId, newestSeq);
 
   const needle = searchQuery.trim().toLowerCase();
   const searchMatchCount =

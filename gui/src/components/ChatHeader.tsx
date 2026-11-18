@@ -9,6 +9,7 @@ import {
 import type { ChatAgentId } from '../types';
 import { navigate } from '../lib/router';
 import { AgentPresence, AgentPresenceList } from './AgentPresence';
+import { ProfileCardPanel } from './ProfileCard';
 
 const OFFLINE_STATES = new Set(['failed', 'stale', 'unknown']);
 
@@ -52,6 +53,7 @@ export function ChatHeader({
   const [renameError, setRenameError] = useState<string | null>(null);
   const [showMembers, setShowMembers] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
+  const [showProfiles, setShowProfiles] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [archiving, setArchiving] = useState(false);
 
@@ -134,11 +136,12 @@ export function ChatHeader({
   const closePopovers = () => {
     setShowMembers(false);
     setShowMenu(false);
+    setShowProfiles(false);
   };
 
   return (
     <header className="chat-header">
-      {(showMembers || showMenu) && (
+      {(showMembers || showMenu || showProfiles) && (
         <div
           className="chat-header__scrim"
           aria-hidden="true"
@@ -236,6 +239,7 @@ export function ChatHeader({
               aria-expanded={showMembers}
               onClick={() => {
                 setShowMenu(false);
+                setShowProfiles(false);
                 setShowMembers(!showMembers);
               }}
             >
@@ -261,6 +265,7 @@ export function ChatHeader({
               aria-expanded={showMenu}
               onClick={() => {
                 setShowMembers(false);
+                setShowProfiles(false);
                 setShowMenu(!showMenu);
               }}
             >
@@ -288,7 +293,23 @@ export function ChatHeader({
                     重命名群聊
                   </button>
                 </li>
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowMenu(false);
+                      setShowProfiles(true);
+                    }}
+                  >
+                    Agent 简介（Profile Card）
+                  </button>
+                </li>
               </ul>
+            )}
+            {showProfiles && (
+              <div className="chat-header__popover chat-header__popover--profile">
+                <ProfileCardPanel />
+              </div>
             )}
           </div>
         </div>

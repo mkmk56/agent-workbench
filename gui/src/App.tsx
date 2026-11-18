@@ -8,6 +8,7 @@ import { AboutPage } from './pages/AboutPage';
 import { ChatPage } from './pages/ChatPage';
 import { DispatchPage } from './pages/DispatchPage';
 import { FilesPage } from './pages/FilesPage';
+import { InboxPage } from './pages/InboxPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TaskDetailPage } from './pages/TaskDetailPage';
 import { TasksPage } from './pages/TasksPage';
@@ -34,6 +35,9 @@ export function App() {
       break;
     case 'files':
       page = <FilesPage />;
+      break;
+    case 'inbox':
+      page = <InboxPage />;
       break;
     case 'dispatch':
       page = <DispatchPage />;

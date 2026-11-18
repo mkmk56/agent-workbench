@@ -25,6 +25,9 @@ export function parseHash(hash: string): Route {
   if (parts[0] === 'files') {
     return { name: 'files' };
   }
+  if (parts[0] === 'inbox') {
+    return { name: 'inbox' };
+  }
   if (parts[0] === 'dispatch') {
     return { name: 'dispatch' };
   }

@@ -1,4 +1,4 @@
-import { Files, History, Info, LayoutDashboard, MessagesSquare, Moon, Settings as SettingsIcon, Sun } from 'lucide-react';
+import { Files, History, Inbox, Info, LayoutDashboard, MessagesSquare, Moon, Settings as SettingsIcon, Sun } from 'lucide-react';
 import type { ReactNode } from 'react';
 // The real application icon (Converge「汇聚」, direction A): paper tile +
 // 10% ink hairline, Y arms 72/512, node r=56/512. This is the same mark as
@@ -57,6 +57,16 @@ const ENTRIES: NavEntry[] = [
     icon: <Files size={22} strokeWidth={1.8} />,
     path: '/files',
     isSelected: (route) => route.name === 'files',
+  },
+  {
+    // REA Phase 2: per-agent unread counters (mentions / replies / owner /
+    // recalled) live on their own page; the chat list keeps its own badge.
+    key: 'inbox',
+    label: '收件箱',
+    title: '收件箱',
+    icon: <Inbox size={22} strokeWidth={1.8} />,
+    path: '/inbox',
+    isSelected: (route) => route.name === 'inbox',
   },
 ];
 
