@@ -128,12 +128,19 @@ muse_presence(principal_id PK, last_seen_at, lease_expires_at, source, updated_a
     "auth_kind": "human|muse|agent:claude|agent:dsh",
     "principal_id": "user|muse|claude|dsh",
     "request_id": "...",
+    "provider": "gateway|anthropic|deepseek|null",
+    "model": "deepseek-v4.1-flash|null",
+    "token_usage": { "input": 0, "output": 0, "cache_read": 0, "cache_creation": 0 },
+    "latency_ms": 1142,
     "status": "stored|queued|delivered|answered|held|failed",
     "created_at": "...", "task_id": "..." }
   ```
   - `files` 是**附件对象数组**（P0-5 方案 A）。前端不再需要从 UUID 猜名称/大小。
   - `legacy_paths` 是独立字段，只包含历史裸路径；不可下载/预览，渲染为“历史附件（路径）”。
   - `task_id` 仅在消息属于某子任务时出现（自然语言流不含 thread 状态、日志、报错堆栈）。
+  - `provider`/`model`/`token_usage`/`latency_ms` 是 P1-5 的执行指标冗余列：来自产生该消息的任务
+    的 `executions` 行；用户/Muse 消息与历史行均为 `null`。dsh 没有可归属的 ledger 事件时
+    `token_usage` 为 `null`、执行记录 `usage_source='unknown'`，绝不写 0 冒充分数。
 
 ### 3.7 既有工具改造
 - `send_message`
@@ -235,6 +242,9 @@ IPC 白名单（Muse 负责桥）：`listChats` / `createChat` / `renameChat` /
 - `from`: `user` 右置；`muse` / `claude` / `dsh` 左置，各用 `sidebar/` 已有头像。
 - `status`：`queued`（已排队待投递）、`delivered`（子任务已启动）、`answered`、
   `held`（该子任务线程达上限）、`failed`（投递失败，展示原因入口）。
+  P1-2 起消息状态由 `chat_deliveries` 聚合：任一投递成功 → `delivered`；只剩
+  `pending|queued|retry` → `queued`；全部失败（`dead_letter`）→ `failed`。
+  单条投递的瞬时失败不会再把整条消息改写成 `failed`。
 - 结论卡片用 `files` / `question` / `task_id`；`task_id` 点击进旧任务详情
   （调试路由 `#/tasks/:id`），即方案里的“查看执行记录”。
 - `summary` 是唯一进入聊天的自然语言文本；技术日志请走 `task_logs`，不要渲染进聊天流。
