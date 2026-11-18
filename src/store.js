@@ -15,7 +15,11 @@ const MESSAGE_COLUMNS = [
   'auth_kind', 'principal_id', 'request_id',
   // Execution metrics copied from the producing task (P1-5). Nullable for
   // human/Muse rows and for historical rows whose execution was never recorded.
-  'provider', 'model', 'token_usage_json', 'latency_ms'
+  'provider', 'model', 'token_usage_json', 'latency_ms',
+  // REA Phase 2: recall state and the protocol-level idempotency key. op_key
+  // and client_msg_id intentionally hold the same value; the protocol name is
+  // an alias, not a second idempotency mechanism.
+  'recalled_at', 'recalled_by', 'op_key'
 ];
 
 const MESSAGE_DEFAULTS = Object.freeze({
@@ -63,7 +67,10 @@ const MESSAGES_DDL = `CREATE TABLE IF NOT EXISTS messages (
         provider TEXT,
         model TEXT,
         token_usage_json TEXT,
-        latency_ms INTEGER
+        latency_ms INTEGER,
+        recalled_at INTEGER,
+        recalled_by TEXT,
+        op_key TEXT
       )`;
 
 const TASK_COLUMNS = [
@@ -89,6 +96,9 @@ export class Store {
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = NORMAL;
+      -- The migration script and a running engine may overlap briefly. Waiting
+      -- for a lock is safer than failing a write with SQLITE_BUSY.
+      PRAGMA busy_timeout = 5000;
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
@@ -218,6 +228,67 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS idx_chat_participants_participant
         ON chat_participants(participant_id, chat_id);
+      -- REA Phase 2 identity and membership. agents.id is the canonical agent
+      -- id (agent_muse / agent_claude / agent_dsh, or agent_<random> for a
+      -- paired third-party agent). chat_participants stays as the legacy
+      -- participant projection; the two are kept in sync by AgentService.
+      CREATE TABLE IF NOT EXISTS agents (
+        id TEXT PRIMARY KEY,
+        owner TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        profile TEXT,
+        color TEXT,
+        token_hash TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_token_hash
+        ON agents(token_hash) WHERE token_hash IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_owner_name
+        ON agents(owner, display_name COLLATE NOCASE);
+      CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner, status);
+      CREATE TABLE IF NOT EXISTS chat_members (
+        chat_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'member',
+        joined_at INTEGER NOT NULL,
+        PRIMARY KEY (chat_id, agent_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_chat_members_agent
+        ON chat_members(agent_id, chat_id);
+      CREATE TABLE IF NOT EXISTS inbox_cursors (
+        chat_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        last_read_seq INTEGER NOT NULL DEFAULT 0,
+        mentions_you INTEGER NOT NULL DEFAULT 0,
+        replies_to_you INTEGER NOT NULL DEFAULT 0,
+        from_owner INTEGER NOT NULL DEFAULT 0,
+        recalled INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (chat_id, agent_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_inbox_cursors_agent
+        ON inbox_cursors(agent_id, chat_id);
+      -- Pairing codes are only stored as a hash, like access tokens. A code is
+      -- valid for at most 24 hours and at most 10 distinct agents.
+      CREATE TABLE IF NOT EXISTS pairing_codes (
+        id TEXT PRIMARY KEY,
+        code_hash TEXT NOT NULL UNIQUE,
+        owner TEXT NOT NULL,
+        max_agents INTEGER NOT NULL DEFAULT 10,
+        uses INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        revoked_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_pairing_codes_owner ON pairing_codes(owner, expires_at);
+      CREATE TABLE IF NOT EXISTS pairing_code_uses (
+        pairing_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        used_at INTEGER NOT NULL,
+        PRIMARY KEY (pairing_id, agent_id)
+      );
       CREATE TABLE IF NOT EXISTS chat_files (
         file_id TEXT PRIMARY KEY,
         chat_id TEXT NOT NULL,
@@ -413,7 +484,10 @@ export class Store {
           provider TEXT,
           model TEXT,
           token_usage_json TEXT,
-          latency_ms INTEGER
+          latency_ms INTEGER,
+          recalled_at INTEGER,
+          recalled_by TEXT,
+          op_key TEXT
         );
         INSERT INTO messages_chat_migration (${copied.join(', ')})
           SELECT ${copied.join(', ')} FROM messages;
@@ -576,6 +650,37 @@ export class Store {
         this._addColumnIfMissing('messages', 'model', 'TEXT');
         this._addColumnIfMissing('messages', 'token_usage_json', 'TEXT');
         this._addColumnIfMissing('messages', 'latency_ms', 'INTEGER');
+      });
+
+    // REA Phase 2: agent identity, membership, inbox cursors, pairing, recall
+    // state and the op_key alias. Tables are created by the constructor DDL;
+    // this step adds the columns to an existing database and registers the
+    // indexes. The pairing_codes/pairing_code_uses tables are implementation
+    // storage for the 24h / <=10-agent pairing protocol.
+    this._migrate(5, 'rea-phase2-agents-inbox-recall',
+      'DROP TABLE IF EXISTS pairing_code_uses; '
+      + 'DROP TABLE IF EXISTS pairing_codes; '
+      + 'DROP TABLE IF EXISTS inbox_cursors; '
+      + 'DROP TABLE IF EXISTS chat_members; '
+      + 'DROP TABLE IF EXISTS agents; '
+      + 'ALTER TABLE messages DROP COLUMN op_key; '
+      + 'ALTER TABLE messages DROP COLUMN recalled_by; '
+      + 'ALTER TABLE messages DROP COLUMN recalled_at; '
+      + 'ALTER TABLE chats DROP COLUMN visibility; '
+      + 'ALTER TABLE chats DROP COLUMN category;', () => {
+        this._addColumnIfMissing('messages', 'recalled_at', 'INTEGER');
+        this._addColumnIfMissing('messages', 'recalled_by', 'TEXT');
+        this._addColumnIfMissing('messages', 'op_key', 'TEXT');
+        this._addColumnIfMissing('chats', 'category', 'TEXT');
+        this._addColumnIfMissing('chats', 'visibility', "TEXT DEFAULT 'link'");
+        this.db.exec(`
+          UPDATE chats SET visibility = 'link' WHERE visibility IS NULL;
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_chat_op_key
+            ON messages(chat_id, op_key) WHERE chat_id IS NOT NULL AND op_key IS NOT NULL;
+          CREATE INDEX IF NOT EXISTS idx_messages_recalled
+            ON messages(chat_id, recalled_at) WHERE recalled_at IS NOT NULL;
+          CREATE INDEX IF NOT EXISTS idx_chats_category ON chats(category, updated_at);
+        `);
       });
   }
 
@@ -841,9 +946,10 @@ export class Store {
 
   updateMessage(id, patch) {
     const allowed = [
-      'status', 'delivery_task_id', 'error', 'is_final', 'body', 'mentions_json',
+      'status', 'delivery_task_id', 'error', 'is_final', 'body', 'summary', 'mentions_json',
       'root_message_id', 'depth', 'epoch', 'client_msg_id', 'context_version',
-      'provider', 'model', 'token_usage_json', 'latency_ms'
+      'provider', 'model', 'token_usage_json', 'latency_ms',
+      'recalled_at', 'recalled_by', 'op_key'
     ];
     const keys = Object.keys(patch).filter((k) => allowed.includes(k));
     if (keys.length === 0) return;
@@ -864,6 +970,11 @@ export class Store {
     return this.db.prepare(
       'SELECT * FROM messages WHERE chat_id = ? AND client_msg_id = ? ORDER BY created_at ASC LIMIT 1'
     ).get(chatId, clientMsgId) ?? null;
+  }
+
+  // op_key is the protocol name for the same per-chat idempotency key.
+  getMessageByOpKey(chatId, opKey) {
+    return this.getMessageByClientId(chatId, opKey);
   }
 
   getReply(messageId) {
@@ -947,8 +1058,10 @@ export class Store {
   // ------------------------------------------------------------------- chats
   insertChat(chat) {
     this.db.prepare(
-      `INSERT INTO chats (chat_id, name, created_at, updated_at, status, last_message_at, last_message_preview, epoch)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO chats
+         (chat_id, name, created_at, updated_at, status, last_message_at, last_message_preview,
+          epoch, category, visibility)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       chat.chat_id,
       chat.name,
@@ -957,7 +1070,9 @@ export class Store {
       chat.status ?? 'active',
       chat.last_message_at ?? null,
       chat.last_message_preview ?? null,
-      chat.epoch ?? 0
+      chat.epoch ?? 0,
+      chat.category ?? null,
+      chat.visibility ?? 'link'
     );
     return this.getChat(chat.chat_id);
   }
@@ -967,7 +1082,9 @@ export class Store {
   }
 
   updateChat(chatId, patch) {
-    const allowed = ['name', 'status', 'last_message_at', 'last_message_preview', 'epoch'];
+    const allowed = [
+      'name', 'status', 'last_message_at', 'last_message_preview', 'epoch', 'category', 'visibility'
+    ];
     const keys = Object.keys(patch).filter((key) => allowed.includes(key));
     if (keys.length === 0) return this.getChat(chatId);
     const sets = keys.map((key) => `${key} = ?`).join(', ');
@@ -988,6 +1105,12 @@ export class Store {
 
   chatEpoch(chatId) {
     return Number(this.getChat(chatId)?.epoch ?? 0);
+  }
+
+  // Uncapped chat list for reconciliation/migration. listChats caps at 200 so a
+// large installation could otherwise leave late chats unbackfilled.
+  allChats() {
+    return this.db.prepare('SELECT * FROM chats ORDER BY created_at ASC').all();
   }
 
   listChats({ status = null, limit = 50, chatIds = null } = {}) {
@@ -1127,6 +1250,13 @@ export class Store {
 
   isChatParticipant(chatId, participantId) {
     return Boolean(this.getChatParticipant(chatId, participantId));
+  }
+
+  deleteChatParticipant(chatId, participantId) {
+    const info = this.db.prepare(
+      'DELETE FROM chat_participants WHERE chat_id = ? AND participant_id = ?'
+    ).run(chatId, participantId);
+    return Number(info.changes ?? 0);
   }
 
   listChatParticipants(chatId) {
@@ -1427,6 +1557,311 @@ export class Store {
           AND (provider IS NULL OR model IS NULL OR token_usage_json IS NULL OR latency_ms IS NULL)`
     ).run(provider, model, tokenUsageJson, latencyMs, taskId);
     return Number(info.changes ?? 0);
+  }
+
+  // ------------------------------------------------------- REA Phase 2: agents
+  insertAgent(agent) {
+    this.db.prepare(
+      `INSERT INTO agents
+         (id, owner, platform, display_name, profile, color, token_hash, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      agent.id,
+      agent.owner,
+      agent.platform,
+      agent.display_name,
+      agent.profile ?? null,
+      agent.color ?? null,
+      agent.token_hash ?? null,
+      agent.status ?? 'active',
+      Number(agent.created_at) || Date.now()
+    );
+    return this.getAgent(agent.id);
+  }
+
+  getAgent(id) {
+    return this.db.prepare('SELECT * FROM agents WHERE id = ?').get(id) ?? null;
+  }
+
+  getAgentByTokenHash(tokenHash) {
+    if (!tokenHash) return null;
+    return this.db.prepare('SELECT * FROM agents WHERE token_hash = ?').get(tokenHash) ?? null;
+  }
+
+  findAgentByName(owner, displayName) {
+    return this.db.prepare(
+      'SELECT * FROM agents WHERE owner = ? AND display_name = ? COLLATE NOCASE'
+    ).get(owner, displayName) ?? null;
+  }
+
+  listAgents({ owner = null, status = null, limit = 100 } = {}) {
+    const clauses = [];
+    const params = [];
+    if (owner) { clauses.push('owner = ?'); params.push(owner); }
+    if (status) { clauses.push('status = ?'); params.push(status); }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const n = Math.max(1, Math.min(500, Number(limit) || 100));
+    return this.db.prepare(
+      `SELECT * FROM agents ${where} ORDER BY created_at ASC LIMIT ?`
+    ).all(...params, n);
+  }
+
+  countActiveOwnedAgents(owner) {
+    const row = this.db.prepare(
+      "SELECT COUNT(*) AS n FROM agents WHERE owner = ? AND status = 'active'"
+    ).get(owner);
+    return Number(row?.n ?? 0);
+  }
+
+  updateAgent(id, patch) {
+    const allowed = ['platform', 'display_name', 'profile', 'color', 'token_hash', 'status'];
+    const keys = Object.keys(patch).filter((key) => allowed.includes(key));
+    if (keys.length === 0) return this.getAgent(id);
+    const sets = keys.map((key) => `${key} = ?`).join(', ');
+    this.db.prepare(`UPDATE agents SET ${sets} WHERE id = ?`).run(
+      ...keys.map((key) => patch[key] ?? null),
+      id
+    );
+    return this.getAgent(id);
+  }
+
+  // -------------------------------------------------- REA Phase 2: membership
+  insertChatMember({ chat_id: chatId, agent_id: agentId, role = 'member', joined_at: joinedAt = null }) {
+    this.db.prepare(
+      `INSERT OR IGNORE INTO chat_members (chat_id, agent_id, role, joined_at)
+       VALUES (?, ?, ?, ?)`
+    ).run(chatId, agentId, role, Number(joinedAt) || Date.now());
+    return this.getChatMember(chatId, agentId);
+  }
+
+  getChatMember(chatId, agentId) {
+    return this.db.prepare(
+      'SELECT * FROM chat_members WHERE chat_id = ? AND agent_id = ?'
+    ).get(chatId, agentId) ?? null;
+  }
+
+  listChatMembers(chatId) {
+    return this.db.prepare(
+      `SELECT m.*, a.owner, a.platform, a.display_name, a.profile, a.color, a.status
+         FROM chat_members m LEFT JOIN agents a ON a.id = m.agent_id
+        WHERE m.chat_id = ?
+        ORDER BY CASE m.role WHEN 'owner' THEN 0 ELSE 1 END, m.joined_at ASC`
+    ).all(chatId);
+  }
+
+  countChatMembers(chatId) {
+    const row = this.db.prepare(
+      'SELECT COUNT(*) AS n FROM chat_members WHERE chat_id = ?'
+    ).get(chatId);
+    return Number(row?.n ?? 0);
+  }
+
+  deleteChatMember(chatId, agentId) {
+    const info = this.db.prepare(
+      'DELETE FROM chat_members WHERE chat_id = ? AND agent_id = ?'
+    ).run(chatId, agentId);
+    return Number(info.changes ?? 0);
+  }
+
+  listChatsForAgent(agentId) {
+    return this.db.prepare(
+      `SELECT c.* FROM chats c JOIN chat_members m ON m.chat_id = c.chat_id
+        WHERE m.agent_id = ? ORDER BY COALESCE(c.last_message_at, c.created_at) DESC`
+    ).all(agentId);
+  }
+
+  // ------------------------------------------------- REA Phase 2: inbox cursor
+  ensureInboxCursor({ chatId, agentId, lastReadSeq = 0, now = Date.now() }) {
+    this.db.prepare(
+      `INSERT OR IGNORE INTO inbox_cursors
+         (chat_id, agent_id, last_read_seq, mentions_you, replies_to_you, from_owner, recalled, updated_at)
+       VALUES (?, ?, ?, 0, 0, 0, 0, ?)`
+    ).run(chatId, agentId, Number(lastReadSeq) || 0, Number(now) || Date.now());
+    return this.getInboxCursor(chatId, agentId);
+  }
+
+  getInboxCursor(chatId, agentId) {
+    return this.db.prepare(
+      'SELECT * FROM inbox_cursors WHERE chat_id = ? AND agent_id = ?'
+    ).get(chatId, agentId) ?? null;
+  }
+
+  // Recompute every unread counter from the message stream. Stored counters
+  // are a cache; deriving them here keeps a partial read, a recall and a
+  // replay from drifting apart.
+  recomputeInboxCounts(chatId, agentId, participantId) {
+    const cursor = this.ensureInboxCursor({ chatId, agentId });
+    const lastRead = Number(cursor.last_read_seq) || 0;
+    const rows = this.db.prepare(
+      `SELECT id, from_agent, mentions_json, reply_to, recalled_at
+         FROM messages WHERE chat_id = ? AND seq > ? AND from_agent <> ?`
+    ).all(chatId, lastRead, participantId);
+    const ownIds = new Set(this.db.prepare(
+      'SELECT id FROM messages WHERE chat_id = ? AND from_agent = ?'
+    ).all(chatId, participantId).map((row) => row.id));
+
+    let mentionsYou = 0;
+    let repliesToYou = 0;
+    let fromOwner = 0;
+    let recalled = 0;
+    for (const row of rows) {
+      let mentions = [];
+      try {
+        mentions = JSON.parse(row.mentions_json || '[]');
+      } catch { /* malformed legacy JSON counts as no mention */ }
+      if (Array.isArray(mentions) && mentions.includes(participantId)) mentionsYou += 1;
+      if (row.reply_to && ownIds.has(row.reply_to)) repliesToYou += 1;
+      if (row.from_agent === 'user' && participantId !== 'user') fromOwner += 1;
+      if (row.recalled_at !== null && row.recalled_at !== undefined) recalled += 1;
+    }
+
+    this.db.prepare(
+      `UPDATE inbox_cursors
+          SET mentions_you = ?, replies_to_you = ?, from_owner = ?, recalled = ?, updated_at = ?
+        WHERE chat_id = ? AND agent_id = ?`
+    ).run(mentionsYou, repliesToYou, fromOwner, recalled, Date.now(), chatId, agentId);
+    return {
+      chat_id: chatId,
+      agent_id: agentId,
+      last_read_seq: lastRead,
+      unread: rows.length,
+      mentions_you: mentionsYou,
+      replies_to_you: repliesToYou,
+      from_owner: fromOwner,
+      recalled
+    };
+  }
+
+  countChatMessagesSince(chatId, sinceIso) {
+    const row = this.db.prepare(
+      'SELECT COUNT(*) AS n FROM messages WHERE chat_id = ? AND created_at >= ?'
+    ).get(chatId, sinceIso);
+    return Number(row?.n ?? 0);
+  }
+
+  countUnreadMessages(chatId, participantId, lastReadSeq) {
+    const row = this.db.prepare(
+      `SELECT COUNT(*) AS n FROM messages
+        WHERE chat_id = ? AND seq IS NOT NULL AND seq > ? AND from_agent <> ?`
+    ).get(chatId, Number(lastReadSeq) || 0, participantId);
+    return Number(row?.n ?? 0);
+  }
+
+  maxChatSeq(chatId) {
+    const row = this.db.prepare(
+      'SELECT COALESCE(MAX(seq), 0) AS m FROM messages WHERE chat_id = ?'
+    ).get(chatId);
+    return Number(row?.m ?? 0);
+  }
+
+  markInboxRead(chatId, agentId, upToSeq, participantId) {
+    this.ensureInboxCursor({ chatId, agentId });
+    this.db.prepare(
+      `UPDATE inbox_cursors SET last_read_seq = MAX(last_read_seq, ?), updated_at = ?
+        WHERE chat_id = ? AND agent_id = ?`
+    ).run(Number(upToSeq) || 0, Date.now(), chatId, agentId);
+    return this.recomputeInboxCounts(chatId, agentId, participantId);
+  }
+
+  // A delivered task prompt already contains the chat context, so the engine
+  // advances that agent's cursor to the chat's current maximum. Everything that
+  // arrives after the dispatch remains unread.
+  advanceInboxToMax(chatId, agentId, participantId) {
+    return this.markInboxRead(chatId, agentId, this.maxChatSeq(chatId), participantId);
+  }
+
+  // Only an existing cursor is bumped. Creating one here would make an agent
+  // that has never participated look like it has unread mail (and would arm the
+  // 409 gate), which is not true until it is actually delivered to or joins.
+  bumpInboxCounter(chatId, agentId, field, amount = 1) {
+    const allowed = new Set(['mentions_you', 'replies_to_you', 'from_owner', 'recalled']);
+    if (!allowed.has(field)) throw new Error(`unknown inbox counter: ${field}`);
+    this.db.prepare(
+      `UPDATE inbox_cursors SET ${field} = ${field} + ?, updated_at = ?
+        WHERE chat_id = ? AND agent_id = ?`
+    ).run(Number(amount) || 0, Date.now(), chatId, agentId);
+    return this.getInboxCursor(chatId, agentId);
+  }
+
+  // ------------------------------------------------- REA Phase 2: pairing codes
+  insertPairingCode(code) {
+    this.db.prepare(
+      `INSERT INTO pairing_codes
+         (id, code_hash, owner, max_agents, uses, created_at, expires_at, revoked_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      code.id,
+      code.code_hash,
+      code.owner,
+      Number(code.max_agents) || 10,
+      Number(code.uses) || 0,
+      Number(code.created_at) || Date.now(),
+      Number(code.expires_at),
+      code.revoked_at ?? null
+    );
+    return this.getPairingCode(code.id);
+  }
+
+  getPairingCode(id) {
+    return this.db.prepare('SELECT * FROM pairing_codes WHERE id = ?').get(id) ?? null;
+  }
+
+  getPairingCodeByHash(codeHash) {
+    return this.db.prepare('SELECT * FROM pairing_codes WHERE code_hash = ?').get(codeHash) ?? null;
+  }
+
+  // Returns 1 only when this agent had not used the code before, so reclaiming
+  // the same member does not consume a second slot.
+  insertPairingUse(pairingId, agentId) {
+    const info = this.db.prepare(
+      `INSERT OR IGNORE INTO pairing_code_uses (pairing_id, agent_id, used_at)
+       VALUES (?, ?, ?)`
+    ).run(pairingId, agentId, Date.now());
+    if (Number(info.changes ?? 0) > 0) {
+      this.db.prepare('UPDATE pairing_codes SET uses = uses + 1 WHERE id = ?').run(pairingId);
+    }
+    return Number(info.changes ?? 0);
+  }
+
+  countPairingUses(pairingId) {
+    const row = this.db.prepare(
+      'SELECT COUNT(*) AS n FROM pairing_code_uses WHERE pairing_id = ?'
+    ).get(pairingId);
+    return Number(row?.n ?? 0);
+  }
+
+  hasPairingUse(pairingId, agentId) {
+    return Boolean(this.db.prepare(
+      'SELECT 1 AS used FROM pairing_code_uses WHERE pairing_id = ? AND agent_id = ?'
+    ).get(pairingId, agentId));
+  }
+
+  deleteInboxCursor(chatId, agentId) {
+    const info = this.db.prepare(
+      'DELETE FROM inbox_cursors WHERE chat_id = ? AND agent_id = ?'
+    ).run(chatId, agentId);
+    return Number(info.changes ?? 0);
+  }
+
+  revokePairingCode(id) {
+    const info = this.db.prepare(
+      'UPDATE pairing_codes SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL'
+    ).run(Date.now(), id);
+    return Number(info.changes ?? 0);
+  }
+
+  // --------------------------------------------------- REA Phase 2: recall
+  recallMessage(id, { recalledBy, placeholder, now = Date.now() }) {
+    const existing = this.getMessage(id);
+    if (!existing) return null;
+    if (existing.recalled_at !== null && existing.recalled_at !== undefined) return existing;
+    this.db.prepare(
+      `UPDATE messages
+          SET recalled_at = ?, recalled_by = ?, body = ?, summary = ?, mentions_json = '[]',
+              updated_at = ?
+        WHERE id = ? AND recalled_at IS NULL`
+    ).run(now, recalledBy ?? null, placeholder, placeholder, this._now(), id);
+    return this.getMessage(id);
   }
 
   // ------------------------------------------------------------------ presence

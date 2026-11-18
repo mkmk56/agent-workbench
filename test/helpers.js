@@ -6,6 +6,7 @@ import { Store } from '../src/store.js';
 import { MessageService } from '../src/messages.js';
 import { ChatService } from '../src/chats.js';
 import { FileService } from '../src/files.js';
+import { AgentService } from '../src/agents.js';
 import { deriveAgentTokens, deriveHumanToken, deriveMuseToken } from '../src/auth.js';
 
 export const TEST_MASTER_TOKEN = 'test-master-token-0123456789abcdef0123456789';
@@ -67,6 +68,12 @@ export function makeConfig(dir, overrides = {}) {
     chatMaxDepth: 16,
     chatBodyMaxChars: 100000,
     chatMaxFileBytes: 20 * 1024 * 1024,
+    recallWindowMs: 2 * 60 * 1000,
+    chatMessagesPerHour: 100,
+    chatMaxMembers: 50,
+    ownerMaxAgents: 10,
+    pairingTtlMs: 24 * 60 * 60 * 1000,
+    pairingMaxAgents: 10,
     chatUploadChunkBytes: 1024 * 1024,
     chatReadMaxBytes: 200000,
     chatTerminalStatusTtlMs: 60000,
@@ -123,9 +130,10 @@ export function makeServices(dir, { config: configOverrides = {}, scheduler = ne
   const config = makeConfig(dir, configOverrides);
   const store = new Store(join(dir, 'workbench.db'), dir);
   const files = new FileService({ store, config });
-  const messages = new MessageService({ store, scheduler, config, files });
+  const agents = new AgentService({ store, config });
+  const messages = new MessageService({ store, scheduler, config, files, agents });
   const chats = new ChatService({ store, messages, config });
-  return { config, store, files, messages, chats, scheduler };
+  return { config, store, files, messages, chats, agents, scheduler };
 }
 
 export function seedTask(store, {

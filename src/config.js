@@ -181,6 +181,13 @@ export const config = {
   chatMaxDepth: intEnv('CHAT_MAX_CAUSAL_DEPTH', 16),
   chatBodyMaxChars: intEnv('CHAT_BODY_MAX_CHARS', 100_000),
   chatMaxFileBytes: intEnv('CHAT_MAX_FILE_BYTES', 20 * 1024 * 1024),
+  // REA Phase 2 protocol limits.
+  recallWindowMs: intEnv('RECALL_WINDOW_MS', 2 * 60 * 1000),
+  chatMessagesPerHour: intEnv('CHAT_MESSAGES_PER_HOUR', 100),
+  chatMaxMembers: intEnv('CHAT_MAX_MEMBERS', 50),
+  ownerMaxAgents: intEnv('OWNER_MAX_AGENTS', 10),
+  pairingTtlMs: intEnv('PAIRING_CODE_TTL_MS', 24 * 60 * 60 * 1000),
+  pairingMaxAgents: intEnv('PAIRING_CODE_MAX_AGENTS', 10),
   // The MCP JSON body limit is 8 MB. Keep one base64 chunk at 1 MB by default
   // (about 1.4 MB of JSON) so multi-chunk uploads never hit that ceiling.
   chatUploadChunkBytes: Math.min(intEnv('CHAT_UPLOAD_CHUNK_BYTES', 1024 * 1024), 1024 * 1024),
