@@ -986,11 +986,14 @@
 }
 
 /* ---------------------------------------------------------------
- * 10. Group-chat upgrade (Muse): decision A — no identity colours.
- *    Sender name is body colour (see .chat-msg__sender); avatars are
- *    ink tiles (see .chat-avatar--muse/--claude/--dsh); agent bubbles
- *    blend into the workspace instead of carrying a tint. File cards,
- *    attachment bar, @mentions, thinking indicator, files page below.
+ * 10. Group-chat upgrade (Muse): decision A — no identity colours,
+ *    EXCEPT chat bubbles (user decision 2026-11-18, grill Q2/Q4).
+ *    Sender name is body colour in light (see .chat-msg__sender);
+ *    avatars are ink tiles (see .chat-avatar--muse/--claude/--dsh);
+ *    in dark, agent bubbles carry a restrained identity tint and the
+ *    sender name takes the agent colour (rules below). Light keeps the
+ *    blend. File cards, attachment bar, @mentions, thinking indicator,
+ *    files page below.
  * ------------------------------------------------------------- */
 
 /* Agent messages blend into the workspace: no bubble chrome. User
@@ -1001,6 +1004,41 @@
   background: transparent;
   border-color: transparent;
   padding: 0;
+}
+
+/* Dark only: bubbles-only identity colours (user decision 2026-11-18).
+ * Tokens: --color-bubble-* in src/theme/brand-theme.mjs. Light keeps the
+ * blend above. Failed bubbles stay excluded. */
+html[data-theme="dark"] .chat-msg[data-sender="muse"] .chat-bubble:not(.chat-bubble--failed) {
+  background: var(--color-bubble-muse-fill);
+  border-color: var(--color-bubble-muse-border);
+  padding: 12px 16px;
+}
+html[data-theme="dark"] .chat-msg[data-sender="muse"] .chat-msg__sender {
+  color: var(--color-bubble-muse-name);
+}
+html[data-theme="dark"] .chat-msg[data-sender="claude"] .chat-bubble:not(.chat-bubble--failed) {
+  background: var(--color-bubble-claude-fill);
+  border-color: var(--color-bubble-claude-border);
+  padding: 12px 16px;
+}
+html[data-theme="dark"] .chat-msg[data-sender="claude"] .chat-msg__sender {
+  color: var(--color-bubble-claude-name);
+}
+html[data-theme="dark"] .chat-msg[data-sender="dsh"] .chat-bubble:not(.chat-bubble--failed) {
+  background: var(--color-bubble-dsh-fill);
+  border-color: var(--color-bubble-dsh-border);
+  padding: 12px 16px;
+}
+html[data-theme="dark"] .chat-msg[data-sender="dsh"] .chat-msg__sender {
+  color: var(--color-bubble-dsh-name);
+}
+html[data-theme="dark"] .chat-msg[data-sender="user"] .chat-bubble:not(.chat-bubble--failed) {
+  background: var(--color-bubble-user-fill);
+  border-color: var(--color-bubble-user-border);
+}
+html[data-theme="dark"] .chat-msg[data-sender="user"] .chat-msg__sender {
+  color: var(--color-bubble-user-name);
 }
 
 .chat-msg__status {

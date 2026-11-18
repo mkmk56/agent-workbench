@@ -77,9 +77,29 @@ export function createBrandTheme() {
       '--color-icon-red': ['#A85A52', '#A85A52'],
       /* Dark red text is lightened vs #A85A52 (3.80:1) for WCAG AA (5.60:1). */
       '--color-text-red': ['#8F443C', '#C07A72'],
+      /* Chat-bubble identity colours (user decision 2026-11-18, grill Q2/Q4):
+       * the ONLY override of decision A. Pairs are [light, dark]; light
+       * keeps decision A (transparent blend, body-colour names), dark uses
+       * the approved preview values. Body text on all four dark fills is
+       * #F2F3F4 (see chat.css §10). Avatars stay ink tiles (white glyph
+       * PNGs cannot be recoloured per agent). */
+      '--color-bubble-muse-fill': ['transparent', '#1B1D20'],
+      '--color-bubble-muse-border': ['transparent', '#2E3237'],
+      '--color-bubble-muse-name': ['#1E2126', '#C5CBD3'],
+      '--color-bubble-claude-fill': ['transparent', '#241D19'],
+      '--color-bubble-claude-border': ['transparent', '#5C4436'],
+      '--color-bubble-claude-name': ['#1E2126', '#C08A6B'],
+      '--color-bubble-dsh-fill': ['transparent', '#1A1F26'],
+      '--color-bubble-dsh-border': ['transparent', '#3D4E5E'],
+      '--color-bubble-dsh-name': ['#1E2126', '#7E96AC'],
+      '--color-bubble-user-fill': ['#FFFFFF', '#202226'],
+      '--color-bubble-user-border': ['#D8D5CC', '#34383E'],
+      '--color-bubble-user-name': ['#1E2126', '#9AA0A8'],
       /* No orange family: Signal Orange is removed (VISUAL_SCHEME.md).
        * No purple/blue identity families: decision A, identity is glyph +
-       * name + tag, never colour. Nothing in gui/src referenced them. */
+       * name + tag, never colour — except chat bubbles (user decision
+       * 2026-11-18, grill Q2/Q4): see --color-bubble-* tokens above.
+       * Nothing in gui/src referenced them. */
 
       '--radius-none': '0px',
       '--radius-inner': '6px',
