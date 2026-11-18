@@ -344,9 +344,14 @@ export function ChatSidebar({ route }: { route: Route }) {
             <span className="chat-item__time">
               {chat.last_message_at != null ? formatRelative(chat.last_message_at) : ''}
             </span>
+            {/* Fixed-width slot: the badge keeps its intrinsic width and stays
+                flush right inside it, while the slot gives the hover archive
+                chip a deterministic left edge to step in front of (brand.css). */}
             {unreadCount > 0 && selectedId !== chat.chat_id && (
-              <span className="chat-item__unread" aria-label={`${unreadCount} 条未读消息`}>
-                {unreadCount > 99 ? '99+' : unreadCount}
+              <span className="chat-item__unread-slot">
+                <span className="chat-item__unread" aria-label={`${unreadCount} 条未读消息`}>
+                  {unreadCount > 99 ? '99+' : unreadCount}
+                </span>
               </span>
             )}
           </span>

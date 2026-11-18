@@ -2642,6 +2642,11 @@ html.is-resizing-chat-sidebar * {
 
 .chat-item__time {
   flex: none;
+  /* The archive chip is 24px wide and, on hover/focus, paints over exactly
+   * this box (see .chat-item__archive below). The floor keeps the box wide
+   * enough for the chip even when the row has no timestamp text, so the chip
+   * can never spill over the session name. */
+  min-width: 24px;
   font-size: 11px;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
@@ -2729,6 +2734,19 @@ html.is-resizing-chat-sidebar * {
 /* --- Session cards: member avatars, unread, archive ------------- */
 .chat-item-wrap {
   position: relative;
+  /* Reserved width of the unread badge slot (.chat-item__unread-slot). The
+   * archive chip's hover position is derived from it, so the slot and the
+   * chip can never drift apart. 99+ measures ≈29px: 32px is the widest label
+   * plus slack. */
+  --chat-item-unread-slot: 32px;
+}
+
+/* Hover/focus: the archive chip steps into the slot the timestamp vacates.
+ * `visibility` keeps the timestamp's box (no reflow, no jump) but takes the
+ * text out of paint, so the chip can never cover a half-visible timestamp. */
+.chat-item-wrap:hover .chat-item__time,
+.chat-item-wrap:focus-within .chat-item__time {
+  visibility: hidden;
 }
 
 .chat-item-wrap:hover .chat-item__archive,
@@ -2832,10 +2850,26 @@ html.is-resizing-chat-sidebar * {
   text-align: center;
 }
 
+/* Fixed-width slot for the unread badge. The badge keeps its intrinsic width
+ * and stays flush right inside it (the chip looks exactly as before), while
+ * the slot gives the archive chip a deterministic left edge: the slot is the
+ * only variable in the row's right-hand geometry, and it is a constant. */
+.chat-item__unread-slot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  width: var(--chat-item-unread-slot);
+}
+
 .chat-item__archive {
   position: absolute;
   top: 6px;
-  right: 6px;
+  /* 12px = the card's own padding, i.e. the timestamp's right edge: the chip
+   * replaces the timestamp in exactly the same box instead of overlapping a
+   * neighbour. A button cannot nest a button, so this is an absolute overlay
+   * on the row rather than a flex item inside it. */
+  right: 12px;
   display: grid;
   place-items: center;
   width: 24px;
@@ -2859,6 +2893,14 @@ html.is-resizing-chat-sidebar * {
   opacity: 1;
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* With a badge in the row the chip has to stay left of it: card padding 12px
+ * + badge slot + the row's 8px flex gap. The timestamp's box (at least 24px
+ * wide) always contains the 24px chip, so the chip lands on hidden text, not
+ * on the badge. */
+.chat-item-wrap:has(.chat-item__unread-slot) .chat-item__archive {
+  right: calc(12px + var(--chat-item-unread-slot) + 8px);
 }
 
 .chat-list__section {
