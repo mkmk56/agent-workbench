@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
+import { auditEvent } from './audit.js';
 
 // ---------------------------------------------------------------------------
 // REA Phase 2: agent identity, pairing, membership and inbox
@@ -178,6 +179,17 @@ export class AgentService {
   constructor({ store, config = {} }) {
     this.store = store;
     this.config = config;
+    // Connection-layer audit (SECURITY_DESIGN.md §5). Tests may inject a
+    // collector; production appends to data/security-audit.log.
+    this.audit = typeof config.audit === 'function'
+      ? config.audit
+      : (event, fields) => auditEvent(store?.dataDir ?? config.dataDir, event, fields);
+  }
+
+  // Auditing is best effort: a full disk or a locked file must never turn a
+  // rejected pairing into a crash.
+  _audit(event, fields = {}) {
+    try { this.audit?.(event, fields); } catch { /* ignore */ }
   }
 
   _now() {
@@ -320,6 +332,12 @@ export class AgentService {
       created_at: now,
       expires_at: now + ttl
     });
+    this._audit('pairing_code_created', {
+      pairing_id: id,
+      owner: createdBy || OWNER_ID,
+      max_agents: max,
+      expires_at: now + ttl
+    });
     return {
       pairing_id: id,
       code,
@@ -331,8 +349,44 @@ export class AgentService {
   }
 
   // Exchange a pairing code for an access token. The returned token is the only
-  // copy: the agents row stores its SHA-256 hash.
-  redeemPairingCode({
+  // copy: the agents row stores its SHA-256 hash. Every attempt is audited;
+  // the pairing code, the token and the code hash never reach the audit line.
+  redeemPairingCode(input = {}) {
+    try {
+      const result = this._redeemPairingCode(input);
+      this._audit('agent_pair', {
+        surface: 'agent_pair',
+        pairing_id: result.pairing_id,
+        agent_id: result.agent?.agent_id ?? null,
+        display_name: result.agent?.display_name ?? null,
+        owner: result.agent?.owner ?? null,
+        platform: result.agent?.platform ?? null,
+        reclaim: result.reclaim === true
+      });
+      if (result.reclaim) {
+        this._audit('agent_reclaim', {
+          surface: 'agent_pair',
+          pairing_id: result.pairing_id,
+          agent_id: result.agent?.agent_id ?? null,
+          display_name: result.agent?.display_name ?? null,
+          owner: result.agent?.owner ?? null
+        });
+      }
+      return result;
+    } catch (error) {
+      this._audit('agent_pair_failed', {
+        surface: 'agent_pair',
+        code: error?.code ?? 'error',
+        status: error?.status ?? null,
+        display_name: typeof input?.name === 'string' ? input.name : null,
+        reclaim: input?.reclaim === true
+      });
+      if (error && typeof error === 'object') error.audited = true;
+      throw error;
+    }
+  }
+
+  _redeemPairingCode({
     code, name, platform = undefined, profile = undefined, reclaim = false, chatIds = []
   } = {}) {
     const normalized = normalizePairingCode(code);
@@ -434,18 +488,38 @@ export class AgentService {
   }
 
   revokeToken(agentId) {
-    const canonical = agentIdForParticipant(agentId) || agentId;
-    const agent = this.store.getAgent(canonical);
-    if (!agent) throw new ProtocolError('agent_not_found', 404, `agent not found: ${agentId}`);
-    // Built-in identities are part of the engine, not paired integrations.
-    // Revoking one would remove it from chat membership and crash the pairing
-    // reclaim path; only their (nonexistent) access token is ever revocable.
-    if (BUILTIN_BY_ID.has(agent.id)) {
-      throw new ProtocolError('cannot_revoke_builtin', 403,
-        `${agent.display_name} is a built-in agent and has no access token to revoke`);
+    try {
+      const canonical = agentIdForParticipant(agentId) || agentId;
+      const agent = this.store.getAgent(canonical);
+      if (!agent) throw new ProtocolError('agent_not_found', 404, `agent not found: ${agentId}`);
+      // Built-in identities are part of the engine, not paired integrations.
+      // Revoking one would remove it from chat membership and crash the pairing
+      // reclaim path; only their (nonexistent) access token is ever revocable.
+      if (BUILTIN_BY_ID.has(agent.id)) {
+        throw new ProtocolError('cannot_revoke_builtin', 403,
+          `${agent.display_name} is a built-in agent and has no access token to revoke`);
+      }
+      const updated = this.store.updateAgent(agent.id, { status: 'revoked', token_hash: null });
+      this._audit('agent_revoke', {
+        surface: 'agent_revoke',
+        agent_id: agent.id,
+        display_name: agent.display_name,
+        owner: agent.owner
+      });
+      return publicAgent(updated);
+    } catch (error) {
+      if (error?.status === 403 || error?.status === 404) {
+        this._audit('access_denied', {
+          surface: 'agent_revoke',
+          agent_id: String(agentId ?? ''),
+          code: error.code ?? 'error',
+          status: error.status,
+          detail: error.message
+        });
+        if (error && typeof error === 'object') error.audited = true;
+      }
+      throw error;
     }
-    const updated = this.store.updateAgent(agent.id, { status: 'revoked', token_hash: null });
-    return publicAgent(updated);
   }
 
   updateProfile(agentId, profile) {
