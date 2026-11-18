@@ -79,6 +79,11 @@ for (const [label, result] of Object.entries(aclResults)) {
   if (result && result.ok === false) console.warn(`acl: could not restrict ${label}: ${result.error}`);
 }
 
+// P1-1: reconcile only after the message layer is assembled AND the executor
+// directories/ACLs/temp root are in place. Replay can start sub-tasks, so
+// running it here keeps every spawned process on the hardened paths.
+scheduler.reconcile({ reason: 'service restart' });
+
 const rateBuckets = new Map();
 const rateLimitPerMinute = Number(process.env.RATE_LIMIT_PER_MIN || 600);
 

@@ -175,7 +175,8 @@ export class ChatService {
         status: status.status,
         state: status.state ?? null,
         current_task_id: status.task_id ?? null,
-        pending_deliveries: Number(agentDeliveries.pending ?? 0) + Number(agentDeliveries.queued ?? 0),
+        pending_deliveries: Number(agentDeliveries.pending ?? 0) + Number(agentDeliveries.queued ?? 0)
+          + Number(agentDeliveries.retry ?? 0),
         delivery_status: agentDeliveries
       };
     });
@@ -295,6 +296,13 @@ export class ChatService {
           auth_kind: row.auth_kind ?? null,
           principal_id: row.principal_id ?? null,
           request_id: row.request_id ?? null,
+          // P1-5 execution metrics (null for human/Muse rows and old history).
+          provider: row.provider ?? null,
+          model: row.model ?? null,
+          token_usage: (() => {
+            try { return row.token_usage_json ? JSON.parse(row.token_usage_json) : null; } catch { return null; }
+          })(),
+          latency_ms: row.latency_ms ?? null,
           created_at: row.created_at,
           ...(row.task_id ? { task_id: row.task_id } : {})
         };

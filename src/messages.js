@@ -87,6 +87,47 @@ function parseJsonArray(json) {
 
 const parseFiles = parseJsonArray;
 
+// ---------------------------------------------------------------------------
+// Delivery failure classification (P1-2)
+//
+// Retrying a permanent error only wastes attempts, while dead-lettering a
+// transient one loses a message. The default is transient with a bounded
+// attempt count: a one-off fault gets retried, and a bug still ends in the
+// dead-letter state instead of looping forever.
+// ---------------------------------------------------------------------------
+const TRANSIENT_PATTERN = new RegExp(
+  [
+    'SQLITE_BUSY', 'database is locked', 'SQLITE_IOERR', 'ECONNREFUSED', 'ECONNRESET',
+    'ETIMEDOUT', 'EAGAIN', 'EPIPE', 'ENOMEM', 'socket hang up', 'temporarily',
+    'rate limit', 'too many requests', '\\b429\\b', '\\b50[234]\\b'
+  ].join('|'),
+  'i'
+);
+const PERMANENT_PATTERN = new RegExp(
+  [
+    'not found', 'does not exist', 'no such file', 'is not a directory', 'invalid',
+    'belongs to', 'mismatch', 'is not a participant', 'reached the exchange limit',
+    'auto-delivery disabled', 'unknown agent', 'must be a non-empty string'
+  ].join('|'),
+  'i'
+);
+
+export function classifyDeliveryError(error) {
+  const message = String(error?.message ?? error ?? '');
+  const code = String(error?.code ?? '');
+  const text = `${code} ${message}`;
+  if (TRANSIENT_PATTERN.test(text)) return 'transient';
+  if (PERMANENT_PATTERN.test(text)) return 'permanent';
+  return 'transient';
+}
+
+export function retryDelayMs(attemptNumber, config = {}) {
+  const base = Math.max(100, Number(config.deliveryRetryBaseMs) || 2_000);
+  const max = Math.max(base, Number(config.deliveryRetryMaxMs) || 60_000);
+  const exponent = Math.max(0, Math.min(10, Number(attemptNumber) - 1));
+  return Math.min(max, Math.round(base * 2 ** exponent));
+}
+
 export function buildMessagePrompt(message) {
   const files = parseFiles(message.files_json);
   const lines = [
@@ -253,6 +294,13 @@ export class MessageService {
       auth_kind: row.auth_kind ?? null,
       principal_id: row.principal_id ?? null,
       request_id: row.request_id ?? null,
+      // P1-5: execution metrics for the task that produced this message.
+      provider: row.provider ?? null,
+      model: row.model ?? null,
+      token_usage: (() => {
+        try { return row.token_usage_json ? JSON.parse(row.token_usage_json) : null; } catch { return null; }
+      })(),
+      latency_ms: row.latency_ms ?? null,
       question: row.question,
       summary_tokens: row.summary_tokens,
       summary_truncated: Boolean(row.summary_truncated),
@@ -503,6 +551,11 @@ export class MessageService {
     const now = new Date().toISOString();
     const contextVersion = chatId ? Number(this.store.lastChatMessage(chatId)?.seq ?? 0) : 0;
 
+    // P1-5: an agent message inherits the metrics of the task that produced it.
+    // Provider/model are known at task creation; token usage and latency are
+    // filled by scheduler.finish() (backfillMessageMetrics) when the run ends.
+    const execution = taskId ? (this.store.getExecutionForTask?.(taskId) ?? null) : null;
+
     const deliveries = [];
     if (chatId) {
       for (const participant of this.store.listChatParticipants(chatId)) {
@@ -550,7 +603,11 @@ export class MessageService {
         auth_kind: authKindFor(auth, from),
         principal_id: principalIdFor(auth, from),
         request_id: input.request_id || auth?.request_id
-          || (taskId ? `task:${taskId}` : null)
+          || (taskId ? `task:${taskId}` : null),
+        provider: execution?.provider ?? null,
+        model: execution?.model ?? null,
+        token_usage_json: execution?.token_usage_json ?? null,
+        latency_ms: execution?.latency_ms ?? null
       }, { deliveries, fileIds, bumpEpoch });
     } catch (error) {
       if (clientMsgId && /UNIQUE constraint failed/i.test(error.message)) {
@@ -716,58 +773,149 @@ export class MessageService {
     const deliveries = this.store.listMessageDeliveries(message.id)
       .filter((delivery) => delivery.status !== 'visible');
     if (deliveries.length === 0) {
-      this.store.updateMessage(message.id, { status: 'stored' });
+      this._applyMessageStatus(message.id);
       return null;
     }
     let created = null;
-    let pending = 0;
     for (const delivery of deliveries) {
-      if (!['pending', 'queued'].includes(delivery.status)) continue;
+      if (!['pending', 'queued', 'retry'].includes(delivery.status)) continue;
       const result = this.attemptChatDelivery(message.id, delivery.agent);
       if (result?.created) created = result.created;
-      if (result?.status === 'queued') pending += 1;
     }
-    if (created) {
-      this.store.updateMessage(message.id, {
-        status: pending > 0 ? 'queued' : 'delivered',
-        delivery_task_id: created.task_id
-      });
-    }
+    // The message row is an aggregate of its action deliveries, never the
+    // result of the last one attempted.
+    this._applyMessageStatus(message.id);
     return created;
+  }
+
+  // Aggregate the visible state of a chat message from its action deliveries:
+  //   delivered  any delivery reached an agent
+  //   queued     only queued/pending/retry deliveries remain
+  //   failed     no success and at least one dead-letter/failed
+  //   held       nothing actionable (all held)
+  //   stored     all skipped or no action deliveries
+  // 'answered' is set by the reply path and is never downgraded.
+  aggregateMessageStatus(messageId) {
+    const message = this.store.getMessage(messageId);
+    if (!message) return null;
+    if (message.status === 'answered') return 'answered';
+    if (!message.chat_id) return message.status;
+    const deliveries = this.store.listMessageDeliveries(messageId)
+      .filter((delivery) => delivery.status !== 'visible');
+    if (deliveries.length === 0) return 'stored';
+    const statuses = deliveries.map((delivery) => delivery.status);
+    if (statuses.includes('delivered')) return 'delivered';
+    if (statuses.includes('queued') || statuses.includes('pending') || statuses.includes('retry')) {
+      return 'queued';
+    }
+    if (statuses.includes('dead_letter') || statuses.includes('failed')) return 'failed';
+    if (statuses.includes('held')) return 'held';
+    return 'stored';
+  }
+
+  _applyMessageStatus(messageId) {
+    const message = this.store.getMessage(messageId);
+    if (!message) return null;
+    if (message.status === 'answered') return 'answered';
+    const next = this.aggregateMessageStatus(messageId);
+    if (next && next !== message.status) {
+      this.store.updateMessage(messageId, { status: next });
+    }
+    return next;
+  }
+
+  _failDelivery(message, agent, error) {
+    const errorKind = classifyDeliveryError(error);
+    const priorFailures = this.store.listDeliveryAttempts(message.id, agent)
+      .filter((attempt) => ['retry', 'dead_letter', 'failed'].includes(attempt.status)).length;
+    const attemptNumber = priorFailures + 1;
+    const maxAttempts = Math.max(1, Number(this.config.deliveryMaxAttempts) || 3);
+    const now = new Date();
+
+    if (errorKind === 'transient' && attemptNumber < maxAttempts) {
+      const delay = retryDelayMs(attemptNumber, this.config);
+      const nextAttemptAt = new Date(now.getTime() + delay).toISOString();
+      this.store.updateDelivery(message.id, agent, {
+        status: 'retry',
+        task_id: null,
+        error: error.message,
+        error_kind: 'transient',
+        next_attempt_at: nextAttemptAt,
+        dead_lettered_at: null
+      });
+      this._log(message, 'system',
+        `message ${message.id} chat delivery to ${agent} failed (transient, attempt ${attemptNumber}/${maxAttempts});`
+        + ` retry at ${nextAttemptAt} in ${delay}ms: ${error.message}`);
+      this._applyMessageStatus(message.id);
+      return { status: 'retry', attempt: attemptNumber, next_attempt_at: nextAttemptAt, error_kind: errorKind };
+    }
+
+    const deadLetteredAt = now.toISOString();
+    this.store.updateDelivery(message.id, agent, {
+      status: 'dead_letter',
+      task_id: null,
+      error: error.message,
+      error_kind: errorKind,
+      next_attempt_at: null,
+      dead_lettered_at: deadLetteredAt
+    });
+    this._log(message, 'system',
+      `message ${message.id} chat delivery to ${agent} dead-lettered (${errorKind}, attempt ${attemptNumber}/${maxAttempts}):`
+      + ` ${error.message}`);
+    this._applyMessageStatus(message.id);
+    return { status: 'dead_letter', attempt: attemptNumber, error_kind: errorKind, dead_lettered_at: deadLetteredAt };
   }
 
   attemptChatDelivery(messageId, agent) {
     const message = this.store.getMessage(messageId);
     if (!message) return { status: 'missing' };
     if (!message.chat_id) return { status: 'missing' };
-    const chat = this.store.getChat(message.chat_id);
-    if (!chat) {
-      this.store.updateDelivery(messageId, agent, { status: 'failed', error: 'chat not found' });
-      return { status: 'failed' };
-    }
     const delivery = this.store.getDelivery(messageId, agent);
     if (!delivery) return { status: 'missing' };
 
+    // Only actionable states are attempted. Retry rows honour their backoff;
+    // the sweep and task-finished hook call this method too.
+    if (!['pending', 'queued', 'retry'].includes(delivery.status)) {
+      return { status: delivery.status };
+    }
+    if (delivery.status === 'retry' && delivery.next_attempt_at
+      && Date.parse(delivery.next_attempt_at) > Date.now()) {
+      return { status: 'retry_wait', next_attempt_at: delivery.next_attempt_at };
+    }
+
+    const chat = this.store.getChat(message.chat_id);
+    if (!chat) {
+      return this._failDelivery(message, agent, new Error('chat not found'));
+    }
+
     // Epoch gate: a dispatch prepared against an older epoch must not start
-    // after the user has spoken again.
+    // after the user has spoken again. This is permanent by nature.
     const currentEpoch = Number(chat.epoch ?? 0);
     if (Number(message.epoch ?? 0) !== currentEpoch || Number(delivery.epoch ?? 0) !== currentEpoch) {
       const error = `epoch mismatch: chat is at epoch ${currentEpoch}, delivery carried epoch ${delivery.epoch}`;
-      this.store.updateDelivery(messageId, agent, { status: 'skipped', error });
+      this.store.updateDelivery(messageId, agent, {
+        status: 'skipped', error, error_kind: 'permanent', next_attempt_at: null, task_id: null
+      });
       this._log(message, 'system', `delivery to ${agent} skipped: ${error}`);
+      this._applyMessageStatus(messageId);
       return { status: 'skipped', error };
     }
 
     const active = this.store.findActiveTaskForChatAgent(message.chat_id, agent);
     if (active && ACTIVE_TASK_STATES.has(active.state)) {
-      this.store.updateDelivery(messageId, agent, { status: 'queued' });
+      this.store.updateDelivery(messageId, agent, {
+        status: 'queued', error: null, error_kind: null, next_attempt_at: null
+      });
       this._log(message, 'system',
         `message ${messageId} queued: ${agent} still has active task ${active.id} in chat ${chat.chat_id}`);
+      this._applyMessageStatus(messageId);
       return { status: 'queued' };
     }
     if (!this.config.agentAutoDeliver) {
-      this.store.updateDelivery(messageId, agent, { status: 'skipped', error: 'auto-delivery disabled' });
-      this.store.updateMessage(messageId, { status: 'stored' });
+      this.store.updateDelivery(messageId, agent, {
+        status: 'skipped', error: 'auto-delivery disabled', error_kind: 'permanent', next_attempt_at: null
+      });
+      this._applyMessageStatus(messageId);
       return { status: 'skipped' };
     }
 
@@ -783,16 +931,17 @@ export class MessageService {
         chatId: chat.chat_id,
         originMessageId: message.id
       });
-      this.store.updateDelivery(messageId, agent, { status: 'delivered', task_id: created.task_id });
-      this.store.updateMessage(messageId, { status: 'delivered', delivery_task_id: created.task_id });
+      this.store.updateDelivery(messageId, agent, {
+        status: 'delivered', task_id: created.task_id, error: null, error_kind: null,
+        next_attempt_at: null, dead_lettered_at: null
+      });
+      this.store.updateMessage(messageId, { delivery_task_id: created.task_id });
       this._log(message, 'system',
         `message ${messageId} delivered as chat sub-task ${created.task_id} agent=${agent} chat=${chat.chat_id}`);
+      this._applyMessageStatus(messageId);
       return { status: 'delivered', created };
     } catch (error) {
-      this.store.updateDelivery(messageId, agent, { status: 'failed', error: error.message });
-      this.store.updateMessage(messageId, { status: 'failed', error: error.message });
-      this._log(message, 'system', `message ${messageId} chat delivery to ${agent} failed: ${error.message}`);
-      return { status: 'failed', error };
+      return this._failDelivery(message, agent, error);
     }
   }
 
@@ -817,7 +966,8 @@ export class MessageService {
     if (!chatId) return;
     const deliveries = [
       ...this.store.listActionDeliveries({ chatId, status: 'queued', limit: 50 }),
-      ...this.store.listActionDeliveries({ chatId, status: 'pending', limit: 50 })
+      ...this.store.listActionDeliveries({ chatId, status: 'pending', limit: 50 }),
+      ...this.store.listActionDeliveries({ chatId, status: 'retry', limit: 50 })
     ];
     const seen = new Set();
     for (const delivery of deliveries) {
@@ -826,6 +976,37 @@ export class MessageService {
       seen.add(key);
       this.attemptChatDelivery(delivery.message_id, delivery.agent);
     }
+  }
+
+  // P1-1: replay after a restart (and periodically as a backstop). Legacy
+  // non-chat messages are re-attempted by message status; chat deliveries by
+  // their per-agent delivery rows so an epoch/backoff gate still applies.
+  replayPendingDeliveries({ reason = 'restart', limit = 200 } = {}) {
+    let legacy = 0;
+    let chat = 0;
+    for (const message of this.store.listMessagesByStatus(['pending', 'queued'], limit)) {
+      if (message.chat_id) continue;
+      this.attemptDelivery(message.id);
+      legacy += 1;
+    }
+    const staleQueuedBefore = new Date(
+      Date.now() - Math.max(1_000, Number(this.config.deliveryStaleQueuedMs) || 120_000)
+    ).toISOString();
+    const due = this.store.listDeliveriesDue({ staleQueuedBefore, limit });
+    for (const delivery of due) {
+      this.attemptChatDelivery(delivery.message_id, delivery.agent);
+      chat += 1;
+    }
+    if (legacy + chat > 0) {
+      // Not tied to one message: a global replay summary belongs in the
+      // server log, not in a per-chat file that would need a fabricated id.
+      console.log(`delivery replay after ${reason}: legacy=${legacy} chat=${chat}`);
+    }
+    return { legacy, chat };
+  }
+
+  sweepDeliveries() {
+    return this.replayPendingDeliveries({ reason: 'sweep' });
   }
 
   // Called by the scheduler after a task reaches a terminal state. Delivered

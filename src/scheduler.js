@@ -11,6 +11,12 @@ import { cleanupTaskMcpConfig } from './mcp-config.js';
 const EXECUTORS = { claude: claudeExecutor, dsh: dshExecutor };
 const TERMINAL = new Set([ORCH_STATE.COMPLETED, ORCH_STATE.FAILED, ORCH_STATE.CANCELLED]);
 
+function summaryText(value, max = 300) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  return text.length > max ? `${text.slice(0, max)}…(${text.length})` : text;
+}
+
 export class Scheduler {
   constructor(store, config) {
     this.store = store;
@@ -19,7 +25,10 @@ export class Scheduler {
     this.running = new Map();
     this.pumping = false;
     this.versionCache = null;
-    this.recover();
+    this.sweepTimer = null;
+    // reconcile() is called explicitly by server.js after MessageService is
+    // wired (P1-1). Running it in the constructor would mark tasks failed
+    // before the message layer exists, so pending deliveries could not replay.
   }
 
   _now() {
@@ -80,6 +89,21 @@ export class Scheduler {
     };
     this.store.insertTask(task);
     this.store.setTaskThread(id, threadId || id, originMessageId || null);
+    // P1-5: one execution row per run, written at creation with the provider
+    // and model we can already prove. Claude's stream-json result later fills
+    // the token/cost/latency columns; dsh reports usage from its ledger or
+    // stays explicitly 'unknown'.
+    this.store.insertExecution({
+      execution_id: id,
+      task_id: id,
+      agent,
+      provider: this._providerFor(agent),
+      model: model || this._defaultModelFor(agent),
+      session_id: sessionIdFinal,
+      usage_source: 'pending',
+      created_at: now,
+      updated_at: now
+    });
     // A chat sub-task keeps its own thread but is linked to the group chat, so
     // its conclusion can be stamped back into that chat.
     if (chatId) {
@@ -100,6 +124,23 @@ export class Scheduler {
     this.queue.push(id);
     this.pump();
     return { task_id: id, session_id: sessionIdFinal, status: ORCH_STATE.PENDING };
+  }
+
+  // Provider/model known at task creation. Claude's env tells us the gateway
+  // and model; dsh's actual model comes from its usage ledger on completion, so
+  // only the provider and an env override are recorded here.
+  _providerFor(agent) {
+    if (agent === 'claude') {
+      return this.config.claudeEnv?.ANTHROPIC_BASE_URL ? 'gateway' : 'anthropic';
+    }
+    if (agent === 'dsh') return this.config.dshProvider || 'deepseek';
+    return null;
+  }
+
+  _defaultModelFor(agent) {
+    if (agent === 'claude') return this.config.claudeEnv?.ANTHROPIC_MODEL || null;
+    if (agent === 'dsh') return this.config.dshModel || null;
+    return null;
   }
 
   _limits() {
@@ -321,6 +362,7 @@ export class Scheduler {
       tokens_json: entry.result?.tokens ? JSON.stringify(entry.result.tokens) : null,
       last_activity_at: this._now()
     });
+    this._recordExecutionMetrics(task, entry, summary);
     if (summary) this.store.appendSessionMessage(entry.sessionId, 'assistant', summary);
     this.store.appendLog(task.id, 'system', `finished state=${state} exit=${info?.code ?? 'n/a'}`);
     this.pump();
@@ -335,6 +377,56 @@ export class Scheduler {
       this.store.appendLog(task.id, 'system', `approval cleanup failed: ${error.message}`);
     }
     cleanupTaskMcpConfig(this.config, task.id);
+  }
+
+  _recordExecutionMetrics(task, entry, summary) {
+    const metrics = entry.result?.metrics ?? null;
+    const wallMs = Math.max(0, Date.now() - (entry.startedAt || Date.now()));
+    const latencyMs = Number.isFinite(metrics?.latency_ms) ? Number(metrics.latency_ms) : wallMs;
+    const provider = metrics?.provider ?? this._providerFor(task.agent);
+    const model = metrics?.model ?? task.model ?? this._defaultModelFor(task.agent);
+    const usageSource = metrics?.usage_source ?? (task.agent === 'dsh' ? 'unknown' : null);
+    try {
+      this.store.updateExecution(task.id, {
+        provider,
+        model,
+        provider_request_id: metrics?.provider_request_id ?? null,
+        token_usage_json: metrics?.token_usage_json ?? null,
+        cost_usd: Number.isFinite(metrics?.cost_usd) ? Number(metrics.cost_usd) : null,
+        latency_ms: latencyMs,
+        session_id: entry.sessionId,
+        usage_source: usageSource
+      });
+      // dsh always records a call row: even without a usage ledger the request
+      // happened, and 'unknown' is a fact, not a zero.
+      if (metrics || task.agent === 'dsh') {
+        this.store.insertModelCall({
+          execution_id: task.id,
+          task_id: task.id,
+          agent: task.agent,
+          provider,
+          model,
+          provider_request_id: metrics?.provider_request_id ?? null,
+          token_usage_json: metrics?.token_usage_json ?? null,
+          cost_usd: Number.isFinite(metrics?.cost_usd) ? Number(metrics.cost_usd) : null,
+          latency_ms: latencyMs,
+          duration_api_ms: Number.isFinite(metrics?.duration_api_ms) ? Number(metrics.duration_api_ms) : null,
+          ttft_ms: Number.isFinite(metrics?.ttft_ms) ? Number(metrics.ttft_ms) : null,
+          usage_source: usageSource ?? 'unknown',
+          request_summary: metrics?.request_summary ?? null,
+          response_summary: metrics?.response_summary ?? summaryText(summary),
+          session_id: entry.sessionId
+        });
+      }
+      this.store.backfillMessageMetrics(task.id, {
+        provider,
+        model,
+        tokenUsageJson: metrics?.token_usage_json ?? null,
+        latencyMs
+      });
+    } catch (error) {
+      this.store.appendLog(task.id, 'system', `execution record failed: ${error.message}`);
+    }
   }
 
   cancel(taskId) {
@@ -386,6 +478,7 @@ export class Scheduler {
     const updated = Date.parse(task.updated_at);
     const thread = this.store.getThreadForTask(task.id);
     const approval = this.approvals?.describeForTask(task.id) ?? null;
+    const execution = this.store.getExecutionForTask?.(task.id) ?? null;
     return {
       task_id: task.id,
       session_id: task.session_id,
@@ -412,7 +505,19 @@ export class Scheduler {
       approval_gate: {
         enabled: Boolean(this.config.agentApprovalGate)
       },
-      approval
+      approval,
+      execution: execution ? {
+        execution_id: execution.execution_id,
+        provider: execution.provider ?? null,
+        model: execution.model ?? null,
+        provider_request_id: execution.provider_request_id ?? null,
+        token_usage: (() => {
+          try { return execution.token_usage_json ? JSON.parse(execution.token_usage_json) : null; } catch { return null; }
+        })(),
+        cost_usd: execution.cost_usd ?? null,
+        latency_ms: execution.latency_ms ?? null,
+        usage_source: execution.usage_source ?? null
+      } : null
     };
   }
 
@@ -428,23 +533,108 @@ export class Scheduler {
     }
   }
 
-  recover() {
+  // ---------------------------------------------------------------------------
+  // P1-1 startup reconciliation (D-4)
+  //
+  // Called by server.js after MessageService/ChatService are wired. Every
+  // non-terminal task is failed with its origin message and delivery rows, then
+  // pending/queued/retry-due deliveries are replayed. A periodic sweep is a
+  // backstop for deliveries whose task-finished hook was lost.
+  // ---------------------------------------------------------------------------
+  reconcile({ replay = true, reason = 'service restart' } = {}) {
+    const summary = {
+      reason,
+      failed_tasks: [],
+      origin_messages_failed: [],
+      deliveries_failed: [],
+      replayed: { legacy: 0, chat: 0 },
+      sweep_interval_ms: null
+    };
+
     for (const task of this.store.nonTerminalTasks()) {
-      if (task.pid) {
-        try {
-          process.kill(task.pid, 0);
-          killTree(task.pid);
-        } catch { /* already gone */ }
-      }
-      this.store.updateTask(task.id, {
-        state: ORCH_STATE.FAILED,
-        process_state: PROCESS_STATE.EXITED_FAILURE,
-        turn_state: TURN_STATE.FAILED,
-        blocker: 'tooling',
-        exit_code: null
-      });
-      this.store.appendLog(task.id, 'system', 'recovered after service restart; marked FAILED');
+      this._markTaskFailed(task, reason, summary);
     }
+
+    if (replay && this.messages) {
+      try {
+        const replayed = this.messages.replayPendingDeliveries({ reason });
+        summary.replayed = replayed ?? summary.replayed;
+      } catch (error) {
+        console.error(`reconcile: delivery replay failed: ${error.message}`);
+      }
+      this._startSweep();
+      summary.sweep_interval_ms = this.config.deliverySweepMs ?? 30_000;
+    }
+
+    console.log(
+      `reconcile(${reason}): failed_tasks=${summary.failed_tasks.length}`
+      + ` origin_messages_failed=${summary.origin_messages_failed.length}`
+      + ` deliveries_failed=${summary.deliveries_failed.length}`
+      + ` replayed_legacy=${summary.replayed.legacy} replayed_chat=${summary.replayed.chat}`
+    );
+    return summary;
+  }
+
+  _markTaskFailed(task, reason, summary) {
+    if (task.pid) {
+      try {
+        process.kill(task.pid, 0);
+        killTree(task.pid);
+      } catch { /* already gone */ }
+    }
+    this.store.updateTask(task.id, {
+      state: ORCH_STATE.FAILED,
+      process_state: PROCESS_STATE.EXITED_FAILURE,
+      turn_state: TURN_STATE.FAILED,
+      blocker: 'tooling',
+      exit_code: null
+    });
+    this.store.appendLog(task.id, 'system', `reconciled after ${reason}; marked FAILED`);
+
+    // The originating message cannot be considered delivered: the task died
+    // with the engine. Record the failure and the attempt so the chat history
+    // explains why the agent went silent.
+    const link = this.store.getTaskThread(task.id);
+    if (link?.origin_message_id) {
+      const origin = this.store.getMessage(link.origin_message_id);
+      if (origin && origin.status !== 'answered') {
+        this.store.updateMessage(origin.id, {
+          status: 'failed',
+          error: `task ${task.id} did not finish: ${reason}`
+        });
+        if (summary) summary.origin_messages_failed.push(origin.id);
+      }
+    }
+    for (const delivery of this.store.deliveriesForTask(task.id)) {
+      if (delivery.status === 'visible') continue;
+      this.store.updateDelivery(delivery.message_id, delivery.agent, {
+        status: 'failed',
+        error_kind: 'task_failed',
+        error: `task ${task.id} did not finish: ${reason}`,
+        next_attempt_at: null
+      });
+      if (summary) summary.deliveries_failed.push(`${delivery.message_id}:${delivery.agent}`);
+    }
+    if (summary) summary.failed_tasks.push(task.id);
+  }
+
+  _startSweep() {
+    if (this.sweepTimer) return;
+    const interval = Math.max(5_000, Number(this.config.deliverySweepMs) || 30_000);
+    this.sweepTimer = setInterval(() => {
+      try {
+        this.messages?.sweepDeliveries?.();
+      } catch (error) {
+        console.error(`delivery sweep failed: ${error.message}`);
+      }
+    }, interval);
+    this.sweepTimer.unref?.();
+  }
+
+  _stopSweep() {
+    if (!this.sweepTimer) return;
+    clearInterval(this.sweepTimer);
+    this.sweepTimer = null;
   }
 
   _version(bin) {
@@ -523,15 +713,41 @@ export class Scheduler {
     return data;
   }
 
-  shutdown() {
-    for (const entry of this.running.values()) {
+  // P1-1: reconcile before clearing. Running and queued tasks cannot survive
+// this process, so they are failed (with their origin messages/deliveries)
+// rather than left for the next start to guess about. No replay happens during
+// shutdown; the next start's reconcile() replays whatever is still pending.
+  shutdown({ reason = 'service shutdown' } = {}) {
+    this._stopSweep();
+    const summary = {
+      reason, failed_tasks: [], origin_messages_failed: [], deliveries_failed: [],
+      replayed: { legacy: 0, chat: 0 }
+    };
+    const inflight = [
+      ...this.running.values(),
+      ...[...new Set(this.queue)].map((taskId) => ({ taskId, cancel: null, timeoutTimer: null, heartbeatTimer: null }))
+    ];
+    for (const entry of inflight) {
       entry.cancelled = true;
+      // Prevent a late child-exit callback from overwriting the FAILED state
+      // we are about to write.
+      entry.finished = true;
       clearTimeout(entry.timeoutTimer);
       clearInterval(entry.heartbeatTimer);
       try { entry.cancel?.(); } catch { /* ignore */ }
+      const task = this.store.getTask(entry.taskId);
+      if (task && !TERMINAL.has(task.state)) {
+        this._markTaskFailed(task, reason, summary);
+      }
       cleanupTaskMcpConfig(this.config, entry.taskId);
     }
     this.running.clear();
     this.queue = [];
+    console.log(
+      `shutdown reconcile(${reason}): failed_tasks=${summary.failed_tasks.length}`
+      + ` origin_messages_failed=${summary.origin_messages_failed.length}`
+      + ` deliveries_failed=${summary.deliveries_failed.length}`
+    );
+    return summary;
   }
 }

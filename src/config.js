@@ -187,6 +187,20 @@ export const config = {
   chatReadMaxBytes: intEnv('CHAT_READ_MAX_BYTES', 200_000),
   // A terminal agent status is shown for this long and then collapses to idle.
   chatTerminalStatusTtlMs: intEnv('CHAT_TERMINAL_STATUS_TTL_MS', 60_000),
+  // P1-2 delivery retry. Transient failures back off exponentially; permanent
+  // failures go straight to dead-letter. The sweep is the restart/backstop
+  // replay path (P1-1).
+  deliverySweepMs: intEnv('DELIVERY_SWEEP_MS', 30_000),
+  deliveryMaxAttempts: intEnv('DELIVERY_MAX_ATTEMPTS', 3),
+  deliveryRetryBaseMs: intEnv('DELIVERY_RETRY_BASE_MS', 2_000),
+  deliveryRetryMaxMs: intEnv('DELIVERY_RETRY_MAX_MS', 60_000),
+  // A queued delivery older than this is assumed to have lost its
+  // task-finished hook and is replay-checked by the sweep.
+  deliveryStaleQueuedMs: intEnv('DELIVERY_STALE_QUEUED_MS', 120_000),
+  // dsh's model is known only after its usage ledger is read; these let an
+  // installation state it up front without hard-coding a profile value.
+  dshProvider: process.env.WORKBENCH_DSH_PROVIDER || 'deepseek',
+  dshModel: process.env.WORKBENCH_DSH_MODEL || null,
   executorVision: {
     claude: boolEnv('WORKBENCH_CLAUDE_VISION', true),
     dsh: boolEnv('WORKBENCH_DSH_VISION', false)

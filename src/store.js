@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, appendFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
@@ -11,7 +12,10 @@ const MESSAGE_COLUMNS = [
   'seq', 'body', 'mentions_json', 'root_message_id', 'depth', 'epoch', 'client_msg_id',
   'context_version',
   // Provenance: who sent this, which authenticated principal, which request.
-  'auth_kind', 'principal_id', 'request_id'
+  'auth_kind', 'principal_id', 'request_id',
+  // Execution metrics copied from the producing task (P1-5). Nullable for
+  // human/Muse rows and for historical rows whose execution was never recorded.
+  'provider', 'model', 'token_usage_json', 'latency_ms'
 ];
 
 const MESSAGE_DEFAULTS = Object.freeze({
@@ -55,7 +59,11 @@ const MESSAGES_DDL = `CREATE TABLE IF NOT EXISTS messages (
         context_version INTEGER NOT NULL DEFAULT 0,
         auth_kind TEXT,
         principal_id TEXT,
-        request_id TEXT
+        request_id TEXT,
+        provider TEXT,
+        model TEXT,
+        token_usage_json TEXT,
+        latency_ms INTEGER
       )`;
 
 const TASK_COLUMNS = [
@@ -240,9 +248,17 @@ export class Store {
         error TEXT,
         epoch INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL,
+        -- P1-2 retry state. error_kind is transient|permanent|task_failed;
+        -- next_attempt_at is when a transient failure may be retried again.
+        error_kind TEXT,
+        next_attempt_at TEXT,
+        dead_lettered_at TEXT,
         PRIMARY KEY (message_id, agent)
       );
       CREATE INDEX IF NOT EXISTS idx_chat_deliveries_status ON chat_deliveries(status, updated_at);
+      -- The retry index is created in migrateVersioned v3, after the columns
+      -- are added to an existing table. Creating it here would fail on a
+      -- pre-P1 database where chat_deliveries exists without those columns.
       -- Append-only delivery attempt history. chat_deliveries keeps the current
       -- state; this table answers "how many times, when, and why did it fail".
       CREATE TABLE IF NOT EXISTS delivery_attempts (
@@ -257,6 +273,55 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS idx_delivery_attempts_message
         ON delivery_attempts(message_id, agent, id);
+      -- P1-5 execution records. One execution per task run; model_calls keeps
+      -- one row per model request so token/cost/latency is attributable.
+      CREATE TABLE IF NOT EXISTS executions (
+        execution_id TEXT PRIMARY KEY,
+        task_id TEXT,
+        agent TEXT NOT NULL,
+        provider TEXT,
+        model TEXT,
+        provider_request_id TEXT,
+        token_usage_json TEXT,
+        cost_usd REAL,
+        latency_ms INTEGER,
+        session_id TEXT,
+        usage_source TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_executions_task ON executions(task_id);
+      CREATE INDEX IF NOT EXISTS idx_executions_created ON executions(created_at);
+      CREATE TABLE IF NOT EXISTS model_calls (
+        call_id TEXT PRIMARY KEY,
+        execution_id TEXT,
+        task_id TEXT,
+        agent TEXT NOT NULL,
+        provider TEXT,
+        model TEXT,
+        provider_request_id TEXT,
+        token_usage_json TEXT,
+        cost_usd REAL,
+        latency_ms INTEGER,
+        duration_api_ms INTEGER,
+        ttft_ms INTEGER,
+        usage_source TEXT NOT NULL DEFAULT 'unknown',
+        request_summary TEXT,
+        response_summary TEXT,
+        session_id TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_model_calls_execution ON model_calls(execution_id);
+      CREATE INDEX IF NOT EXISTS idx_model_calls_task ON model_calls(task_id, created_at);
+      -- Formal migration ledger. Every migration stores the inverse operation
+      -- so a version can be rolled back deliberately (see docs/PERF_BASELINE.md
+      -- for the measurement that justified the execution tables).
+      CREATE TABLE IF NOT EXISTS schema_version (
+        version INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at TEXT NOT NULL,
+        inverse TEXT
+      );
       -- Muse presence/lease. The coordinator is an external process; this row
       -- is refreshed by its polling calls and expires when it goes away.
       CREATE TABLE IF NOT EXISTS muse_presence (
@@ -269,6 +334,7 @@ export class Store {
     `);
     this.migrateMessagesForChats();
     this.migrateGroupChat();
+    this.migrateVersioned();
     this.taskSeq = new Map();
     this.sessionSeq = new Map();
   }
@@ -343,7 +409,11 @@ export class Store {
           context_version INTEGER NOT NULL DEFAULT 0,
           auth_kind TEXT,
           principal_id TEXT,
-          request_id TEXT
+          request_id TEXT,
+          provider TEXT,
+          model TEXT,
+          token_usage_json TEXT,
+          latency_ms INTEGER
         );
         INSERT INTO messages_chat_migration (${copied.join(', ')})
           SELECT ${copied.join(', ')} FROM messages;
@@ -462,6 +532,69 @@ export class Store {
          FROM chat_tasks ct JOIN tasks t ON t.id = ct.task_id
         GROUP BY ct.chat_id, t.agent`
     ).run(now);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Versioned migrations (P1-2 / P1-5)
+  //
+  // The pre-versioning migrations above stay where they are so an old database
+  // still starts. Everything new is registered in schema_version with an
+  // explicit inverse statement. Each step is idempotent and only the ledger row
+  // is skipped on restart; the DDL guards are left in place so a partially
+  // applied database can finish the step.
+  // ---------------------------------------------------------------------------
+  migrateVersioned() {
+    // v1 describes the schema that existed before this ledger (chat upgrade,
+    // provenance, delivery attempts). There is nothing to apply; the row only
+    // makes later versions unambiguous.
+    this._migrate(1, 'legacy-baseline',
+      'no-op: schema existed before schema_version was introduced', () => {});
+
+    this._migrate(2, 'executions-and-model-calls',
+      'DROP TABLE IF EXISTS model_calls; DROP TABLE IF EXISTS executions;', () => {
+        // Tables are created by the constructor DDL (CREATE IF NOT EXISTS).
+      });
+
+    this._migrate(3, 'delivery-retry-state',
+      'ALTER TABLE chat_deliveries DROP COLUMN dead_lettered_at; '
+      + 'ALTER TABLE chat_deliveries DROP COLUMN next_attempt_at; '
+      + 'ALTER TABLE chat_deliveries DROP COLUMN error_kind;', () => {
+        this._addColumnIfMissing('chat_deliveries', 'error_kind', 'TEXT');
+        this._addColumnIfMissing('chat_deliveries', 'next_attempt_at', 'TEXT');
+        this._addColumnIfMissing('chat_deliveries', 'dead_lettered_at', 'TEXT');
+        this.db.exec(
+          'CREATE INDEX IF NOT EXISTS idx_chat_deliveries_retry ON chat_deliveries(status, next_attempt_at)'
+        );
+      });
+
+    this._migrate(4, 'message-execution-metrics',
+      'ALTER TABLE messages DROP COLUMN latency_ms; '
+      + 'ALTER TABLE messages DROP COLUMN token_usage_json; '
+      + 'ALTER TABLE messages DROP COLUMN model; '
+      + 'ALTER TABLE messages DROP COLUMN provider;', () => {
+        this._addColumnIfMissing('messages', 'provider', 'TEXT');
+        this._addColumnIfMissing('messages', 'model', 'TEXT');
+        this._addColumnIfMissing('messages', 'token_usage_json', 'TEXT');
+        this._addColumnIfMissing('messages', 'latency_ms', 'INTEGER');
+      });
+  }
+
+  _migrate(version, name, inverse, fn) {
+    const exists = this.db.prepare('SELECT version FROM schema_version WHERE version = ?').get(version);
+    if (exists) return false;
+    fn();
+    this.db.prepare(
+      'INSERT INTO schema_version (version, name, applied_at, inverse) VALUES (?, ?, ?, ?)'
+    ).run(version, name, this._now(), inverse);
+    return true;
+  }
+
+  schemaVersion() {
+    try {
+      return Number(this.db.prepare('SELECT MAX(version) AS v FROM schema_version').get()?.v ?? 0);
+    } catch {
+      return 0;
+    }
   }
 
   migrateApprovalGrants() {
@@ -709,7 +842,8 @@ export class Store {
   updateMessage(id, patch) {
     const allowed = [
       'status', 'delivery_task_id', 'error', 'is_final', 'body', 'mentions_json',
-      'root_message_id', 'depth', 'epoch', 'client_msg_id', 'context_version'
+      'root_message_id', 'depth', 'epoch', 'client_msg_id', 'context_version',
+      'provider', 'model', 'token_usage_json', 'latency_ms'
     ];
     const keys = Object.keys(patch).filter((k) => allowed.includes(k));
     if (keys.length === 0) return;
@@ -1022,14 +1156,19 @@ export class Store {
   insertDelivery(delivery) {
     const status = delivery.status ?? 'visible';
     this.db.prepare(
-      `INSERT INTO chat_deliveries (message_id, agent, status, task_id, error, epoch, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO chat_deliveries
+         (message_id, agent, status, task_id, error, epoch, updated_at,
+          error_kind, next_attempt_at, dead_lettered_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(message_id, agent) DO UPDATE SET
          status = excluded.status,
          task_id = excluded.task_id,
          error = excluded.error,
          epoch = excluded.epoch,
-         updated_at = excluded.updated_at`
+         updated_at = excluded.updated_at,
+         error_kind = excluded.error_kind,
+         next_attempt_at = excluded.next_attempt_at,
+         dead_lettered_at = excluded.dead_lettered_at`
     ).run(
       delivery.message_id,
       delivery.agent,
@@ -1037,7 +1176,10 @@ export class Store {
       delivery.task_id ?? null,
       delivery.error ?? null,
       delivery.epoch ?? 0,
-      delivery.updated_at ?? this._now()
+      delivery.updated_at ?? this._now(),
+      delivery.error_kind ?? null,
+      delivery.next_attempt_at ?? null,
+      delivery.dead_lettered_at ?? null
     );
     if (status !== 'visible') {
       this.recordDeliveryAttempt({
@@ -1052,7 +1194,9 @@ export class Store {
   }
 
   updateDelivery(messageId, agent, patch) {
-    const allowed = ['status', 'task_id', 'error', 'epoch'];
+    const allowed = [
+      'status', 'task_id', 'error', 'epoch', 'error_kind', 'next_attempt_at', 'dead_lettered_at'
+    ];
     const keys = Object.keys(patch).filter((key) => allowed.includes(key));
     if (keys.length === 0) return this.getDelivery(messageId, agent);
     const before = this.getDelivery(messageId, agent);
@@ -1065,6 +1209,7 @@ export class Store {
     const changed = !before
       || before.status !== after.status
       || (patch.error !== undefined && (before.error ?? null) !== (after.error ?? null))
+      || (patch.error_kind !== undefined && (before.error_kind ?? null) !== (after.error_kind ?? null))
       || (patch.task_id !== undefined && (before.task_id ?? null) !== (after.task_id ?? null));
     if (changed) {
       this.recordDeliveryAttempt({
@@ -1116,6 +1261,172 @@ export class Store {
       last_attempt_at: row?.last_attempt_at ?? null,
       finished_count: Number(row?.finished_count ?? 0)
     };
+  }
+
+  countDeliveryAttempts(messageId, agent) {
+    const row = this.db.prepare(
+      'SELECT COUNT(*) AS n FROM delivery_attempts WHERE message_id = ? AND agent = ?'
+    ).get(messageId, agent);
+    return Number(row?.n ?? 0);
+  }
+
+  // Deliveries the periodic sweep may replay: pending rows always, retry rows
+  // once their backoff has elapsed, queued rows only when they have been idle
+  // long enough that the normal task-finished hook must have been missed.
+  listDeliveriesDue({ now = this._now(), staleQueuedBefore = null, limit = 100 } = {}) {
+    const n = Math.max(1, Math.min(500, Number(limit) || 100));
+    return this.db.prepare(
+      `SELECT d.*, m.chat_id, m.epoch AS message_epoch
+         FROM chat_deliveries d JOIN messages m ON m.id = d.message_id
+        WHERE d.status <> 'visible'
+          AND (
+            d.status = 'pending'
+            OR (d.status = 'retry' AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?))
+            OR (d.status = 'queued' AND ? IS NOT NULL AND d.updated_at <= ?)
+          )
+        ORDER BY COALESCE(d.next_attempt_at, d.updated_at) ASC
+        LIMIT ?`
+    ).all(now, staleQueuedBefore, staleQueuedBefore ?? now, n);
+  }
+
+  deliveriesForTask(taskId) {
+    return this.db.prepare(
+      'SELECT * FROM chat_deliveries WHERE task_id = ? ORDER BY updated_at ASC'
+    ).all(taskId);
+  }
+
+  // Non-chat messages left in a non-terminal delivery status by a restart.
+  listMessagesByStatus(statuses, limit = 200) {
+    if (!Array.isArray(statuses) || statuses.length === 0) return [];
+    const n = Math.max(1, Math.min(500, Number(limit) || 200));
+    return this.db.prepare(
+      `SELECT * FROM messages
+        WHERE status IN (${statuses.map(() => '?').join(', ')})
+        ORDER BY created_at ASC LIMIT ?`
+    ).all(...statuses, n);
+  }
+
+  // ------------------------------------------------------------ executions
+  insertExecution(execution) {
+    this.db.prepare(
+      `INSERT INTO executions
+         (execution_id, task_id, agent, provider, model, provider_request_id,
+          token_usage_json, cost_usd, latency_ms, session_id, usage_source,
+          created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(execution_id) DO UPDATE SET
+         task_id = excluded.task_id,
+         agent = excluded.agent,
+         provider = COALESCE(excluded.provider, executions.provider),
+         model = COALESCE(excluded.model, executions.model),
+         provider_request_id = COALESCE(excluded.provider_request_id, executions.provider_request_id),
+         token_usage_json = COALESCE(excluded.token_usage_json, executions.token_usage_json),
+         cost_usd = COALESCE(excluded.cost_usd, executions.cost_usd),
+         latency_ms = COALESCE(excluded.latency_ms, executions.latency_ms),
+         session_id = COALESCE(excluded.session_id, executions.session_id),
+         usage_source = COALESCE(excluded.usage_source, executions.usage_source),
+         updated_at = excluded.updated_at`
+    ).run(
+      execution.execution_id,
+      execution.task_id ?? null,
+      execution.agent,
+      execution.provider ?? null,
+      execution.model ?? null,
+      execution.provider_request_id ?? null,
+      execution.token_usage_json ?? null,
+      execution.cost_usd ?? null,
+      execution.latency_ms ?? null,
+      execution.session_id ?? null,
+      execution.usage_source ?? null,
+      execution.created_at ?? this._now(),
+      execution.updated_at ?? this._now()
+    );
+    return this.getExecution(execution.execution_id);
+  }
+
+  updateExecution(executionId, patch) {
+    const allowed = [
+      'provider', 'model', 'provider_request_id', 'token_usage_json', 'cost_usd',
+      'latency_ms', 'session_id', 'usage_source'
+    ];
+    const keys = Object.keys(patch).filter((key) => allowed.includes(key));
+    if (keys.length === 0) return this.getExecution(executionId);
+    const sets = keys.map((key) => `${key} = ?`).join(', ');
+    this.db.prepare(
+      `UPDATE executions SET ${sets}, updated_at = ? WHERE execution_id = ?`
+    ).run(...keys.map((key) => patch[key] ?? null), this._now(), executionId);
+    return this.getExecution(executionId);
+  }
+
+  getExecution(executionId) {
+    return this.db.prepare('SELECT * FROM executions WHERE execution_id = ?').get(executionId) ?? null;
+  }
+
+  getExecutionForTask(taskId) {
+    return this.db.prepare(
+      'SELECT * FROM executions WHERE task_id = ? ORDER BY created_at DESC LIMIT 1'
+    ).get(taskId) ?? null;
+  }
+
+  insertModelCall(call) {
+    const id = call.call_id ?? randomUUID();
+    this.db.prepare(
+      `INSERT INTO model_calls
+         (call_id, execution_id, task_id, agent, provider, model, provider_request_id,
+          token_usage_json, cost_usd, latency_ms, duration_api_ms, ttft_ms,
+          usage_source, request_summary, response_summary, session_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      call.execution_id ?? null,
+      call.task_id ?? null,
+      call.agent,
+      call.provider ?? null,
+      call.model ?? null,
+      call.provider_request_id ?? null,
+      call.token_usage_json ?? null,
+      call.cost_usd ?? null,
+      call.latency_ms ?? null,
+      call.duration_api_ms ?? null,
+      call.ttft_ms ?? null,
+      call.usage_source ?? 'unknown',
+      call.request_summary ?? null,
+      call.response_summary ?? null,
+      call.session_id ?? null,
+      call.created_at ?? this._now()
+    );
+    return this.db.prepare('SELECT * FROM model_calls WHERE call_id = ?').get(id) ?? null;
+  }
+
+  listModelCalls({ executionId = null, taskId = null, limit = 100 } = {}) {
+    const n = Math.max(1, Math.min(500, Number(limit) || 100));
+    if (executionId) {
+      return this.db.prepare(
+        'SELECT * FROM model_calls WHERE execution_id = ? ORDER BY created_at ASC LIMIT ?'
+      ).all(executionId, n);
+    }
+    if (taskId) {
+      return this.db.prepare(
+        'SELECT * FROM model_calls WHERE task_id = ? ORDER BY created_at ASC LIMIT ?'
+      ).all(taskId, n);
+    }
+    return this.db.prepare('SELECT * FROM model_calls ORDER BY created_at DESC LIMIT ?').all(n);
+  }
+
+  // Copy execution metrics onto the messages a task produced. COALESCE keeps a
+  // value that was already known at send time; a later, richer execution row
+  // fills only the gaps. Historical rows are never guessed.
+  backfillMessageMetrics(taskId, { provider = null, model = null, tokenUsageJson = null, latencyMs = null } = {}) {
+    const info = this.db.prepare(
+      `UPDATE messages
+          SET provider = COALESCE(provider, ?),
+              model = COALESCE(model, ?),
+              token_usage_json = COALESCE(token_usage_json, ?),
+              latency_ms = COALESCE(latency_ms, ?)
+        WHERE task_id = ?
+          AND (provider IS NULL OR model IS NULL OR token_usage_json IS NULL OR latency_ms IS NULL)`
+    ).run(provider, model, tokenUsageJson, latencyMs, taskId);
+    return Number(info.changes ?? 0);
   }
 
   // ------------------------------------------------------------------ presence
