@@ -558,9 +558,11 @@ function registerIpc(): void {
         value.messageId == null || value.messageId === ''
           ? undefined
           : requireMessageId(value.messageId, '消息 ID');
-      if (upToSeq == null && messageId == null) {
-        throw new Error('标记已读需要 upToSeq 或 messageId。');
-      }
+      // The engine's `chat_mark_read` contract (src/tools.js) already defines
+      // the omitted case: with neither `up_to_seq` nor `message_id` it advances
+      // the cursor to the chat's latest seq. Rejecting that here made the
+      // Inbox "标为已读" button fail 100% of the time, so the guard is gone and
+      // empty values are forwarded untouched — the engine stays the authority.
       // Phase 2 Inbox: `participantId` lets the master token advance a built-in
       // agent's cursor when the owner opens that chat. Absent = token identity.
       const participantId =
