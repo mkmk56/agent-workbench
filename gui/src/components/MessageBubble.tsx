@@ -150,7 +150,11 @@ function parseBlocks(text: string): Block[] {
   return blocks;
 }
 
-const INLINE = /(`[^`\n]+`|\*\*[^*\n]+\*\*|@[Mm]use|@[Cc]laude|@[Dd]sh)/g;
+// `@muse` must be a whole handle: the lookarounds stop `@musex` (or an address
+// like `foo@muse`) from being coloured as a mention of `muse`. Unknown handles
+// keep their plain-text fallback, which `mentionIdFor` already handles.
+const INLINE =
+  /(`[^`\n]+`|\*\*[^*\n]+\*\*|(?<![A-Za-z0-9_])@[Mm]use(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])@[Cc]laude(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])@[Dd]sh(?![A-Za-z0-9_]))/g;
 
 /** Identity handle behind an @mention, so the token layer can colour it. */
 function mentionIdFor(token: string): 'muse' | 'claude' | 'dsh' | null {
