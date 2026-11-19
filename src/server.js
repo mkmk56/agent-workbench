@@ -255,8 +255,14 @@ const server = http.createServer(async (req, res) => {
   }
 
   // Phase 3 event stream and pull fallback. Both authenticate exactly like
-  // /mcp; the scope comes from the token, never from a query parameter.
+  // /mcp; the scope comes from the token, never from a query parameter. The
+  // per-IP limiter runs before authentication so a valid token cannot bypass
+  // it by hammering these two routes (design §5).
   if (url.pathname === '/events' && req.method === 'GET') {
+    if (isRateLimited(req)) {
+      sendJson(res, 429, { error: 'rate limited' });
+      return;
+    }
     const credential = extractBearer(req);
     const auth = enrichAuth(
       identifyToken(credential, config) || agents.identifyAccessToken(credential), req);
@@ -265,11 +271,16 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url.pathname === '/checkin' && req.method === 'PUT') {
+    if (isRateLimited(req)) {
+      sendJson(res, 429, { error: 'rate limited' });
+      return;
+    }
     const credential = extractBearer(req);
     const auth = enrichAuth(
       identifyToken(credential, config) || agents.identifyAccessToken(credential), req);
     if (!auth) {
-      sendJson(res, 401, { error: 'unauthorized' });
+      // Let the handler write the 401 audit line (design §5).
+      handleCheckin({ res, store, agents, auth: null, config, body: {} });
       return;
     }
     let body = {};

@@ -37,10 +37,20 @@ export const WAKE_STATUS = Object.freeze({
   THROTTLED: 'throttled',
   MERGED: 'merged',
   FAILED: 'failed',
+  // A user cancellation is explicit; it must not look like an agent failure.
+  CANCELLED: 'cancelled',
   DISABLED: 'disabled'
 });
 
 const LOCAL_EXECUTORS = new Set(['claude', 'dsh']);
+// Agents that participate in wake events but have no in-process executor.
+// Muse consumes the same stream over SSE / check-in (design §9); its events
+// are recorded and delivered, never turned into a local Scheduler task.
+const EXTERNAL_WAKE_PARTICIPANTS = new Set(['muse']);
+
+function isWakeTarget(participant) {
+  return isAgentParticipant(participant) || EXTERNAL_WAKE_PARTICIPANTS.has(participant);
+}
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function num(value, fallback) {
@@ -169,10 +179,58 @@ export class WakeService extends EventEmitter {
   // check-in intervals and cursors stay in the database.
   reconcile() {
     const disconnected = this.store.disconnectAllListenerSessions();
+    // Scheduler.reconcile() has already marked in-flight tasks FAILED; settle
+    // the wake_events rows they were delivering so a restart does not leave a
+    // delivered row (and a frozen failure counter) behind.
+    const reconciled = this._reconcileInFlight();
     const pruned = this._prune();
-    const summary = { disconnected_sessions: disconnected, pruned_events: pruned };
+    const summary = {
+      disconnected_sessions: disconnected,
+      reconciled_events: reconciled.failed,
+      cancelled_events: reconciled.cancelled,
+      pruned_events: pruned
+    };
     this._log('wake_reconcile', summary);
     return summary;
+  }
+
+  _reconcileInFlight() {
+    const out = { failed: 0, cancelled: 0 };
+    let rows = [];
+    try {
+      rows = this.store.listInFlightWakeEvents();
+    } catch (error) {
+      this._log('wake_reconcile_query_failed', { error: error.message });
+      return out;
+    }
+    for (const row of rows) {
+      const task = this.store.getTask(row.delivery_task_id);
+      if (task?.state === ORCH_STATE.COMPLETED) {
+        // The run really finished; only its hook was lost. Success stands.
+        continue;
+      }
+      if (task?.state === ORCH_STATE.CANCELLED) {
+        this.store.updateWakeEvent(row.id, {
+          status: WAKE_STATUS.CANCELLED, updated_at: this.now()
+        });
+        this._log('wake_reconciled_cancelled', {
+          event_id: row.id, agent_id: row.agent_id, chat_id: row.chat_id,
+          task_id: row.delivery_task_id
+        });
+        out.cancelled += 1;
+        continue;
+      }
+      out.failed += 1;
+      this._log('wake_reconciled_failed', {
+        event_id: row.id, agent_id: row.agent_id, chat_id: row.chat_id,
+        task_id: row.delivery_task_id, task_state: task?.state ?? 'missing'
+      });
+      // No automatic re-run across a restart (design §14); count the failure
+      // exactly as an in-process failure would.
+      this._recordFailure(row, Math.max(1, Number(row.attempts) || 1),
+        `engine restart; task ${row.delivery_task_id} did not finish`, false);
+    }
+    return out;
   }
 
   status() {
@@ -257,7 +315,15 @@ export class WakeService extends EventEmitter {
   record(event = {}) {
     const chatId = event.chat_id;
     if (!chatId || !this.store.getChat(chatId)) return [];
-    const kind = WAKE_KINDS.includes(event.kind) ? event.kind : 'mention';
+    const kind = event.kind;
+    // An unknown kind is not a mention. Coercing it would invent an event the
+    // message path never emitted; ignore it and leave a log line instead.
+    if (!WAKE_KINDS.includes(kind)) {
+      this._log('wake_ignored_kind', {
+        chat_id: chatId, kind: String(kind ?? 'none'), message_id: event.message_id ?? 'none'
+      });
+      return [];
+    }
     const targets = this._targetsFor(chatId, kind, event);
     const rows = [];
     for (const agentId of targets) {
@@ -304,12 +370,12 @@ export class WakeService extends EventEmitter {
       values = this.store.listChatParticipants(chatId)
         .map((participant) => participant.participant_id)
         .filter((participant) => participant !== 'user'
-          && isAgentParticipant(participant)
+          && isWakeTarget(participant)
           && !mentioned.has(participant));
     }
     const out = [];
     for (const value of values) {
-      if (!isAgentParticipant(value)) continue;
+      if (!isWakeTarget(value)) continue;
       const canonical = agentIdForParticipant(value);
       if (canonical && !out.includes(canonical)) out.push(canonical);
     }
@@ -481,7 +547,9 @@ export class WakeService extends EventEmitter {
     this.store.updateWakeEvent(event.id, {
       status: WAKE_STATUS.DELIVERED,
       attempts: attempt,
-      delivery_task_id: created.task_id,
+      // A retry keeps the first task id: delivery_task_id identifies the wake
+      // event's run, and overwriting it would lose the original for audit.
+      delivery_task_id: event.delivery_task_id ?? created.task_id,
       updated_at: this.now()
     });
     const key = `${chatId}:${agent}`;
@@ -585,9 +653,10 @@ export class WakeService extends EventEmitter {
       return { status: 'COMPLETED', retried: false };
     }
     if (state === ORCH_STATE.CANCELLED && !info.watchdogFired) {
-      // A user cancellation is not an agent failure (design §8.3).
+      // A user cancellation is not an agent failure (design §8.3); the event
+      // carries its own status so wake_status does not report a fake failure.
       this.store.updateWakeEvent(info.eventId, {
-        status: WAKE_STATUS.FAILED, attempts: info.attempt, updated_at: this.now()
+        status: WAKE_STATUS.CANCELLED, attempts: info.attempt, updated_at: this.now()
       });
       this._log('wake_cancelled', {
         task_id: taskId, event_id: info.eventId, agent_id: info.agentId, chat_id: info.chatId
@@ -603,7 +672,7 @@ export class WakeService extends EventEmitter {
     );
   }
 
-  _recordFailure(event, attempt, reason) {
+  _recordFailure(event, attempt, reason, allowRetry = true) {
     this.store.updateWakeEvent(event.id, {
       status: WAKE_STATUS.FAILED, attempts: attempt, updated_at: this.now()
     });
@@ -633,7 +702,7 @@ export class WakeService extends EventEmitter {
     }
 
     const retries = Math.max(0, num(this.config.wakeRetryCount, 1));
-    if (attempt <= retries) {
+    if (allowRetry && attempt <= retries) {
       return this._dispatch({
         agent: participantForAgentId(event.agent_id),
         chatId: event.chat_id,

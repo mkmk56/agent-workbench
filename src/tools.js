@@ -761,14 +761,17 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
         throw new Error(`agent '${auth?.participant}' can only check in as itself`);
       }
       if (!target) throw new Error('agent id is required');
+      // `chat_id` filters the Inbox and therefore every derived counter
+      // (unread, mentions, replies, owner posts), not just the total.
       const result = computeCheckin({
-        store, agents: agentService, agentId: target, every, now: Date.now()
+        store,
+        agents: agentService,
+        agentId: target,
+        every,
+        chatId: chat_id ?? null,
+        defaultMinutes: config.checkinDefaultMinutes,
+        now: Date.now()
       });
-      if (chat_id) {
-        result.inbox.chats = result.inbox.chats.filter((chat) => chat.chat_id === chat_id);
-        result.inbox.total_unread = result.inbox.chats
-          .reduce((sum, chat) => sum + Number(chat.unread ?? 0), 0);
-      }
       return asText(result);
     } catch (error) {
       return serviceError(error);

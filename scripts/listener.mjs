@@ -21,7 +21,7 @@
 
 import http from 'node:http';
 import https from 'node:https';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -30,6 +30,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const DEFAULT_BASE_URL = process.env.WORKBENCH_URL || 'http://127.0.0.1:8080';
 const CONNECT_TIMEOUT_MS = 60_000;
 const RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 30_000];
+
+// Design §6: the local execution path enforces the same numbers as the engine
+// side. The engine cannot see a process it did not start, so the listener has
+// to stop a silent or runaway local run itself.
+export const LOCAL_NO_OUTPUT_MS = 15 * 60 * 1000;
+export const LOCAL_HARD_CAP_MS = 60 * 60 * 1000;
+export const LOCAL_DAILY_PER_CHAT = 100;
 
 export function parseArgs(argv) {
   const args = {
@@ -89,7 +96,7 @@ export function readTokenFile(path, { platform = process.platform } = {}) {
 }
 
 export function createStateStore(path) {
-  let state = { last_event_seq: 0, agent: null, chat: null };
+  let state = { last_event_seq: 0, agent: null, chat: null, local_runs: {} };
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8'));
     if (parsed && typeof parsed === 'object') state = { ...state, ...parsed };
@@ -133,6 +140,111 @@ export function parseSseBuffer(buffer) {
     events.push({ id, data: text, json });
   }
   return { events, rest };
+}
+
+// Local-date key for the per-chat daily counter. The counter is persisted in
+// listener-state.json so a restart does not reset the day.
+export function localDayKey(now = Date.now()) {
+  const date = new Date(now);
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+// Reserve one local run for a chat. Returns {allowed:false} at the cap; the
+// event is then left to check-in instead of being silently dropped.
+export function reserveLocalRun(state, chatKey, { now = Date.now(), limit = LOCAL_DAILY_PER_CHAT } = {}) {
+  const current = state.get();
+  const runs = current.local_runs && typeof current.local_runs === 'object' ? current.local_runs : {};
+  const day = localDayKey(now);
+  const entry = runs[chatKey];
+  const used = entry && entry.day === day ? Math.max(0, Number(entry.count) || 0) : 0;
+  if (used >= limit) return { allowed: false, count: used, day, limit };
+  state.save({ local_runs: { ...runs, [chatKey]: { day, count: used + 1 } } });
+  return { allowed: true, count: used + 1, day, limit };
+}
+
+// A shell-spawned command has children of its own. On Windows child.kill()
+// only ends the shell, so the agent process would keep running; taskkill /T
+// takes the tree with it.
+function stopChild(child) {
+  if (!child?.pid) return;
+  if (process.platform === 'win32') {
+    try {
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+        windowsHide: true, stdio: 'ignore'
+      });
+      return;
+    } catch { /* fall through to kill() */ }
+  }
+  try { child.kill(); } catch { /* already gone */ }
+}
+
+// Spawn one local agent command with the §6 limits: kill after 15 minutes
+// without output and after the 1-hour hard cap. Output on stdout or stderr
+// counts as activity; silence is what the breaker measures.
+export function startLocalRun({
+  command, agent, event, log = () => {},
+  noOutputMs = LOCAL_NO_OUTPUT_MS,
+  hardCapMs = LOCAL_HARD_CAP_MS,
+  onChild = null
+} = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, {
+      shell: true,
+      env: {
+        ...process.env,
+        LISTENER_EVENT: JSON.stringify(event),
+        LISTENER_AGENT: agent,
+        LISTENER_CHAT_ID: event?.chat_id || ''
+      },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    if (onChild) onChild(child);
+
+    let settled = false;
+    let stoppedFor = null;
+    let lastOutputAt = Date.now();
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hardTimer);
+      clearInterval(watchdog);
+      fn(value);
+    };
+    const stop = (reason) => {
+      if (stoppedFor || settled) return;
+      stoppedFor = reason;
+      log(`local run stopped after ${reason}`);
+      stopChild(child);
+    };
+
+    child.stdout?.on('data', (chunk) => {
+      lastOutputAt = Date.now();
+      process.stdout.write(chunk);
+    });
+    child.stderr?.on('data', (chunk) => {
+      lastOutputAt = Date.now();
+      process.stderr.write(chunk);
+    });
+    const hardTimer = setTimeout(() => stop('the 1-hour hard cap'), hardCapMs);
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastOutputAt >= noOutputMs) stop('15 minutes without output');
+    }, Math.max(20, Math.min(30_000, noOutputMs)));
+    hardTimer.unref?.();
+    watchdog.unref?.();
+
+    child.on('error', (error) => finish(reject, error));
+    child.on('exit', (code, signal) => {
+      if (stoppedFor) {
+        finish(reject, new Error(`local command stopped after ${stoppedFor}`));
+      } else if (code === 0) {
+        finish(resolve, { code });
+      } else {
+        finish(reject, new Error(`local command exited ${code}${signal ? ` (${signal})` : ''}`));
+      }
+    });
+  });
 }
 
 function logLine(logFile, line) {
@@ -221,6 +333,11 @@ export async function runListener(options) {
   state.save({ agent, chat });
 
   const log = (line) => logLine(logFile, line);
+  if (process.platform === 'win32') {
+    // readTokenFile cannot enforce POSIX modes here; say so instead of
+    // pretending the token file is protected.
+    log('warning: Windows does not expose POSIX file modes; protect listener-token with an ACL');
+  }
   const eventUrl = new URL('/events', baseUrl);
   if (chat) eventUrl.searchParams.set('chat_id', chat);
   const since = Number(state.get().last_event_seq) || 0;
@@ -237,7 +354,7 @@ export async function runListener(options) {
     closed = true;
     try { request?.destroy(); } catch { /* ignore */ }
     for (const child of running.values()) {
-      try { child.kill(); } catch { /* ignore */ }
+      stopChild(child);
     }
     log(`listener stopping (${reason}) code=${code}`);
     process.exit(code);
@@ -378,38 +495,32 @@ export async function runListener(options) {
     }
   }
 
-  function runLocalCommand(event) {
+  async function runLocalCommand(event) {
     const chatKey = event.chat_id || '-';
     if (running.has(chatKey)) {
       log(`local run already active for chat ${chatKey}; event coalesced`);
-      return Promise.resolve({ skipped: true });
+      return { skipped: true };
     }
-    return new Promise((resolve, reject) => {
-      const child = spawn(command, {
-        shell: true,
-        env: {
-          ...process.env,
-          LISTENER_EVENT: JSON.stringify(event),
-          LISTENER_AGENT: agent,
-          LISTENER_CHAT_ID: event.chat_id || ''
-        },
-        stdio: 'inherit'
+    const budget = reserveLocalRun(state, chatKey);
+    if (!budget.allowed) {
+      log(`daily local-run cap reached for chat ${chatKey} `
+        + `(${budget.count}/${budget.limit} on ${budget.day}); event left to check-in`);
+      return { skipped: true, reason: 'daily local-run cap reached' };
+    }
+    log(`local run starting chat=${chatKey} today=${budget.count}/${budget.limit}`);
+    try {
+      const result = await startLocalRun({
+        command,
+        agent,
+        event,
+        log,
+        onChild: (child) => running.set(chatKey, child)
       });
-      running.set(chatKey, child);
-      child.on('error', (error) => {
-        running.delete(chatKey);
-        reject(error);
-      });
-      child.on('exit', (code) => {
-        running.delete(chatKey);
-        if (code === 0) {
-          log(`local run finished chat=${chatKey}`);
-          resolve({ code });
-        } else {
-          reject(new Error(`local command exited ${code}`));
-        }
-      });
-    });
+      log(`local run finished chat=${chatKey}`);
+      return result;
+    } finally {
+      running.delete(chatKey);
+    }
   }
 
   log(`listener starting agent=${agent}${chat ? ` chat=${chat}` : ''} token_file=${tokenFile}`);

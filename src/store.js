@@ -455,6 +455,14 @@ export class Store {
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (agent_id, chat_id)
       );
+      -- Small persistent key/value store for counters that must survive the
+      -- tables they count. wake_event_seq lives here so pruning every event
+      -- row (the 7-day retention) never rewinds the SSE cursor.
+      CREATE TABLE IF NOT EXISTS app_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
     `);
     this.migrateMessagesForChats();
     this.migrateGroupChat();
@@ -2161,8 +2169,22 @@ export class Store {
     return this._transaction(() => {
       let seq = event.seq;
       if (seq === undefined || seq === null) {
-        const row = this.db.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM wake_events').get();
-        seq = Number(row?.m ?? 0) + 1;
+        const maxRow = Number(this.db.prepare(
+          'SELECT COALESCE(MAX(seq), 0) AS m FROM wake_events'
+        ).get()?.m ?? 0);
+        // The counter lives outside wake_events so retention pruning cannot
+        // rewind it; MAX(seq) is only the seed for a database that predates
+        // the counter (or a caller that inserted an explicit seq).
+        const stored = this.db.prepare(
+          "SELECT value FROM app_meta WHERE key = 'wake_event_seq'"
+        ).get();
+        const counter = stored ? Number(stored.value) : null;
+        const base = Number.isFinite(counter) ? counter : 0;
+        seq = Math.max(base, maxRow) + 1;
+        this.db.prepare(
+          `INSERT INTO app_meta (key, value, updated_at) VALUES ('wake_event_seq', ?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+        ).run(String(seq), Date.now());
       }
       const now = Number(event.created_at) || Date.now();
       this.db.prepare(
@@ -2278,8 +2300,25 @@ export class Store {
     return Number(this.db.prepare(`SELECT COUNT(*) AS n FROM wake_events ${where}`).get(...params)?.n ?? 0);
   }
 
+  // Highest seq ever assigned, not merely the highest one still retained. An
+  // empty table after pruning must not look like "start over at 0".
   maxWakeEventSeq() {
-    return Number(this.db.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM wake_events').get()?.m ?? 0);
+    const max = Number(this.db.prepare(
+      'SELECT COALESCE(MAX(seq), 0) AS m FROM wake_events'
+    ).get()?.m ?? 0);
+    const stored = this.db.prepare(
+      "SELECT value FROM app_meta WHERE key = 'wake_event_seq'"
+    ).get();
+    const counter = stored ? Number(stored.value) : 0;
+    return Math.max(max, Number.isFinite(counter) ? counter : 0);
+  }
+
+  // Rows a wake task is currently responsible for. Used by restart
+  // reconciliation to settle runs whose onTaskFinished hook was lost.
+  listInFlightWakeEvents() {
+    return this.db.prepare(
+      "SELECT * FROM wake_events WHERE delivery_task_id IS NOT NULL AND status = 'delivered'"
+    ).all();
   }
 
   minWakeEventSeq() {

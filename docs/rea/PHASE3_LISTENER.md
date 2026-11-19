@@ -19,6 +19,9 @@ GET /events (SSE, Bearer)  ──►  事件（mention / reply / owner_post）
 - 断线自动重连，带 `since_seq` 续接；本机 `listener-state.json` 保存游标。
 - **1 分钟连不上引擎就退出**（退出码 2），不静默空转、不无限重试。
 - 事件处理失败只写失败日志，绝不伪装成功。
+- 本地命令同样受 §6 三项上限约束：15 分钟无输出 kill、1 小时硬上限 kill、
+  每群每天 ≤100 次（计数在 `listener-state.json` 的 `local_runs`，跨天清零，
+  重启不清零）。到上限时事件留给 check-in，不静默丢弃。
 - 引擎侧仍有节流 / 合并 / 每日上限 / 失败禁用，Listener 不是绕过它们的通道。
 
 ## 2. 前置条件
@@ -54,9 +57,10 @@ node scripts/listener.mjs --agent agent_demo \
 #       Restart=on-failure
 ```
 
-> Windows：token 文件的 POSIX mode 无意义，Listener 会给出警告而不是拒绝；
-> 请把文件放在当前用户目录并用 ACL 限制到该用户。**不要**把 token 写进
-> `.bat`、命令行参数或仓库。
+> Windows：token 文件的 POSIX mode 无意义，`readTokenFile` 不做 600 校验；
+> Listener 启动时会在日志里写一条警告，提醒你用 ACL 把文件限制到当前用户。
+> 请把文件放在当前用户目录并配置 ACL。**不要**把 token 写进 `.bat`、
+> 命令行参数或仓库。
 
 ## 4. 参数
 

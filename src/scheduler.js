@@ -18,9 +18,12 @@ function summaryText(value, max = 300) {
 }
 
 export class Scheduler {
-  constructor(store, config) {
+  constructor(store, config, { executors = EXECUTORS } = {}) {
     this.store = store;
     this.config = config;
+    // Injectable only so tests can launch a real Scheduler around a fake
+    // executor. Production constructions use the built-in map.
+    this.executors = executors;
     this.queue = [];
     this.running = new Map();
     this.pumping = false;
@@ -39,7 +42,7 @@ export class Scheduler {
   }
 
   createTask({ agent, prompt, cwd, sessionId, model, timeoutMs, threadId, originMessageId, chatId }) {
-    const executor = EXECUTORS[agent];
+    const executor = this.executors[agent];
     if (!executor) throw new Error(`unknown agent: ${agent}`);
     if (typeof prompt !== 'string' || prompt.length === 0) throw new Error('prompt must be a non-empty string');
 
@@ -184,7 +187,10 @@ export class Scheduler {
       agent: task.agent,
       sessionId: task.session_id,
       startedAt: Date.now(),
+      // lastOutputAt is heartbeat bookkeeping; lastRealOutputAt is the only
+      // source of truth for "silent for 15 minutes" (the wake watchdog).
       lastOutputAt: Date.now(),
+      lastRealOutputAt: Date.now(),
       timeoutTimer: null,
       heartbeatTimer: null,
       cancel: null,
@@ -205,6 +211,7 @@ export class Scheduler {
       config: this.config,
       log: (stream, line) => {
         entry.lastOutputAt = Date.now();
+        entry.lastRealOutputAt = entry.lastOutputAt;
         this.store.appendLog(task.id, stream, line);
       },
       setSessionId: (sessionId) => {
@@ -275,7 +282,7 @@ export class Scheduler {
     }
 
     try {
-      const started = EXECUTORS[task.agent].start({
+      const started = this.executors[task.agent].start({
         ...task,
         prompt: renderedPrompt,
         thread_id: threadId,
@@ -311,6 +318,9 @@ export class Scheduler {
       if (entry.finished) return;
       if (Date.now() - entry.lastOutputAt >= this.config.heartbeatMs) {
         this.store.appendLog(task.id, 'system', 'heartbeat: no output');
+        // Heartbeat cadence only. Advancing lastRealOutputAt here is what made
+        // the 15-minute no-output breaker unreachable: the watchdog would see
+        // a task "active" every heartbeat even though it produced nothing.
         entry.lastOutputAt = Date.now();
       }
     }, this.config.heartbeatMs);
@@ -389,12 +399,13 @@ export class Scheduler {
     cleanupTaskMcpConfig(this.config, task.id);
   }
 
-  // Last time this task produced output. The wake watchdog uses it to enforce
-  // the 15-minute no-output circuit breaker; a task that is not running has no
-  // activity timestamp.
+  // Last time this task produced real output. The wake watchdog uses it to
+  // enforce the 15-minute no-output circuit breaker; heartbeat lines are not
+  // output and must not extend it. A task that is not running has no activity
+  // timestamp.
   lastActivityAt(taskId) {
     const entry = this.running.get(taskId);
-    return entry ? entry.lastOutputAt : null;
+    return entry ? entry.lastRealOutputAt : null;
   }
 
   _recordExecutionMetrics(task, entry, summary) {
@@ -462,6 +473,10 @@ export class Scheduler {
         blocker: null
       });
       this.store.appendLog(taskId, 'system', 'cancelled while queued');
+      // This path never reaches finish(), so wake accounting has to be told
+      // explicitly. Otherwise its (chat, agent) slot stays occupied forever
+      // and every later event for that pair is wrongly merged.
+      this._notifyWakeTerminal(taskId, ORCH_STATE.CANCELLED);
       cleanupTaskMcpConfig(this.config, taskId);
       return { task_id: taskId, status: ORCH_STATE.CANCELLED };
     }
@@ -483,7 +498,18 @@ export class Scheduler {
       state: ORCH_STATE.CANCELLED,
       process_state: PROCESS_STATE.CANCELLED
     });
+    this._notifyWakeTerminal(taskId, ORCH_STATE.CANCELLED);
     return { task_id: taskId, status: ORCH_STATE.CANCELLED };
+  }
+
+  // Terminal states reached outside finish() still have to settle the wake
+  // run that owns the task (the cancel() paths above).
+  _notifyWakeTerminal(taskId, state) {
+    try {
+      this.wake?.onTaskFinished(taskId, state);
+    } catch (error) {
+      this.store.appendLog(taskId, 'system', `wake accounting failed: ${error.message}`);
+    }
   }
 
   statusPayload(task) {

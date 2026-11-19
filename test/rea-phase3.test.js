@@ -1,21 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { existsSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
+import { Scheduler } from '../src/scheduler.js';
 import { WakeService, wakeEventEnvelope } from '../src/wake.js';
 import {
-  computeCheckin, eventScope, handleEvents, normalizeCheckinEvery, sseReplay
+  computeCheckin, eventScope, handleCheckin, handleEvents, normalizeCheckinEvery, sseReplay
 } from '../src/events.js';
 import { registerTools } from '../src/tools.js';
 import { agentIdForParticipant } from '../src/agents.js';
 import { runMigration } from '../scripts/migrate-rea-phase3.mjs';
 import {
-  authClaude, authMaster, authMuse, makeServices, seedChat, tempDir
+  authClaude, authMaster, authMuse, makeConfig, makeServices, seedChat, seedTask, tempDir
 } from './helpers.js';
 import {
-  createStateStore, parseArgs, parseSseBuffer, readTokenFile
+  LOCAL_DAILY_PER_CHAT, createStateStore, localDayKey, parseArgs, parseSseBuffer,
+  readTokenFile, reserveLocalRun, startLocalRun
 } from '../scripts/listener.mjs';
 
 function makeHarness(configOverrides = {}) {
@@ -258,10 +260,14 @@ test('a failed run retries once; three consecutive failures disable wake and not
       chat_id: chatId, kind: 'mention', message_id: 'missing', message_seq: 1, mentions: ['claude']
     });
 
-    record();
+    const [firstEvent] = record();
     assert.equal(h.scheduler.calls.length, 1);
     h.wake.onTaskFinished('task-1', 'FAILED');
     assert.equal(h.scheduler.calls.length, 2, 'the first failure retries once');
+    const afterRetry = h.store.getWakeEvent(firstEvent.id);
+    assert.equal(afterRetry.delivery_task_id, 'task-1',
+      'a retry keeps the first delivery task id for audit');
+    assert.equal(Number(afterRetry.attempts), 2);
     h.wake.onTaskFinished('task-2', 'FAILED');
     assert.equal(h.scheduler.calls.length, 2, 'no second retry');
     assert.equal(Number(h.store.getAgentWake('agent_claude', chatId).consecutive_failures), 2);
@@ -541,6 +547,319 @@ test('wake MCP tools enforce ownership and self-scoping', async () => {
   } finally {
     h.wake.stop();
     cleanupDir(h.dir, h.store);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Cross-review regressions (M1-M12)
+// ---------------------------------------------------------------------------
+test('M1: the wake watchdog uses real output time, not heartbeat time', async () => {
+  const dir = tempDir('rea3-m1-');
+  let store = null;
+  let scheduler = null;
+  let wake = null;
+  try {
+    const config = makeConfig(dir, {
+      agentAutoDeliver: true,
+      wakeMinIntervalMs: 0,
+      maxParallel: 4,
+      dshParallel: 2,
+      heartbeatMs: 20,
+      taskTimeoutMs: 60 * 60 * 1000,
+      staleAfterMs: 60 * 60 * 1000
+    });
+    store = new Store(join(dir, 'workbench.db'), dir);
+    // A real Scheduler around an executor that starts and then says nothing.
+    // Only the executor is faked; launch/heartbeat/lastActivityAt are real.
+    scheduler = new Scheduler(store, config, {
+      executors: { claude: { start() { return { cancel() {}, pid: null }; } } }
+    });
+    const clock = { now: Date.now() };
+    wake = new WakeService({ store, scheduler, config, now: () => clock.now });
+    scheduler.wake = wake;
+
+    const chatId = seedChat(store, { id: 'chat-m1' });
+    addAgent(store, chatId, 'claude');
+    wake.record({ chat_id: chatId, kind: 'mention', mentions: ['claude'], message_seq: 1 });
+    const info = [...wake.active.values()][0];
+    assert.ok(info, 'a wake task is active');
+
+    const first = scheduler.lastActivityAt(info.taskId);
+    assert.ok(Number.isFinite(first));
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.ok(store.getLogs(info.taskId).some((row) => /heartbeat: no output/.test(row.line)),
+      'the real heartbeat did run while the task was silent');
+    assert.equal(scheduler.lastActivityAt(info.taskId), first,
+      'silent heartbeats must not refresh the real last-output timestamp');
+
+    clock.now = first + 16 * 60 * 1000;
+    wake._checkWatchdog(info);
+    assert.equal(info.watchdogFired, true);
+    assert.equal(scheduler.running.get(info.taskId)?.cancelled, true,
+      'a silent task is cancelled by the 15-minute breaker');
+  } finally {
+    try { wake?.stop(); } catch { /* ignore */ }
+    try { scheduler?.shutdown(); } catch { /* ignore */ }
+    cleanupDir(dir, store);
+  }
+});
+
+test('M2: cancelling a queued wake task frees the (chat, agent) slot', () => {
+  const dir = tempDir('rea3-m2-');
+  let store = null;
+  let scheduler = null;
+  let wake = null;
+  try {
+    const config = makeConfig(dir, {
+      agentAutoDeliver: true,
+      wakeMinIntervalMs: 0,
+      maxParallel: 1,
+      dshParallel: 1,
+      heartbeatMs: 60_000,
+      taskTimeoutMs: 60 * 60 * 1000,
+      staleAfterMs: 60 * 60 * 1000
+    });
+    store = new Store(join(dir, 'workbench.db'), dir);
+    scheduler = new Scheduler(store, config, {
+      executors: { claude: { start() { return { cancel() {}, pid: null }; } } }
+    });
+    wake = new WakeService({ store, scheduler, config, now: () => Date.now() });
+    scheduler.wake = wake;
+
+    // Occupy the only parallel slot so the wake task stays queued.
+    scheduler.createTask({ agent: 'claude', prompt: 'occupy the slot', cwd: dir });
+    let created = 0;
+    const createTask = scheduler.createTask.bind(scheduler);
+    scheduler.createTask = (input) => { created += 1; return createTask(input); };
+
+    const chatId = seedChat(store, { id: 'chat-m2' });
+    addAgent(store, chatId, 'claude');
+    wake.record({ chat_id: chatId, kind: 'mention', mentions: ['claude'], message_seq: 1 });
+    const info = wake.active.get(`${chatId}:claude`);
+    assert.ok(info, 'the wake run is tracked even while queued');
+    assert.equal(created, 1);
+    assert.equal(store.getTask(info.taskId).state, 'PENDING');
+
+    scheduler.cancel(info.taskId);
+    assert.equal(store.getTask(info.taskId).state, 'CANCELLED');
+    assert.equal(wake.active.size, 0, 'a queued cancellation releases the active slot');
+    assert.equal(store.getWakeEvent(info.eventId).status, 'cancelled');
+
+    wake.record({ chat_id: chatId, kind: 'mention', mentions: ['claude'], message_seq: 2 });
+    assert.equal(created, 2, 'the next @ starts a new task instead of being merged');
+    const events = eventsFor(store, chatId);
+    assert.equal(events[1].status, 'delivered');
+  } finally {
+    try { wake?.stop(); } catch { /* ignore */ }
+    try { scheduler?.shutdown(); } catch { /* ignore */ }
+    cleanupDir(dir, store);
+  }
+});
+
+test('M3: the live SSE callback obeys a per-task token chat binding', () => {
+  const h = makeHarness();
+  try {
+    const chatA = seedChat(h.store, { id: 'chat-live-a' });
+    const chatB = seedChat(h.store, { id: 'chat-live-b' });
+    addAgent(h.store, chatA, 'claude');
+    addAgent(h.store, chatB, 'claude');
+    const req = new EventEmitter();
+    req.headers = {};
+    const res = new FakeResponse();
+    handleEvents({
+      req,
+      res,
+      url: new URL('http://x/events?since_seq=0'),
+      store: h.store,
+      wake: h.wake,
+      config: h.config,
+      auth: { ...authClaude, token_kind: 'agent-task', chat_id: chatA }
+    });
+    h.wake.emit('event', {
+      id: 'evt-other-chat', seq: 100, chat_id: chatB, agent_id: 'agent_claude', kind: 'mention'
+    });
+    h.wake.emit('event', {
+      id: 'evt-my-chat', seq: 101, chat_id: chatA, agent_id: 'agent_claude', kind: 'mention'
+    });
+    const body = res.body();
+    assert.doesNotMatch(body, /evt-other-chat/,
+      'a pinned token does not receive live events from another chat');
+    assert.match(body, /evt-my-chat/);
+    res.emit('close');
+  } finally {
+    cleanupDir(h.dir, h.store);
+  }
+});
+
+test('M5: @muse records an external event and never starts a local task', () => {
+  const h = makeHarness();
+  try {
+    const chatId = seedChat(h.store, { id: 'chat-muse' });
+    h.chats.send({
+      chat_id: chatId, from: 'user', to: 'muse', body: 'hello @muse', mentions: ['muse']
+    });
+    const events = eventsFor(h.store, chatId, 'agent_muse');
+    assert.equal(events.length, 1, '@muse produces a wake event');
+    assert.equal(events[0].kind, 'mention');
+    assert.equal(events[0].status, 'pending', 'Muse consumes it over SSE / check-in');
+    assert.equal(h.scheduler.calls.length, 0, 'Muse has no local executor');
+  } finally {
+    cleanupDir(h.dir, h.store);
+  }
+});
+
+test('M6: restart reconciliation settles in-flight wake events by delivery_task_id', () => {
+  const dir = tempDir('rea3-m6-');
+  let store = null;
+  try {
+    const config = makeConfig(dir, {});
+    store = new Store(join(dir, 'workbench.db'), dir);
+    const chatId = seedChat(store, { id: 'chat-m6' });
+    const task = seedTask(store, { id: 'task-m6', agent: 'claude', chatId, state: 'WORKING' });
+    store.insertWakeEvent({
+      id: 'wake-m6', chat_id: chatId, agent_id: 'agent_claude', kind: 'mention',
+      status: 'delivered', attempts: 1, delivery_task_id: task.id, created_at: Date.now()
+    });
+
+    const scheduler = new Scheduler(store, config);
+    scheduler.reconcile({ replay: false });
+    assert.equal(store.getTask(task.id).state, 'FAILED');
+
+    const wake = new WakeService({ store, scheduler, config });
+    const summary = wake.reconcile();
+    assert.equal(summary.reconciled_events, 1);
+    const row = store.getWakeEvent('wake-m6');
+    assert.equal(row.status, 'failed');
+    assert.equal(Number(store.getAgentWake('agent_claude', chatId).consecutive_failures), 1,
+      'the lost run counts against the failure circuit breaker');
+  } finally {
+    cleanupDir(dir, store);
+  }
+});
+
+test('M7: the wake event seq counter survives pruning the whole table', () => {
+  const h = makeHarness();
+  try {
+    const first = h.store.insertWakeEvent({
+      id: 'wake-seq-1', chat_id: 'chat-seq', agent_id: 'agent_claude', kind: 'mention', created_at: 1000
+    });
+    assert.equal(Number(first.seq), 1);
+    h.store.pruneWakeEvents(Date.now() + 10_000_000);
+    assert.equal(h.store.countWakeEvents({ chatId: 'chat-seq' }), 0);
+    const second = h.store.insertWakeEvent({
+      id: 'wake-seq-2', chat_id: 'chat-seq', agent_id: 'agent_claude', kind: 'mention', created_at: 2000
+    });
+    assert.equal(Number(second.seq), 2, 'the counter does not rewind after retention pruning');
+    assert.equal(h.store.maxWakeEventSeq(), 2);
+  } finally {
+    cleanupDir(h.dir, h.store);
+  }
+});
+
+test('M8: an unauthenticated /events or /checkin writes an audit line', () => {
+  const h = makeHarness();
+  try {
+    const req = new EventEmitter();
+    req.headers = {};
+    const eventsRes = new FakeResponse();
+    handleEvents({
+      req, res: eventsRes, url: new URL('http://x/events'),
+      store: h.store, wake: h.wake, config: h.config, auth: null
+    });
+    assert.equal(eventsRes.status, 401);
+    const checkinRes = new FakeResponse();
+    handleCheckin({
+      res: checkinRes, store: h.store, agents: h.agents, auth: null, config: h.config, body: {}
+    });
+    assert.equal(checkinRes.status, 401);
+    const audit = readFileSync(join(h.store.dataDir, 'security-audit.log'), 'utf8');
+    assert.match(audit, /GET \/events|surface=GET \/events/);
+    assert.match(audit, /surface=PUT \/checkin/);
+    assert.equal((audit.match(/status=401/g) ?? []).length >= 2, true);
+  } finally {
+    cleanupDir(h.dir, h.store);
+  }
+});
+
+test('M10: check-in falls back to config.checkinDefaultMinutes and filters every counter', () => {
+  const h = makeHarness({ checkinDefaultMinutes: 25 });
+  try {
+    const chatId = seedChat(h.store, { id: 'chat-m10' });
+    addAgent(h.store, chatId, 'claude');
+    const result = computeCheckin({
+      store: h.store, agents: h.agents, agentId: 'claude',
+      defaultMinutes: h.config.checkinDefaultMinutes, now: 1000
+    });
+    assert.equal(result.every_minutes, 25, 'the configured default is used instead of a hard-coded 10');
+    assert.equal(Number(h.store.getCheckin('agent_claude').every_minutes), 25);
+
+    const filtered = computeCheckin({
+      store: h.store, agents: h.agents, agentId: 'claude', chatId, now: 2000
+    });
+    assert.deepEqual(filtered.inbox.chats.map((chat) => chat.chat_id), [chatId]);
+    assert.equal(typeof filtered.inbox.mentions_you, 'number');
+    assert.equal(typeof filtered.inbox.replies_to_you, 'number');
+    assert.equal(typeof filtered.inbox.from_owner, 'number');
+  } finally {
+    cleanupDir(h.dir, h.store);
+  }
+});
+
+test('M11: an unknown wake kind is ignored, not coerced to a mention', () => {
+  const h = makeHarness();
+  try {
+    const chatId = seedChat(h.store, { id: 'chat-m11' });
+    addAgent(h.store, chatId, 'claude');
+    const rows = h.wake.record({
+      chat_id: chatId, kind: 'recall', message_id: 'msg', message_seq: 1, mentions: ['claude']
+    });
+    assert.deepEqual(rows, []);
+    assert.equal(h.store.countWakeEvents({ chatId }), 0);
+    assert.equal(h.scheduler.calls.length, 0);
+  } finally {
+    cleanupDir(h.dir, h.store);
+  }
+});
+
+test('M4: listener local runs honour the daily cap, silence breaker and hard cap', async () => {
+  const dir = tempDir('rea3-m4-');
+  try {
+    const statePath = join(dir, 'listener-state.json');
+    const state = createStateStore(statePath);
+    const day1 = new Date(2026, 10, 19, 12, 0, 0).getTime();
+    assert.equal(localDayKey(day1), '2026-11-19');
+    assert.equal(reserveLocalRun(state, 'chat-1', { now: day1, limit: 2 }).allowed, true);
+    assert.equal(reserveLocalRun(state, 'chat-1', { now: day1, limit: 2 }).allowed, true);
+    const blocked = reserveLocalRun(state, 'chat-1', { now: day1, limit: 2 });
+    assert.equal(blocked.allowed, false);
+    assert.equal(blocked.count, 2);
+    const day2 = new Date(2026, 10, 20, 12, 0, 0).getTime();
+    assert.equal(reserveLocalRun(state, 'chat-1', { now: day2, limit: 2 }).allowed, true,
+      'the counter resets on a new local day');
+    assert.equal(createStateStore(statePath).get().local_runs['chat-1'].count, 1,
+      'the counter is persisted across restarts');
+    assert.equal(LOCAL_DAILY_PER_CHAT, 100);
+
+    const silent = join(dir, 'silent.mjs');
+    const ok = join(dir, 'ok.mjs');
+    writeFileSync(silent, 'setTimeout(() => {}, 4000);\n');
+    writeFileSync(ok, 'process.exit(0);\n');
+    const quiet = `"${process.execPath}" "${silent}"`;
+
+    await assert.rejects(
+      startLocalRun({ command: quiet, agent: 'agent_x', event: { chat_id: 'c' }, noOutputMs: 100, hardCapMs: 3000 }),
+      /15 minutes without output/
+    );
+    await assert.rejects(
+      startLocalRun({ command: quiet, agent: 'agent_x', event: { chat_id: 'c' }, noOutputMs: 10_000, hardCapMs: 100 }),
+      /1-hour hard cap/
+    );
+    const done = await startLocalRun({
+      command: `"${process.execPath}" "${ok}"`, agent: 'agent_x', event: { chat_id: 'c' }
+    });
+    assert.equal(done.code, 0);
+  } finally {
+    cleanupDir(dir);
   }
 });
 

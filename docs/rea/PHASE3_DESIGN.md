@@ -80,8 +80,14 @@ Phase 2 让 Agent 有了身份、Inbox、@ 事件和多群，但**所有任务�
 | `mention` | 消息 mentions 列表含某 Agent（`normalizeMentions` 已校验成员身份） | 被 @ 的 Agent |
 | `reply` | 消息 reply_to 指向某 Agent 的消息 | 被回复的 Agent |
 | `owner_post` | 群主（user）在群里发消息 | 群内全部已启用唤醒的 Agent（见 D2 注） |
+| `manual` | 群主或 Agent 调用 `wake_now` | 该 Agent（手动触发；绕过节流但仍计入每日上限） |
 | `recall` | 消息被撤回 | 只记事件、**不唤醒**（避免撤回引发无意义运行） |
 | `task_done` | 某 Agent 的任务完成并回了结论卡片 | 不唤醒；供 Listener 更新状态用 |
+
+> 实现说明（2026-11-19）：`record()` 只接受 `mention` / `reply` /
+> `owner_post` 三种自动事件；未知 kind 直接忽略并记日志，不再强制当成
+> `mention`。`manual` 只由 `wake_now` 写入。`@muse` 也会产生事件（Muse 是
+> 外部可投递目标，只记录事件、走 SSE / check-in，永不创建本地任务）。
 
 ### 4.2 事件包络（SSE 与 check-in 共用）
 
@@ -236,17 +242,22 @@ node scripts/listener.mjs --agent agent_xxx --chat <chat_id，可选>
 | id | TEXT PK | `wake_...` |
 | chat_id | TEXT | 群 |
 | agent_id | TEXT | 被唤醒 Agent |
-| kind | TEXT | `mention` / `reply` / `owner_post` |
+| kind | TEXT | `mention` / `reply` / `owner_post` / `manual` |
 | message_id | TEXT | 触发消息 |
 | message_seq | INTEGER | 触发消息 seq |
-| status | TEXT | `pending` / `delivered` / `throttled` / `failed` / `disabled` |
+| status | TEXT | `pending` / `delivered` / `throttled` / `merged` / `failed` / `cancelled` / `disabled` |
 | attempts | INTEGER | 已尝试次数 |
-| delivery_task_id | TEXT NULL | 唤醒产生的任务 |
+| delivery_task_id | TEXT NULL | 首轮唤醒产生的任务（重试保留首次值，不覆盖） |
 | created_at / updated_at | INTEGER | 毫秒时间戳 |
 
 > 实现说明（2026-11-19）：额外增加 `seq INTEGER`（全局事件序，§4.2 的
-> `since_seq` 续接需要）。`from` / `mentions` 不重复存储，事件下发时从
-> `messages` 行读取，避免两份真相。
+> `since_seq` 续接需要）。`seq` 由持久计数器 `app_meta.wake_event_seq`
+> 分配，不用 `MAX(seq)+1`：7 天保留期清空整表后计数器不回绕，旧游标的
+> Listener 不会因此丢事件且 `resync` 仍能发现真实 gap。`from` / `mentions`
+> 不重复存储，事件下发时从 `messages` 行读取，避免两份真相。
+>
+> `merged` = 该事件并入了同一 (chat, agent) 正在进行的一轮唤醒；
+> `cancelled` = 用户主动取消，不算 Agent 失败，不计入连续失败次数。
 
 ### listener_sessions（Listener 会话表）
 
@@ -281,8 +292,20 @@ node scripts/listener.mjs --agent agent_xxx --chat <chat_id，可选>
 | disabled_at | INTEGER NULL | 禁用时间 |
 | PRIMARY KEY | (agent_id, chat_id) | |
 
+### app_meta（持久计数器）
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| key | TEXT PK | 目前只有 `wake_event_seq` |
+| value | TEXT | 已分配的最大全局事件序 |
+| updated_at | INTEGER | 毫秒时间戳 |
+
 索引：`wake_events(chat_id, agent_id, created_at)`、
 `listener_sessions(agent_id, chat_id)`。
+
+> `app_meta` 由 Store 构造函数的 `CREATE TABLE IF NOT EXISTS` 创建（旧库
+> 打开时自动补齐），计数器在首次分配 seq 时以当时的 `MAX(seq)` 为种子，
+> 之后只增不减；保留期清理不会碰它。
 
 ## 12. 接口
 
@@ -330,7 +353,10 @@ node scripts/listener.mjs --agent agent_xxx --chat <chat_id，可选>
 - 失败绝不伪装成功：熔断、禁用、节流都有明确状态和群主通知，
   不存在“看起来醒了其实没跑”的状态。
 - 引擎重启后状态从 DB 恢复（P1-1 对账覆盖新表；进行中的唤醒任务
-  按现有规则标 FAILED，不悄悄重跑）。
+  按现有规则标 FAILED，不悄悄重跑）。`wake.reconcile()` 按
+  `wake_events.delivery_task_id` 对账：任务已 COMPLETED 的保持 delivered；
+  用户取消的记 `cancelled`；其余在途行记 `failed` 并计入连续失败（不自动
+  重跑），达到阈值同样禁用并通知群主。
 
 ## 15. 实施顺序
 

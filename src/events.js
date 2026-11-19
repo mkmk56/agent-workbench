@@ -93,6 +93,13 @@ function writeResync(res, lastSeq) {
 // GET /events. The caller has already resolved `auth` from the bearer token.
 export function handleEvents({ req, res, url, store, wake, config, auth }) {
   if (!auth) {
+    // Design §5: an authentication failure is a security event, not a plain
+    // 401. The audit line never contains the credential.
+    auditDeny(config, store, auth, {
+      surface: 'GET /events',
+      code: 'unauthorized',
+      status: 401
+    });
     sendJson(res, 401, { error: 'unauthorized' });
     return;
   }
@@ -160,6 +167,10 @@ export function handleEvents({ req, res, url, store, wake, config, auth }) {
   // listener registration is not lost. Duplicates are suppressed by lastSeq.
   const onEvent = (envelope) => {
     if (closed || !envelope) return;
+    // Scope is authoritative on the live path too. Without this a per-task
+    // token pinned to one chat still received every broadcast for its agent,
+    // because the check only looked at agent_id.
+    if (!canReadChat(scope, envelope.chat_id)) return;
     if (chatId && envelope.chat_id !== chatId) return;
     if (!scope.all && envelope.agent_id !== scope.agentId) return;
     if (Number(envelope.seq) <= lastSeq) return;
@@ -240,21 +251,36 @@ export function normalizeCheckinEvery(value, fallback = CHECKIN_DEFAULT_MINUTES)
   return n;
 }
 
+// CHECKIN_DEFAULT_MINUTES is configurable; an out-of-range environment value
+// falls back to the documented default rather than propagating a bad interval.
+function defaultCheckinMinutes(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= CHECKIN_MIN_MINUTES && n <= CHECKIN_MAX_MINUTES
+    ? n
+    : CHECKIN_DEFAULT_MINUTES;
+}
+
 // Core check-in computation, shared by PUT /checkin and agent_checkin.
 export function computeCheckin({
-  store, agents = null, agentId, every = undefined, now = Date.now()
+  store, agents = null, agentId, every = undefined, chatId = null,
+  defaultMinutes = CHECKIN_DEFAULT_MINUTES, now = Date.now()
 } = {}) {
   const canonical = agentIdForParticipant(agentId) || agentId;
   if (!canonical) throw new Error('agent id is required');
   const previous = store.getCheckin(canonical);
   const everyMinutes = normalizeCheckinEvery(
-    every, Number(previous?.every_minutes) || CHECKIN_DEFAULT_MINUTES
+    every, Number(previous?.every_minutes) || defaultCheckinMinutes(defaultMinutes)
   );
   let inbox = { total_unread: 0, chats: [] };
   if (agents?.inbox) {
     inbox = agents.inbox({ agentId: canonical });
   }
-  const empty = Number(inbox.total_unread) === 0;
+  let chats = Array.isArray(inbox.chats) ? inbox.chats : [];
+  if (chatId) chats = chats.filter((chat) => chat.chat_id === chatId);
+  const totalUnread = chatId
+    ? chats.reduce((sum, chat) => sum + Number(chat.unread ?? 0), 0)
+    : Number(inbox.total_unread ?? 0);
+  const empty = totalUnread === 0;
   const consecutiveEmpty = empty ? Number(previous?.consecutive_empty ?? 0) + 1 : 0;
   store.upsertCheckin({
     agent_id: canonical,
@@ -281,11 +307,11 @@ export function computeCheckin({
     suggested_every_minutes: suggested,
     latest_event_seq: latestSeq,
     inbox: {
-      total_unread: Number(inbox.total_unread ?? 0),
-      mentions_you: (inbox.chats ?? []).reduce((sum, chat) => sum + Number(chat.mentions_you ?? 0), 0),
-      replies_to_you: (inbox.chats ?? []).reduce((sum, chat) => sum + Number(chat.replies_to_you ?? 0), 0),
-      from_owner: (inbox.chats ?? []).reduce((sum, chat) => sum + Number(chat.from_owner ?? 0), 0),
-      chats: inbox.chats ?? []
+      total_unread: totalUnread,
+      mentions_you: chats.reduce((sum, chat) => sum + Number(chat.mentions_you ?? 0), 0),
+      replies_to_you: chats.reduce((sum, chat) => sum + Number(chat.replies_to_you ?? 0), 0),
+      from_owner: chats.reduce((sum, chat) => sum + Number(chat.from_owner ?? 0), 0),
+      chats
     }
   };
 }
@@ -294,6 +320,11 @@ export function computeCheckin({
 // check in as itself; a full reader may target any agent id.
 export function handleCheckin({ res, store, agents, auth, config, body = {} }) {
   if (!auth) {
+    auditDeny(config, store, auth, {
+      surface: 'PUT /checkin',
+      code: 'unauthorized',
+      status: 401
+    });
     sendJson(res, 401, { error: 'unauthorized' });
     return;
   }
@@ -315,18 +346,14 @@ export function handleCheckin({ res, store, agents, auth, config, body = {} }) {
   }
   try {
     const result = computeCheckin({
-      store, agents, agentId: requested, every: body?.every, now: Date.now()
+      store,
+      agents,
+      agentId: requested,
+      every: body?.every,
+      chatId: body?.chat_id ?? null,
+      defaultMinutes: config?.checkinDefaultMinutes,
+      now: Date.now()
     });
-    if (body?.chat_id) {
-      result.inbox.chats = result.inbox.chats.filter((chat) => chat.chat_id === body.chat_id);
-      result.inbox.total_unread = result.inbox.chats.reduce((sum, chat) => sum + Number(chat.unread ?? 0), 0);
-      result.inbox.mentions_you = result.inbox.chats
-        .reduce((sum, chat) => sum + Number(chat.mentions_you ?? 0), 0);
-      result.inbox.replies_to_you = result.inbox.chats
-        .reduce((sum, chat) => sum + Number(chat.replies_to_you ?? 0), 0);
-      result.inbox.from_owner = result.inbox.chats
-        .reduce((sum, chat) => sum + Number(chat.from_owner ?? 0), 0);
-    }
     sendJson(res, 200, result);
   } catch (error) {
     sendJson(res, 400, { error: error.message });
