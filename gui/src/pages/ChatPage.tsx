@@ -1,5 +1,6 @@
 import { CircleAlert, MessagesSquare, Plus } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AgentMentionMenu } from '../components/AgentMentionMenu';
 import { ChatHeader } from '../components/ChatHeader';
 import { Composer } from '../components/Composer';
 import { MessageList } from '../components/MessageList';
@@ -13,7 +14,9 @@ import {
 import { createChat } from '../lib/chat';
 import { invalidateChatFileIndex, useChatFileIndex } from '../lib/chat-file-index';
 import { mergeMessageFiles } from '../lib/chat-files';
+import type { MentionRequest, MenuPoint } from '../lib/mention-menu';
 import { navigate } from '../lib/router';
+import type { ChatAgentId } from '../types';
 import '../styles/chat.css';
 
 /**
@@ -26,7 +29,45 @@ export function ChatPage({ chatId }: { chatId: string | null }) {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  // Muse: right-clicking an agent avatar in the stream opens the one-item
+  // "@ this agent" menu. Picking it hands the composer a request to insert
+  // `@handle ` at the caret — the composer stays the only owner of the draft.
+  const [avatarMenu, setAvatarMenu] = useState<{
+    agent: ChatAgentId;
+    point: MenuPoint;
+    seq: number;
+  } | null>(null);
+  const [mentionRequest, setMentionRequest] = useState<MentionRequest | null>(null);
+  const requestSeq = useRef(0);
   const { setActiveChat, refreshActive, fetchChats } = useChatStore();
+
+  // Drop a pending mention request during render (not in an effect): the
+  // composer is remounted per chat, so an effect-time reset would let the new
+  // composer replay the previous chat's pick before the reset landed.
+  if (mentionRequest != null && mentionRequest.chatId !== chatId) {
+    setMentionRequest(null);
+  }
+
+  // A menu anchored to a message of the previous chat must not survive a switch.
+  useEffect(() => {
+    setAvatarMenu(null);
+  }, [chatId]);
+
+  const openAvatarMenu = useCallback((agent: ChatAgentId, point: MenuPoint) => {
+    requestSeq.current += 1;
+    setAvatarMenu({ agent, point, seq: requestSeq.current });
+  }, []);
+
+  const closeAvatarMenu = useCallback(() => setAvatarMenu(null), []);
+
+  const pickAvatarMention = useCallback(() => {
+    if (avatarMenu == null || chatId == null) {
+      return;
+    }
+    requestSeq.current += 1;
+    setMentionRequest({ chatId, agent: avatarMenu.agent, seq: requestSeq.current });
+    setAvatarMenu(null);
+  }, [avatarMenu, chatId]);
 
   useEffect(() => {
     setActiveChat(chatId);
@@ -141,13 +182,29 @@ export function ChatPage({ chatId }: { chatId: string | null }) {
         error={messagesError}
         searchQuery={searchQuery}
         onRetry={() => void refreshMessages()}
+        onMentionAgent={openAvatarMenu}
       />
+      {avatarMenu != null && (
+        <AgentMentionMenu
+          key={avatarMenu.seq}
+          agent={avatarMenu.agent}
+          point={avatarMenu.point}
+          onPick={pickAvatarMention}
+          onClose={closeAvatarMenu}
+        />
+      )}
       {/*
         key={chatId}: switching chats remounts the composer so the draft and the
         queue are re-read from that chat's own storage instead of one chat's
         queue being written under another chat's key.
       */}
-      <Composer key={chatId} chatId={chatId} status={status} onSent={onSent} />
+      <Composer
+        key={chatId}
+        chatId={chatId}
+        status={status}
+        onSent={onSent}
+        mentionRequest={mentionRequest}
+      />
     </section>
   );
 }

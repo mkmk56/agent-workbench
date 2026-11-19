@@ -15,6 +15,7 @@ import {
   type ChatQueueStorage,
   type QueuedMessage,
 } from '../lib/chat-queue';
+import { insertMentionAt, type MentionRequest } from '../lib/mention-menu';
 import type { ChatAgentId } from '../types';
 import { AttachmentBar, type AttachmentDraft } from './AttachmentBar';
 
@@ -103,10 +104,13 @@ export function Composer({
   chatId,
   status,
   onSent,
+  mentionRequest = null,
 }: {
   chatId: string;
   status: ChatStatus | null;
   onSent: () => void | Promise<void>;
+  /** "@ this agent" pick from the message stream; inserted at the caret. */
+  mentionRequest?: MentionRequest | null;
 }) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -147,6 +151,44 @@ export function Composer({
     element.style.height = 'auto';
     element.style.height = `${Math.min(element.scrollHeight, MAX_HEIGHT)}px`;
   }, [text]);
+
+  const lastMentionSeq = useRef(0);
+
+  // Muse: right-clicking an agent avatar in the message stream asks the
+  // composer to drop `@handle ` in at the caret and take focus back so the user
+  // can keep typing. `seq` makes two picks of the same agent distinct, and a
+  // request addressed to another chat is ignored (the composer is remounted per
+  // chat, so it can never land in the wrong draft). The handle comes from
+  // `MENTION_HANDLES`, i.e. exactly what the parser and the colouring already
+  // understand — no new @ format is introduced here.
+  useEffect(() => {
+    if (mentionRequest == null || mentionRequest.chatId !== chatId) {
+      return;
+    }
+    if (mentionRequest.seq <= lastMentionSeq.current) {
+      return;
+    }
+    lastMentionSeq.current = mentionRequest.seq;
+    const element = textareaRef.current;
+    const value = textRef.current;
+    const insertion = insertMentionAt(
+      value,
+      mentionRequest.agent,
+      element != null
+        ? {
+            start: element.selectionStart ?? value.length,
+            end: element.selectionEnd ?? value.length,
+          }
+        : undefined,
+    );
+    setText(insertion.text);
+    setError(null);
+    setMentionQuery(null);
+    requestAnimationFrame(() => {
+      element?.focus();
+      element?.setSelectionRange(insertion.caret, insertion.caret);
+    });
+  }, [mentionRequest, chatId]);
 
   const addFiles = (files: FileList | File[]) => {
     const incoming = Array.from(files);

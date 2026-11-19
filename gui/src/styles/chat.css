@@ -2361,3 +2361,88 @@ html[data-theme="dark"] .chat-quote--dsh {
 .profile-card__count.is-low {
   color: var(--warning-text);
 }
+
+/* ---------------------------------------------------------------
+ * 12. Avatar context menu: right-click an agent avatar to @ them.
+ *     A custom menu (not Electron's native one): one item, the
+ *     identity mark plus the name and handle it inserts. Rendered
+ *     through a portal with position: fixed, so the message stream
+ *     never clips it; AgentMentionMenu flips it back inside the
+ *     window near an edge. Colours come from the token layer only.
+ * ------------------------------------------------------------- */
+
+.chat-avatar[data-mention-agent] {
+  cursor: context-menu;
+}
+
+.chat-avatar-menu {
+  position: fixed;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Narrow windows: the menu shrinks with the viewport instead of overflowing. */
+  min-width: min(168px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgba(30, 33, 38, 0.16);
+}
+
+html[data-theme="dark"] .chat-avatar-menu {
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+.chat-avatar-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-avatar-menu__item:hover,
+.chat-avatar-menu__item:focus-visible {
+  background: var(--accent-subtle);
+  color: var(--accent-text);
+}
+
+.chat-avatar-menu__item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.chat-avatar-menu__mark {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+
+.chat-avatar-menu__name {
+  font-weight: 600;
+}
+
+.chat-avatar-menu__handle {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.chat-avatar-menu__item:hover .chat-avatar-menu__handle,
+.chat-avatar-menu__item:focus-visible .chat-avatar-menu__handle {
+  color: inherit;
+}

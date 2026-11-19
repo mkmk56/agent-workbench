@@ -13,6 +13,8 @@ import dshMark from '../assets/sidebar/dsh-mark.png';
 import museMark from '../assets/sidebar/muse-mark.png';
 import type { ChatMessage, ChatSender } from '../lib/chat';
 import { formatClock } from '../lib/labels';
+import { mentionAgentFor, type MenuPoint } from '../lib/mention-menu';
+import type { ChatAgentId } from '../types';
 import { EditedFilesCard } from './EditedFilesCard';
 
 const IDENTITIES: Record<
@@ -281,13 +283,35 @@ export function RichText({ text }: { text: string }) {
   );
 }
 
-function Avatar({ sender }: { sender: ChatSender }) {
+/**
+ * Message avatar. Right-clicking an agent avatar opens the "insert @handle"
+ * menu (Muse); the user's own avatar and unknown senders stay inert.
+ */
+function Avatar({
+  sender,
+  onMentionAgent,
+}: {
+  sender: ChatSender;
+  onMentionAgent?: (agent: ChatAgentId, point: MenuPoint) => void;
+}) {
   const identity = identityFor(sender);
+  const mentionable = onMentionAgent != null ? mentionAgentFor(sender) : null;
   return (
     <span
       className={`chat-avatar chat-avatar--md chat-avatar--${identity.kind === 'agent' ? sender : identity.kind}`}
       aria-hidden="true"
-      title={identity.name}
+      title={mentionable != null ? `${identity.name}（右键 @）` : identity.name}
+      data-mention-agent={mentionable ?? undefined}
+      onContextMenu={
+        mentionable == null || onMentionAgent == null
+          ? undefined
+          : (event) => {
+              // Custom menu instead of Electron's native one (Muse).
+              event.preventDefault();
+              event.stopPropagation();
+              onMentionAgent(mentionable, { x: event.clientX, y: event.clientY });
+            }
+      }
     >
       {identity.mark != null ? (
         <img src={identity.mark} alt="" draggable={false} />
@@ -375,11 +399,14 @@ export function MessageBubble({
   message,
   chatId,
   quoted,
+  onMentionAgent,
 }: {
   message: ChatMessage;
   chatId: string;
   /** Message referenced by `reply_to`, resolved by the stream (null: not loaded). */
   quoted?: ChatMessage | null;
+  /** Right-click on an agent avatar: open the "@ this agent" menu. */
+  onMentionAgent?: (agent: ChatAgentId, point: MenuPoint) => void;
 }) {
   const identity = identityFor(message.from);
   const isUser = identity.kind === 'user';
@@ -396,7 +423,7 @@ export function MessageBubble({
       className={`chat-msg chat-msg--${isUser ? 'user' : 'agent'}`}
       data-sender={message.from}
     >
-      <Avatar sender={message.from} />
+      <Avatar sender={message.from} onMentionAgent={onMentionAgent} />
       <div className="chat-msg__body">
         <div className="chat-msg__meta">
           <span className="chat-msg__sender">{identity.name}</span>

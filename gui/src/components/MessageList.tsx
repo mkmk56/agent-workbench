@@ -2,6 +2,8 @@ import { MessageSquare, RefreshCw } from 'lucide-react';
 import { useEffect, useMemo, useRef } from 'react';
 import type { ChatMessage, ChatStatus } from '../lib/chat';
 import { AGENT_STATE_LABELS } from '../lib/chat';
+import type { MenuPoint } from '../lib/mention-menu';
+import type { ChatAgentId } from '../types';
 import { MessageBubble } from './MessageBubble';
 
 const THINKING_STATES = new Set(['working', 'starting', 'waiting']);
@@ -29,6 +31,7 @@ export function MessageList({
   error,
   searchQuery = '',
   onRetry,
+  onMentionAgent,
 }: {
   chatId: string;
   messages: ChatMessage[];
@@ -37,6 +40,8 @@ export function MessageList({
   error: string | null;
   searchQuery?: string;
   onRetry: () => void;
+  /** Right-click on an agent avatar: open the "@ this agent" menu. */
+  onMentionAgent?: (agent: ChatAgentId, point: MenuPoint) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stick = useRef(true);
@@ -118,6 +123,7 @@ export function MessageList({
                 key={message.message_id}
                 message={message}
                 chatId={chatId}
+                onMentionAgent={onMentionAgent}
                 quoted={
                   message.reply_to != null
                     ? (quotedIndex.get(message.reply_to) ?? null)
