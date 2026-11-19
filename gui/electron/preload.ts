@@ -163,6 +163,14 @@ const workbench = {
     ipcRenderer.invoke('engine:chat-inbox', input ?? {}),
   agentProfile: (input?: { agentId?: string; profile?: string }) =>
     ipcRenderer.invoke('engine:agent-profile', input ?? {}),
+  wakeStatus: (input?: { agentId?: string; chatId?: string }) =>
+    ipcRenderer.invoke('engine:wake-status', input ?? {}),
+  listenerStatus: (input?: { agentId?: string }) =>
+    ipcRenderer.invoke('engine:listener-status', input ?? {}),
+  wakeEnable: (input: { agentId: string; chatId: string }) =>
+    ipcRenderer.invoke('engine:wake-enable', input),
+  wakeDisable: (input: { agentId: string; chatId: string }) =>
+    ipcRenderer.invoke('engine:wake-disable', input),
   pickChatFiles: () => ipcRenderer.invoke('chat:pick-files'),
   registerChatFiles: (files: File[], source?: IntakeSource) =>
     registerChatFiles(files, source ?? 'drop'),

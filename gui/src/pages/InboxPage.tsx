@@ -1,4 +1,14 @@
-import { AtSign, CircleAlert, CornerUpLeft, Inbox, RefreshCw, RotateCcw, UserRound } from 'lucide-react';
+import {
+  Activity,
+  AlarmClock,
+  AtSign,
+  CircleAlert,
+  CornerUpLeft,
+  Inbox,
+  RefreshCw,
+  RotateCcw,
+  UserRound,
+} from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   chatInboxOnce,
@@ -8,15 +18,38 @@ import {
 } from '../lib/chat';
 import { formatRelative } from '../lib/labels';
 import { navigate } from '../lib/router';
+import {
+  canManageWake,
+  formatWakeKinds,
+  listenerStatusOnce,
+  setWakeEnabled,
+  wakeEventStatusLabel,
+  wakeKindLabel,
+  wakeStatusOnce,
+} from '../lib/wake';
+import type {
+  ListenerStatusPayload,
+  WakeChatStatus,
+  WakeLastEvent,
+  WakeStatusPayload,
+} from '../types';
 import '../styles/chat.css';
 
 /**
- * Inbox (REA Phase 2, docs/rea/TARGET_ARCHITECTURE.md D3).
+ * Inbox (REA Phase 2, docs/rea/TARGET_ARCHITECTURE.md D3) plus the Phase 3
+ * wake status row (docs/rea/PHASE3_DESIGN.md §13).
  *
  * One agent's per-chat unread counters straight from the engine `inbox` tool:
  * mentions_you / replies_to_you / from_owner / recalled. The response's `you`
  * block is shown as an identity self-check, so the UI never claims to show a
  * different agent than the one the engine answered for.
+ *
+ * Phase 3 adds three wake facts per chat, all from `wake_status` (no local
+ * derivation): the wake switch, the last event time, and today's run count plus
+ * the consecutive-failure counter. The agent-level last check-in comes from
+ * `listener_status.checkin`. Disabled wake is marked red. The switch is hidden
+ * unless this workstation owns the agent (`you.owner === 'user'`); the engine's
+ * `wake_enable` / `wake_disable` are owner-only and stay the authority.
  *
  * "打开群即已读": opening a chat only advances the viewer's own cursor through
  * `chat_mark_read` (the same call the chat page makes after pulling messages).
@@ -59,12 +92,28 @@ function sortEntries(entries: ChatInboxEntry[]): ChatInboxEntry[] {
   });
 }
 
+/** Last wake event for one chat, in the same relative-time vocabulary as the list. */
+function lastEventText(event: WakeLastEvent | null): string {
+  if (event == null) {
+    return '暂无唤醒事件';
+  }
+  const at = event.created_at != null ? formatRelative(event.created_at) : '时间未知';
+  return `${wakeKindLabel(event.kind)} · ${wakeEventStatusLabel(event.status)} · ${at}`;
+}
+
 export function InboxPage() {
   const [agent, setAgent] = useState<AgentHandle>('muse');
   const [inbox, setInbox] = useState<ChatInboxPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [acting, setActing] = useState<string | null>(null);
+  // Phase 3 wake status. Kept separate from the inbox payload so a wake read
+  // failure never hides the unread counters (and vice versa).
+  const [wake, setWake] = useState<WakeStatusPayload | null>(null);
+  const [listener, setListener] = useState<ListenerStatusPayload | null>(null);
+  const [wakeError, setWakeError] = useState<string | null>(null);
+  const [listenerError, setListenerError] = useState<string | null>(null);
+  const [wakeBusy, setWakeBusy] = useState<string | null>(null);
   // Monotonic id per inbox request. A response that is no longer the newest one
   // — the owner switched tab or hit refresh — is dropped instead of overwriting
   // the counters of the agent now on screen.
@@ -78,15 +127,35 @@ export function InboxPage() {
     async (handle: AgentHandle) => {
       const id = (requestId.current += 1);
       try {
-        const result = await chatInboxOnce(handle);
+        // The three reads are independent tools; run them together but treat
+        // their results separately (one failing tool must not blank the others).
+        const [inboxResult, wakeResult, listenerResult] = await Promise.all([
+          chatInboxOnce(handle),
+          wakeStatusOnce(handle),
+          listenerStatusOnce(handle),
+        ]);
         if (id !== requestId.current || handle !== activeAgent.current) {
           return; // Stale: a newer request or another tab owns the view.
         }
-        if (result.ok) {
-          setInbox(result.data);
+        if (inboxResult.ok) {
+          setInbox(inboxResult.data);
           setError(null);
         } else {
-          setError(result.error);
+          setError(inboxResult.error);
+        }
+        if (wakeResult.ok) {
+          setWake(wakeResult.data);
+          setWakeError(null);
+        } else {
+          setWake(null);
+          setWakeError(wakeResult.error);
+        }
+        if (listenerResult.ok) {
+          setListener(listenerResult.data);
+          setListenerError(null);
+        } else {
+          setListener(null);
+          setListenerError(listenerResult.error);
         }
       } finally {
         if (id === requestId.current && handle === activeAgent.current) {
@@ -99,9 +168,14 @@ export function InboxPage() {
 
   useEffect(() => {
     activeAgent.current = agent;
-    // Switching tabs must not keep showing the previous agent's counters under
-    // the new agent's name.
+    // Switching tabs must not keep showing the previous agent's counters,
+    // wake switches or listener state under the new agent's name.
     setInbox(null);
+    setWake(null);
+    setListener(null);
+    setWakeError(null);
+    setListenerError(null);
+    setWakeBusy(null);
     setLoading(true);
     void load(agent);
     const timer = window.setInterval(() => {
@@ -114,6 +188,65 @@ export function InboxPage() {
 
   const entries = useMemo(() => sortEntries(inbox?.chats ?? []), [inbox]);
   const totalUnread = inbox?.total_unread ?? 0;
+
+  // The switch is only meaningful — and only allowed — for agents this
+  // workstation's owner owns. Until the inbox identity is known the control is
+  // hidden rather than guessed, and the engine re-checks the token role anyway.
+  const canManage =
+    inbox != null && inbox.you.status !== 'revoked' && canManageWake(inbox.you.owner);
+
+  const listenerText = (() => {
+    if (listener != null) {
+      if (listener.online) {
+        return `Listener 在线 · ${listener.sessions.length} 个会话`;
+      }
+      return listener.sessions.length > 0
+        ? `Listener 离线 · ${listener.sessions.length} 个会话`
+        : '无 Listener 会话（内置 Agent 由引擎直接唤醒）';
+    }
+    return listenerError != null ? `Listener 状态不可用：${listenerError}` : 'Listener 状态读取中…';
+  })();
+
+  const checkinText = (() => {
+    if (listener == null) {
+      return listenerError != null ? 'check-in 状态不可用' : 'check-in 状态读取中…';
+    }
+    if (listener.checkin == null) {
+      return '尚未设置 check-in';
+    }
+    const last =
+      listener.checkin.last_checkin_at != null
+        ? formatRelative(listener.checkin.last_checkin_at)
+        : null;
+    return last != null
+      ? `每 ${listener.checkin.every_minutes} 分钟 · 最后 check-in ${last}`
+      : `每 ${listener.checkin.every_minutes} 分钟 · 尚未 check-in`;
+  })();
+
+  // Owner-only switch. The reload after a successful toggle re-reads the engine
+  // state instead of flipping local state optimistically, so the UI can never
+  // claim wake is on when the engine refused.
+  const toggleWake = async (row: WakeChatStatus) => {
+    if (!canManage || wakeBusy != null) {
+      return;
+    }
+    setWakeBusy(row.chat_id);
+    const result = await setWakeEnabled({
+      agentId: agent,
+      chatId: row.chat_id,
+      enabled: !row.enabled,
+    });
+    setWakeBusy(null);
+    if (agent !== activeAgent.current) {
+      return; // The owner switched tabs while the toggle was in flight.
+    }
+    if (!result.ok) {
+      setWakeError(result.error);
+      return;
+    }
+    setWakeError(null);
+    await load(agent);
+  };
 
   // Opening the chat is the read action for the viewer; the agent counters stay
   // until the owner clears them explicitly.
@@ -192,6 +325,94 @@ export function InboxPage() {
           )}
         </p>
       )}
+
+      {/* Phase 3 wake status. Three facts per chat (switch, last event, today's
+          runs + failures) come straight from `wake_status`; the last check-in is
+          agent-level and comes from `listener_status.checkin`. */}
+      <section className="wake-panel" aria-labelledby="wake-panel-title">
+        <header className="wake-panel__head">
+          <h2 className="wake-panel__title" id="wake-panel-title">
+            <Activity size={14} aria-hidden="true" />
+            唤醒状态
+          </h2>
+          <span className={`wake-panel__listener${listener?.online === true ? ' is-online' : ''}`}>
+            {listenerText}
+          </span>
+          <span className="wake-panel__checkin">
+            <AlarmClock size={12} aria-hidden="true" />
+            {checkinText}
+          </span>
+        </header>
+
+        {wakeError != null && (
+          <p className="wake-panel__error" role="alert">
+            <CircleAlert size={14} aria-hidden="true" />
+            唤醒状态读取失败：{wakeError}
+          </p>
+        )}
+
+        {wake == null ? (
+          wakeError == null ? (
+            <p className="wake-panel__status" role="status">
+              正在读取唤醒状态…
+            </p>
+          ) : null
+        ) : wake.chats.length === 0 ? (
+          <p className="wake-panel__status">这个 Agent 还没有可唤醒的群聊。</p>
+        ) : (
+          <ul className="wake-list" aria-label={`${agent} 的群聊唤醒开关`}>
+            {wake.chats.map((row) => (
+              <li key={row.chat_id} className={`wake-row${row.enabled ? '' : ' is-disabled'}`}>
+                <span className="wake-row__name" title={row.chat_id}>
+                  {row.name ?? row.chat_id}
+                </span>
+                <span className="wake-row__event">最后事件：{lastEventText(row.last_event)}</span>
+                <span className="wake-row__kinds">
+                  可唤醒：{row.wake_kinds.length > 0 ? formatWakeKinds(row.wake_kinds) : '—'}
+                </span>
+                <span className="wake-row__runs">
+                  今日唤醒 <strong>{row.today_runs}</strong> 次
+                </span>
+                <span
+                  className={`wake-row__failures${row.consecutive_failures > 0 ? ' is-bad' : ''}`}
+                >
+                  连续失败 <strong>{row.consecutive_failures}</strong>
+                </span>
+                {row.disabled_at != null && (
+                  <span className="wake-row__disabled-at">
+                    {formatRelative(row.disabled_at)}禁用
+                  </span>
+                )}
+                <span className="wake-row__control">
+                  {canManage ? (
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={row.enabled}
+                      aria-label={`${row.name ?? row.chat_id} 的自动唤醒`}
+                      title={
+                        row.enabled
+                          ? '关闭自动唤醒（仅群主可切换）'
+                          : '开启自动唤醒（仅群主可切换）'
+                      }
+                      className={`switch wake-toggle${row.enabled ? ' is-on' : ' is-off'}`}
+                      disabled={wakeBusy != null}
+                      onClick={() => void toggleWake(row)}
+                    />
+                  ) : null}
+                  <span className={`wake-row__state${row.enabled ? '' : ' is-off'}`}>
+                    {row.enabled ? '已开启' : '已禁用'}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {inbox != null && !canManage && (
+          <p className="wake-panel__note">仅群主可以切换唤醒开关；当前只能查看状态。</p>
+        )}
+      </section>
 
       {loading && inbox == null ? (
         <p className="inbox-page__status" role="status">

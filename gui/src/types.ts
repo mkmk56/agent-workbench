@@ -451,6 +451,79 @@ export interface AgentProfileCard {
   created_at: number;
 }
 
+/* ------------------------------------------------------------------ *
+ * REA Phase 3 (docs/rea/PHASE3_DESIGN.md §13): wake / listener status
+ * ------------------------------------------------------------------ */
+
+/** The last wake event the engine recorded for one (agent, chat). */
+export interface WakeLastEvent {
+  id: string;
+  seq: number;
+  /** mention | reply | owner_post */
+  kind: string;
+  /** pending | delivered | throttled | merged | failed | disabled */
+  status: string;
+  /** Engine stores epoch ms; normalized to an ISO string for formatting. */
+  created_at: string | null;
+}
+
+/** Per-chat wake configuration, straight from the `wake_status` tool. */
+export interface WakeChatStatus {
+  chat_id: string;
+  name: string | null;
+  enabled: boolean;
+  /** mention | reply | owner_post — the kinds allowed to wake this agent. */
+  wake_kinds: string[];
+  consecutive_failures: number;
+  /** ISO timestamp of the last disable, or null when wake is on. */
+  disabled_at: string | null;
+  today_runs: number;
+  last_event: WakeLastEvent | null;
+}
+
+export interface WakeStatusPayload {
+  agent_id: string;
+  participant_id: string | null;
+  /** True when at least one chat has wake enabled. */
+  enabled: boolean;
+  chats: WakeChatStatus[];
+}
+
+export interface ListenerCheckin {
+  every_minutes: number;
+  /** Engine stores epoch ms; normalized to an ISO string for formatting. */
+  last_checkin_at: string | null;
+  consecutive_empty: number;
+}
+
+export interface ListenerSession {
+  id: string;
+  chat_id: string | null;
+  status: string;
+  last_event_seq: number;
+  connected_at: string | null;
+  last_seen_at: string | null;
+}
+
+export interface ListenerStatusPayload {
+  agent_id: string;
+  participant_id: string | null;
+  online: boolean;
+  last_event_seq: number;
+  checkin: ListenerCheckin | null;
+  sessions: ListenerSession[];
+}
+
+/** Result of `wake_enable` / `wake_disable` (owner-only engine tools). */
+export interface WakeToggleResult {
+  agent_id: string;
+  chat_id: string;
+  enabled: boolean;
+  wake_kinds: string[];
+  consecutive_failures: number;
+  disabled_at: string | null;
+}
+
 /** Draft returned by the main process after a dialog / drop / paste intake. */
 export interface ChatUploadDraft {
   draftId: string;
@@ -582,6 +655,20 @@ export interface WorkbenchApi {
   /** REA Phase 2: read a Profile Card or update one (≤300 characters). */
   agentProfile: (input?: { agentId?: string; profile?: string }) => Promise<
     EngineResult<AgentProfileCard>
+  >;
+  /** REA Phase 3: per-chat wake state for one agent (`wake_status` tool). */
+  wakeStatus: (input?: { agentId?: string; chatId?: string }) => Promise<
+    EngineResult<WakeStatusPayload>
+  >;
+  /** REA Phase 3: listener sessions + check-in interval (`listener_status` tool). */
+  listenerStatus: (input?: { agentId?: string }) => Promise<EngineResult<ListenerStatusPayload>>;
+  /** REA Phase 3: owner-only wake switch (`wake_enable` tool). */
+  wakeEnable: (input: { agentId: string; chatId: string }) => Promise<
+    EngineResult<WakeToggleResult>
+  >;
+  /** REA Phase 3: owner-only wake switch (`wake_disable` tool). */
+  wakeDisable: (input: { agentId: string; chatId: string }) => Promise<
+    EngineResult<WakeToggleResult>
   >;
   pickChatFiles: () => Promise<EngineResult<{ drafts: ChatUploadDraft[] }>>;
   registerChatFiles: (

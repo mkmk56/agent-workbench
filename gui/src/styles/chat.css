@@ -2446,3 +2446,183 @@ html[data-theme="dark"] .chat-avatar-menu {
 .chat-avatar-menu__item:focus-visible .chat-avatar-menu__handle {
   color: inherit;
 }
+
+/* Inbox wake status (REA Phase 3 §13). Three facts per chat come from
+   `wake_status`; last check-in is agent-level (`listener_status`). A disabled
+   wake switch is marked red on the row and on the control itself. Rows wrap so
+   narrow windows stay readable. */
+.wake-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.wake-panel__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+}
+
+.wake-panel__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.wake-panel__listener,
+.wake-panel__checkin {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.wake-panel__listener.is-online {
+  color: var(--success);
+}
+
+.wake-panel__status {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.wake-panel__error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--error-subtle);
+  color: var(--error-on-subtle);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.wake-panel__note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.wake-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wake-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.wake-row.is-disabled {
+  border-color: var(--error);
+  background: var(--error-subtle);
+}
+
+.wake-row__name {
+  flex: 1 1 120px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wake-row.is-disabled .wake-row__name {
+  color: var(--error-on-subtle);
+}
+
+.wake-row__event,
+.wake-row__kinds,
+.wake-row__runs,
+.wake-row__failures,
+.wake-row__disabled-at {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.wake-row__runs strong,
+.wake-row__failures strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.wake-row__failures.is-bad,
+.wake-row__failures.is-bad strong {
+  color: var(--error-on-subtle);
+  font-weight: 600;
+}
+
+.wake-row__control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.wake-row__state {
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.wake-row__state.is-off {
+  color: var(--error-on-subtle);
+  font-weight: 600;
+}
+
+.wake-toggle {
+  padding: 2px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.wake-toggle.is-off {
+  border-color: var(--error);
+  background: var(--error-subtle);
+}
+
+.wake-toggle.is-off::after {
+  background: var(--error);
+}
+
+.wake-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.wake-toggle:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}

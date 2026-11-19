@@ -621,6 +621,58 @@ function registerIpc(): void {
     }),
   );
 
+  // REA Phase 3: wake / listener status for the Inbox status row. The GUI holds
+  // the owner token, so it always names the agent it is displaying; the engine
+  // still re-checks that a wake_status read is for the caller's own agent (or
+  // that the caller is master/human).
+  handle('engine:wake-status', (input) =>
+    engineResult(() => {
+      const value = input == null ? {} : asRecord(input);
+      const agentId =
+        value.agentId == null || value.agentId === ''
+          ? undefined
+          : requireAgentId(value.agentId);
+      const chatId =
+        value.chatId == null || value.chatId === ''
+          ? undefined
+          : requireChatId(value.chatId);
+      return engine.wakeStatus({ agentId, chatId });
+    }),
+  );
+
+  handle('engine:listener-status', (input) =>
+    engineResult(() => {
+      const value = input == null ? {} : asRecord(input);
+      const agentId =
+        value.agentId == null || value.agentId === ''
+          ? undefined
+          : requireAgentId(value.agentId);
+      return engine.listenerStatus({ agentId });
+    }),
+  );
+
+  // Owner-only in the engine (`wake_enable` / `wake_disable` require a
+  // human/master token); the main process only validates the shape.
+  handle('engine:wake-enable', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      return engine.wakeEnable({
+        agentId: requireAgentId(value.agentId),
+        chatId: requireChatId(value.chatId),
+      });
+    }),
+  );
+
+  handle('engine:wake-disable', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      return engine.wakeDisable({
+        agentId: requireAgentId(value.agentId),
+        chatId: requireChatId(value.chatId),
+      });
+    }),
+  );
+
   // ---- Attachment intake (main-process dialog / drop / paste) ----
 
   handle('chat:pick-files', () => pickChatFiles());

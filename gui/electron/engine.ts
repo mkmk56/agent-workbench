@@ -783,6 +783,55 @@ export class EngineManager {
     return this.callTool('agent_profile', args);
   }
 
+  // ---- REA Phase 3: wake / listener status (docs/rea/PHASE3_DESIGN.md §13) ----
+
+  /**
+   * Per-chat wake state for one agent (engine `wake_status`).
+   *
+   * `agent_id` is always sent because the GUI holds the owner token: without it
+   * the engine would answer for the token identity, not the agent on screen.
+   */
+  async wakeStatus(input: { agentId?: string; chatId?: string } = {}): Promise<
+    Record<string, unknown>
+  > {
+    const args: Record<string, unknown> = {};
+    if (input.agentId != null) {
+      args.agent_id = input.agentId;
+    }
+    if (input.chatId != null) {
+      args.chat_id = input.chatId;
+    }
+    return this.callTool('wake_status', args);
+  }
+
+  /** Listener sessions + stored check-in interval (engine `listener_status`). */
+  async listenerStatus(input: { agentId?: string } = {}): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = {};
+    if (input.agentId != null) {
+      args.agent_id = input.agentId;
+    }
+    return this.callTool('listener_status', args);
+  }
+
+  /**
+   * Owner-only wake switch. `kinds` is intentionally omitted: the engine keeps
+   * the stored kind set (or all three) when it is not supplied, so toggling the
+   * switch never narrows which events may wake the agent.
+   */
+  async wakeEnable(input: { agentId: string; chatId: string }): Promise<Record<string, unknown>> {
+    return this.callTool('wake_enable', {
+      agent_id: input.agentId,
+      chat_id: input.chatId,
+    });
+  }
+
+  async wakeDisable(input: { agentId: string; chatId: string }): Promise<Record<string, unknown>> {
+    return this.callTool('wake_disable', {
+      agent_id: input.agentId,
+      chat_id: input.chatId,
+    });
+  }
+
   // ---- Chunked upload (backend tool contract: init → chunk×N → complete) ----
 
   async uploadChatFileInit(input: {
