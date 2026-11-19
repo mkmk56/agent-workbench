@@ -63,10 +63,17 @@ export function AgentMentionMenu({
         viewportHeight: window.innerHeight,
       }),
     );
-    // A pointer menu is a keyboard-visible surface too: the item takes focus so
-    // Enter activates it and Escape closes it without moving a mouse.
-    itemRef.current?.focus();
   }, [point.x, point.y]);
+
+  // Focus the item once the menu is visible: a `visibility: hidden` box is not
+  // focusable, so this waits for the measured placement instead of running in
+  // the layout effect above. Enter then activates the item and Escape closes it
+  // without moving a mouse.
+  useEffect(() => {
+    if (placement != null) {
+      itemRef.current?.focus();
+    }
+  }, [placement]);
 
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
