@@ -3,7 +3,7 @@ import { deriveState } from './state.js';
 import { resolveSender } from './auth.js';
 import { fileRef } from './context.js';
 import {
-  agentIdForParticipant, describeAuthor, isAgentParticipant, isKnownParticipant
+  ProtocolError, agentIdForParticipant, describeAuthor, isAgentParticipant, isKnownParticipant
 } from './agents.js';
 
 export const DEFAULT_CHAT_NAME = '新群聊';
@@ -392,7 +392,22 @@ export class ChatService {
     request_id: requestId, auth
   } = {}) {
     const chat = this.requireChat(chatId);
-    const effectiveFrom = resolveSender(auth, from);
+    // The tool surface resolves the sender here first, so a forged `from` must
+    // be audited on this path too (M1), through MessageService's single-write
+    // denial helper.
+    let effectiveFrom;
+    try {
+      effectiveFrom = resolveSender(auth, from);
+    } catch (error) {
+      if (/^invalid from\b/.test(error?.message ?? '')) throw error;
+      throw this.messages.deny(new ProtocolError('forged_identity', 403, error.message), {
+        surface: 'send_chat_message',
+        from: from ?? null,
+        to: to ?? null,
+        chat_id: chat.chat_id ?? null,
+        auth: `${auth?.token_kind ?? 'none'}:${auth?.participant ?? 'none'}`
+      });
+    }
     if (!CHAT_SENDERS.has(effectiveFrom) && !isAgentParticipant(effectiveFrom)) {
       throw new Error("from must be 'user', 'muse', 'claude', 'dsh' or a paired agent id");
     }

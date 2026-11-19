@@ -87,6 +87,30 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     });
   };
 
+  // M3: assertChatAccess rejects a non-member with a plain Error. Read tools
+  // catch it into an isError result, so the generic 403 handler in register()
+  // never sees it; audit at the boundary and mark the error to keep the
+  // one-line-per-denial invariant.
+  const requireChatAccess = (chatId, surface) => {
+    try {
+      assertChatAccess(store, auth, chatId);
+    } catch (error) {
+      const message = typeof error?.message === 'string' ? error.message : '';
+      // A missing chat is a 404, not an access denial.
+      if (!/^chat not found\b/.test(message)) {
+        auditDenied({
+          surface: `tool:${surface}`,
+          code: error?.code ?? 'chat_access_denied',
+          status: 403,
+          chat_id: String(chatId ?? ''),
+          detail: message || String(error)
+        });
+        if (error && typeof error === 'object') error.audited = true;
+      }
+      throw error;
+    }
+  };
+
   // Chat CRUD is a human/Muse collaboration action, not an executor action.
   const requireChatAdmin = (action) => {
     if (!master && auth?.role !== 'human') {
@@ -456,8 +480,8 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
       + 'as user; the muse token only as muse (and must send client_msg_id); an executor may only post as itself '
       + 'with its own task_id. Only the muse token may set act_recipients. A user message increments the chat '
       + 'epoch; a dispatch carrying a stale epoch is rejected. files must be file_id values. '
-      + 'A 409 new_messages error means the recipient has unread messages: pull them with list_chat_messages '
-      + 'or chat_get_context first, then retry the send (only the chat owner may pass ignore_new).',
+      + 'A 409 new_messages error means the sending agent has unread messages in that chat: pull them with '
+      + 'list_chat_messages or chat_get_context first, then retry the send (only the chat owner may pass ignore_new).',
     inputSchema: {
       chat_id: z.string().min(1).describe('Chat id'),
       from: z.string().min(1).describe('Sender; must match the token identity (user/muse/claude/dsh/agent_*)'),
@@ -498,7 +522,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   }, async ({ chat_id }) => {
     try {
-      assertChatAccess(store, auth, chat_id);
+      requireChatAccess(chat_id, 'chat_status');
       return asText(chats.status(chat_id));
     } catch (error) {
       return asError(error.message);
@@ -517,7 +541,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   }, async ({ chat_id, limit, before, after_seq }) => {
     try {
-      assertChatAccess(store, auth, chat_id);
+      requireChatAccess(chat_id, 'list_chat_messages');
       const page = chats.listMessages({ chat_id, limit, before, after_seq });
       // Pull-to-read: the authenticated viewer's cursor advances to the newest
       // seq in the page. markRead only moves forward, so paging older history
@@ -649,7 +673,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   }, async ({ chat_id, limit, max_tokens, include_files }) => {
     try {
-      assertChatAccess(store, auth, chat_id);
+      requireChatAccess(chat_id, 'chat_get_context');
       const context = buildChatContext({ store, config }, chat_id, {
         limit,
         tokenBudget: max_tokens,
@@ -758,7 +782,17 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
       const own = auth?.agent_id ?? agentIdForParticipant(auth?.participant);
       const target = agent_id ?? own;
       if (!master && auth?.role !== 'human' && target !== own) {
-        throw new Error(`agent '${auth?.participant}' can only revoke its own token`);
+        // L1: cross-agent revocation is a connection-layer denial.
+        const error = new Error(`agent '${auth?.participant}' can only revoke its own token`);
+        auditDenied({
+          surface: 'tool:agent_revoke_token',
+          code: 'forbidden_revoke',
+          status: 403,
+          target: String(target ?? ''),
+          detail: error.message
+        });
+        error.audited = true;
+        throw error;
       }
       return asText(agentService.revokeToken(target));
     } catch (error) {

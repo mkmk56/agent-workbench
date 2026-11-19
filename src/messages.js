@@ -310,6 +310,12 @@ export class MessageService {
     return error;
   }
 
+  // Sibling services (ChatService) resolve the sender too; they share this
+  // single-write path so a forged identity is never audited twice.
+  deny(error, context = {}) {
+    return this._deny(error, context);
+  }
+
   describeMessage(row, { deliveries = false } = {}) {
     if (!row) return null;
     const thread = this.store.getThread(row.thread_id);
@@ -376,7 +382,22 @@ export class MessageService {
 
   send(input = {}) {
     const auth = input.auth ?? null;
-    const from = resolveSender(auth, input.from);
+    // resolveSender rejects a token that claims another identity. That is a
+    // connection-layer denial (M1), so it runs through _deny instead of
+    // escaping as an unaudited plain Error.
+    let from;
+    try {
+      from = resolveSender(auth, input.from);
+    } catch (error) {
+      if (/^invalid from\b/.test(error?.message ?? '')) throw error;
+      throw this._deny(new ProtocolError('forged_identity', 403, error.message), {
+        surface: 'send_chat_message',
+        from: input.from ?? null,
+        to: input.to ?? null,
+        chat_id: input.chat_id ?? null,
+        auth: `${auth?.token_kind ?? 'none'}:${auth?.participant ?? 'none'}`
+      });
+    }
     const to = input.to;
     if (!isKnownParticipant(to)) throw new Error(`invalid to: ${to}`);
     if (from === to) throw new Error('from and to must be different');
@@ -465,7 +486,16 @@ export class MessageService {
       });
     }
     if (chatId && auth?.role === 'agent' && !this.store.isChatParticipant(chatId, from)) {
-      throw new Error(`agent '${from}' is not a participant of chat ${chatId}`);
+      // M2: sending into a chat the agent was never added to is an access
+      // denial, not a generic send failure.
+      throw this._deny(new ProtocolError('sender_not_member', 403,
+        `agent '${from}' is not a participant of chat ${chatId}`), {
+        surface: 'send_chat_message',
+        from,
+        to: input.to ?? null,
+        chat_id: chatId,
+        auth: `${auth?.token_kind ?? 'none'}:${auth?.participant ?? 'none'}`
+      });
     }
 
     // A per-task token is pinned to its task/chat. A stolen token cannot be
@@ -854,8 +884,14 @@ export class MessageService {
       if (!this.store.getChatParticipant(chatId, participantId)) {
         const cap = Math.max(2, Number(this.config.chatMaxMembers) || 50);
         if (this.store.countChatMembers(chatId) >= cap) {
-          throw new ProtocolError('chat_member_limit', 403,
-            `chat ${chatId} already has ${cap} members; cannot auto-join ${participantId}`);
+          // L6: a full chat is a 403-class denial and must reach the audit log.
+          throw this._deny(new ProtocolError('chat_member_limit', 403,
+            `chat ${chatId} already has ${cap} members; cannot auto-join ${participantId}`), {
+            surface: 'send_chat_message',
+            from,
+            chat_id: chatId,
+            target: participantId
+          });
         }
         this.store.upsertChatParticipant({
           chat_id: chatId,

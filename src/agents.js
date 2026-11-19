@@ -576,8 +576,19 @@ export class AgentService {
     const existing = this.store.getChatMember(chatId, agentId);
     if (existing) return this._memberView(existing);
     if (this.store.countChatMembers(chatId) >= this._maxChatMembers()) {
-      throw new ProtocolError('chat_member_limit', 403,
+      // L6: a full chat is a 403-class denial and must reach the audit log.
+      const error = new ProtocolError('chat_member_limit', 403,
         `chat already has ${this._maxChatMembers()} members`);
+      this._audit('access_denied', {
+        surface: 'agent_add_member',
+        code: error.code,
+        status: error.status,
+        chat_id: chatId,
+        target: agentId,
+        detail: error.message
+      });
+      error.audited = true;
+      throw error;
     }
     const joinedAt = this._now();
     const joinReadSeq = this.store.maxChatSeq(chatId);

@@ -66,8 +66,9 @@ per-task `logs` 表演化为该文件，因为连接事件没有 task_id）。�
 | `agent_reclaim` | 同名重配对接管旧身份 | pairing_id、agent_id、display_name |
 | `agent_pair_failed` | 配对码无效/过期/名额/重名等 | code、status、display_name |
 | `agent_revoke` | 吊销成功 | agent_id、display_name |
-| `access_denied` | 403 类：forged_identity、recipient/mention_not_member、recall 越权/超窗、非管理员操作、profile 越权 | code、status、surface、from/to、chat_id |
+| `access_denied` | 403 类：forged_identity（含 token 冒充 from）、sender/recipient/mention_not_member、chat_access_denied（非成员读取）、recall 越权/超窗、chat_member_limit、跨 Agent 吊销、非管理员操作、profile 越权 | code、status、surface、from/to、chat_id |
 
-脱敏：配对码（`XXXX-XXXX`）与访问 token（`pachat_...`）在写入前一律替换为
-`<redacted>`，敏感字段名整项丢弃；审计写失败不影响主流程。同一拒绝只记
-一行（服务层写入后标记 `error.audited`，工具层兜底不重复）。
+脱敏：配对码（`XXXX-XXXX`，大小写均匹配）、`pachat_...` 访问 token 与 legacy
+64 位 hex token 在写入前一律替换为 `<redacted>`；敏感字段名（含 `code_hash`
+类键名）保留键名、值替换为 `<redacted>`；审计写失败不影响主流程。同一拒绝
+只记一行（服务层写入后标记 `error.audited`，工具层兜底不重复）。

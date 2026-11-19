@@ -9,27 +9,39 @@ import { join } from 'node:path';
 // (data/chat-<chat>.log). The file survives a restart and is never read back
 // by the engine, so a failed audit write can never fail the request.
 //
-// Secrets never reach the file: sensitive field names are dropped, and any
-// value that still looks like a pairing code or an access token is replaced
-// with <redacted> before the line is written.
+// Secrets never reach the file: sensitive field names keep their key with a
+// <redacted> value, and any value that still looks like a pairing code, an
+// access token or a legacy hex credential is replaced with <redacted> before
+// the line is written.
 // ---------------------------------------------------------------------------
 
 export const AUDIT_FILE = 'security-audit.log';
 
 const MAX_VALUE = 300;
 const REDACTED = '<redacted>';
-const SENSITIVE_KEY = /(pairing_code|token|secret|password|authorization|cookie)/i;
+const SENSITIVE_KEY = /(pairing_code|code_hash|token|secret|password|authorization|cookie)/i;
 // Engine pairing codes are XXXX-XXXX over an unambiguous alphabet; access
-// tokens are pachat_<base64url>. Both patterns are scrubbed wherever they
-// appear, including inside an error message.
-const PAIRING_CODE_VALUE = /\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/g;
+// tokens are pachat_<base64url>; legacy credentials were 64-character hex
+// strings. All three patterns are scrubbed wherever they appear, including
+// inside an error message. The pairing pattern is case-insensitive so a
+// lower-cased code pasted into an error field is still erased.
+// The alphabet is A-Z minus I/O plus 2-9 (no 0/1). Excluding those keeps ISO
+// dates like 2026-11-19 from being mistaken for a code while still matching a
+// lower-cased code.
+// Lookarounds keep the match from landing inside a UUID (c370-438f is a
+// 4-4 pair of hex-looking segments) while still accepting a standalone code.
+const PAIRING_CODE_VALUE = /(?<![A-Za-z0-9-])[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}(?![A-Za-z0-9-])/gi;
 const ACCESS_TOKEN_VALUE = /\bpachat_[A-Za-z0-9_-]+/g;
+const LEGACY_HEX_TOKEN_VALUE = /\b[0-9a-fA-F]{64}\b/g;
 
 function sanitizeValue(value) {
   if (value === undefined || value === null) return null;
   let text = typeof value === 'string' ? value : String(value);
   if (text === '') return null;
-  text = text.replace(ACCESS_TOKEN_VALUE, REDACTED).replace(PAIRING_CODE_VALUE, REDACTED);
+  text = text
+    .replace(ACCESS_TOKEN_VALUE, REDACTED)
+    .replace(LEGACY_HEX_TOKEN_VALUE, REDACTED)
+    .replace(PAIRING_CODE_VALUE, REDACTED);
   text = text.replace(/[\r\n\t]+/g, ' ').trim();
   if (text.length > MAX_VALUE) text = `${text.slice(0, MAX_VALUE)}…(${text.length})`;
   return text;
