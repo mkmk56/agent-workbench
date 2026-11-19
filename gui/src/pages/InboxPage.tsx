@@ -65,16 +65,23 @@ export function InboxPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [acting, setActing] = useState<string | null>(null);
-  const inflight = useRef(false);
+  // Monotonic id per inbox request. A response that is no longer the newest one
+  // — the owner switched tab or hit refresh — is dropped instead of overwriting
+  // the counters of the agent now on screen.
+  const requestId = useRef(0);
+  // The agent whose tab is displayed, mirrored into a ref so a late `load()`
+  // still pending for the previous agent (e.g. the reload after clearing its
+  // cursor) cannot win the race against a tab switch.
+  const activeAgent = useRef<AgentHandle>(agent);
 
   const load = useCallback(
     async (handle: AgentHandle) => {
-      if (inflight.current) {
-        return;
-      }
-      inflight.current = true;
+      const id = (requestId.current += 1);
       try {
         const result = await chatInboxOnce(handle);
+        if (id !== requestId.current || handle !== activeAgent.current) {
+          return; // Stale: a newer request or another tab owns the view.
+        }
         if (result.ok) {
           setInbox(result.data);
           setError(null);
@@ -82,14 +89,16 @@ export function InboxPage() {
           setError(result.error);
         }
       } finally {
-        inflight.current = false;
-        setLoading(false);
+        if (id === requestId.current && handle === activeAgent.current) {
+          setLoading(false);
+        }
       }
     },
     [],
   );
 
   useEffect(() => {
+    activeAgent.current = agent;
     // Switching tabs must not keep showing the previous agent's counters under
     // the new agent's name.
     setInbox(null);
