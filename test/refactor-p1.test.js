@@ -43,11 +43,12 @@ function insertOriginMessage(store, {
 }
 
 // ------------------------------------------------------------------- schema
-test('P1 schema: versioned migrations register 1-5 and are idempotent', () => {
+test('P1 schema: versioned migrations register 1-6 and are idempotent', () => {
   const dir = tempDir();
   try {
     const store = new Store(join(dir, 'workbench.db'), dir);
-    assert.equal(store.schemaVersion(), 5);
+    // v6 is the Phase 3 wake/listener/check-in tables; P1 itself is v1-v4.
+    assert.equal(store.schemaVersion(), 6);
     const messageColumns = store._columns('messages');
     for (const column of ['provider', 'model', 'token_usage_json', 'latency_ms']) {
       assert.ok(messageColumns.includes(column), `messages.${column} missing`);
@@ -64,7 +65,7 @@ test('P1 schema: versioned migrations register 1-5 and are idempotent', () => {
 
     // Re-opening runs every migration again; the ledger must not duplicate.
     const reopened = new Store(join(dir, 'workbench.db'), dir);
-    assert.equal(Number(reopened.db.prepare('SELECT COUNT(*) AS n FROM schema_version').get().n), 5);
+    assert.equal(Number(reopened.db.prepare('SELECT COUNT(*) AS n FROM schema_version').get().n), 6);
     reopened.close();
   } finally {
     cleanup(dir);
@@ -100,7 +101,7 @@ test('P1 migration upgrades a pre-P1 database without a fresh-schema shortcut', 
     legacy.close();
 
     const store = new Store(dbPath, dir);
-    assert.equal(store.schemaVersion(), 5);
+    assert.equal(store.schemaVersion(), 6);
     assert.ok(store._columns('chat_deliveries').includes('next_attempt_at'));
     assert.ok(store._columns('messages').includes('token_usage_json'));
     const indexes = store.db.prepare(

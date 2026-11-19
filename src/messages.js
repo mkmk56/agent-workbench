@@ -273,7 +273,7 @@ export function parseAgentReply(text) {
 }
 
 export class MessageService {
-  constructor({ store, scheduler, config, files = null, agents = null, onMention = null }) {
+  constructor({ store, scheduler, config, files = null, agents = null, onMention = null, onWakeEvent = null }) {
     this.store = store;
     this.scheduler = scheduler;
     this.config = config;
@@ -282,9 +282,13 @@ export class MessageService {
     // layer use it for inbox bookkeeping; the direct service path rebuilds the
     // same rows through Store so unit tests do not need the full wiring.
     this.agents = agents;
-    // Phase 3 wake hook. Phase 2 only records the event; a later listener can
-    // replace this callback without touching the message path.
+    // Phase 3 wake hook. The message path only invokes the callback; wake
+    // policy (throttle, merge, enable, failure) lives in WakeService.
     this.onMention = typeof onMention === 'function' ? onMention : null;
+    // Phase 3 reply / owner_post events. Same contract as onMention: the
+    // message path only invokes a callback; it never waits for or re-writes
+    // the wake decision.
+    this.onWakeEvent = typeof onWakeEvent === 'function' ? onWakeEvent : null;
     // Connection-layer audit (SECURITY_DESIGN.md §5): access denials are
     // appended to data/security-audit.log and survive a restart.
     this.audit = typeof config?.audit === 'function'
@@ -954,6 +958,47 @@ export class MessageService {
           `mention event from=${from} mentions=${mentioned.join(',')} seq=${row.seq ?? 'none'}`);
       }
     }
+
+    // Phase 3 also wakes on replies and owner posts. The callbacks are
+    // best-effort: a wake failure must never fail the message write.
+    if (reply && reply.from_agent !== from && isAgentParticipant(reply.from_agent)) {
+      this._emitWakeEvent(row, {
+        chat_id: chatId,
+        kind: 'reply',
+        message_id: row.id,
+        seq: row.seq ?? null,
+        from,
+        reply_to: reply.id,
+        reply_from: reply.from_agent,
+        created_at: row.created_at
+      });
+    }
+    if (from === 'user') {
+      // Agents that were explicitly mentioned already receive a mention event.
+      this._emitWakeEvent(row, {
+        chat_id: chatId,
+        kind: 'owner_post',
+        message_id: row.id,
+        seq: row.seq ?? null,
+        from,
+        mentions: mentioned,
+        created_at: row.created_at
+      });
+    }
+  }
+
+  _emitWakeEvent(row, event) {
+    if (this.onWakeEvent) {
+      try {
+        this.onWakeEvent(event);
+      } catch (error) {
+        this._log(row, 'system', `${event.kind} wake hook failed: ${error.message}`);
+      }
+      return;
+    }
+    this._log(row, 'system',
+      `${event.kind} event from=${event.from} seq=${event.seq ?? 'none'}`
+      + `${event.reply_from ? ` reply_from=${event.reply_from}` : ''}`);
   }
 
   // Recall (2-minute window enforced by the engine). Only the author or the

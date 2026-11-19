@@ -26,6 +26,9 @@ export class Scheduler {
     this.pumping = false;
     this.versionCache = null;
     this.sweepTimer = null;
+    // Phase 3 WakeService. Optional so scheduler-only tests keep working; when
+    // present it is told about every terminal state of a tracked wake task.
+    this.wake = null;
     // reconcile() is called explicitly by server.js after MessageService is
     // wired (P1-1). Running it in the constructor would mark tasks failed
     // before the message layer exists, so pending deliveries could not replay.
@@ -376,7 +379,22 @@ export class Scheduler {
     } catch (error) {
       this.store.appendLog(task.id, 'system', `approval cleanup failed: ${error.message}`);
     }
+    // Phase 3 wake accounting (failure counter, retry, disable). It runs after
+    // message routing so an auto-reply has already been posted.
+    try {
+      this.wake?.onTaskFinished(task.id, state);
+    } catch (error) {
+      this.store.appendLog(task.id, 'system', `wake accounting failed: ${error.message}`);
+    }
     cleanupTaskMcpConfig(this.config, task.id);
+  }
+
+  // Last time this task produced output. The wake watchdog uses it to enforce
+  // the 15-minute no-output circuit breaker; a task that is not running has no
+  // activity timestamp.
+  lastActivityAt(taskId) {
+    const entry = this.running.get(taskId);
+    return entry ? entry.lastOutputAt : null;
   }
 
   _recordExecutionMetrics(task, entry, summary) {

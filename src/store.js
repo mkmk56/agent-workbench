@@ -402,6 +402,59 @@ export class Store {
         source TEXT,
         updated_at TEXT NOT NULL
       );
+      -- REA Phase 3: listener / check-in / wake. seq is a global event order
+      -- (monotonic across chats) and is what SSE clients resume from; the
+      -- per-chat message order stays in messages.seq.
+      CREATE TABLE IF NOT EXISTS wake_events (
+        id TEXT PRIMARY KEY,
+        seq INTEGER,
+        chat_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        message_id TEXT,
+        message_seq INTEGER,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        delivery_task_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_wake_events_seq
+        ON wake_events(seq) WHERE seq IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_wake_events_chat_agent
+        ON wake_events(chat_id, agent_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_wake_events_status
+        ON wake_events(status, created_at);
+      CREATE INDEX IF NOT EXISTS idx_wake_events_created
+        ON wake_events(created_at);
+      CREATE TABLE IF NOT EXISTS listener_sessions (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        chat_id TEXT,
+        last_event_seq INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'disconnected',
+        connected_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_listener_sessions_agent
+        ON listener_sessions(agent_id, chat_id);
+      CREATE TABLE IF NOT EXISTS checkins (
+        agent_id TEXT PRIMARY KEY,
+        every_minutes INTEGER NOT NULL DEFAULT 10,
+        last_checkin_at INTEGER,
+        consecutive_empty INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS agent_wake (
+        agent_id TEXT NOT NULL,
+        chat_id TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        wake_kinds TEXT NOT NULL DEFAULT '["mention","reply","owner_post"]',
+        consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        disabled_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (agent_id, chat_id)
+      );
     `);
     this.migrateMessagesForChats();
     this.migrateGroupChat();
@@ -682,6 +735,16 @@ export class Store {
           CREATE INDEX IF NOT EXISTS idx_chats_category ON chats(category, updated_at);
         `);
       });
+
+    // REA Phase 3: wake events, listener sessions and check-in state. The
+    // tables themselves are created by the constructor DDL (CREATE IF NOT
+    // EXISTS), so this step only registers the version with an explicit
+    // inverse. Re-running the phase 3 migration script is therefore safe.
+    this._migrate(6, 'rea-phase3-wake-listener-checkin',
+      'DROP TABLE IF EXISTS agent_wake; '
+      + 'DROP TABLE IF EXISTS checkins; '
+      + 'DROP TABLE IF EXISTS listener_sessions; '
+      + 'DROP TABLE IF EXISTS wake_events;', () => {});
   }
 
   _migrate(version, name, inverse, fn) {
@@ -2091,6 +2154,299 @@ export class Store {
       'UPDATE approvals SET status = ?, updated_at = ?, responded_at = ? WHERE status = \'pending\''
     ).run(status, now, now);
     return rows;
+  }
+
+  // ------------------------------------------------- REA Phase 3: wake events
+  insertWakeEvent(event) {
+    return this._transaction(() => {
+      let seq = event.seq;
+      if (seq === undefined || seq === null) {
+        const row = this.db.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM wake_events').get();
+        seq = Number(row?.m ?? 0) + 1;
+      }
+      const now = Number(event.created_at) || Date.now();
+      this.db.prepare(
+        `INSERT INTO wake_events
+           (id, seq, chat_id, agent_id, kind, message_id, message_seq,
+            status, attempts, delivery_task_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        event.id,
+        seq,
+        event.chat_id,
+        event.agent_id,
+        event.kind,
+        event.message_id ?? null,
+        event.message_seq ?? null,
+        event.status ?? 'pending',
+        Number(event.attempts) || 0,
+        event.delivery_task_id ?? null,
+        now,
+        Number(event.updated_at) || now
+      );
+      return this.getWakeEvent(event.id);
+    });
+  }
+
+  updateWakeEvent(id, patch) {
+    const allowed = ['status', 'attempts', 'delivery_task_id', 'updated_at'];
+    const keys = Object.keys(patch).filter((key) => allowed.includes(key));
+    if (keys.length === 0) return this.getWakeEvent(id);
+    const sets = keys.map((key) => `${key} = ?`).join(', ');
+    this.db.prepare(`UPDATE wake_events SET ${sets} WHERE id = ?`).run(
+      ...keys.map((key) => patch[key] ?? null),
+      id
+    );
+    return this.getWakeEvent(id);
+  }
+
+  getWakeEvent(id) {
+    return this.db.prepare('SELECT * FROM wake_events WHERE id = ?').get(id) ?? null;
+  }
+
+  listWakeEvents({
+    chatIds = null, agentId = null, afterSeq = null, beforeSeq = null,
+    kinds = null, status = null, since = null, until = null,
+    limit = 100, order = 'asc'
+  } = {}) {
+    const clauses = [];
+    const params = [];
+    if (Array.isArray(chatIds)) {
+      if (chatIds.length === 0) return [];
+      clauses.push(`chat_id IN (${chatIds.map(() => '?').join(', ')})`);
+      params.push(...chatIds);
+    }
+    if (agentId) { clauses.push('agent_id = ?'); params.push(agentId); }
+    if (afterSeq !== null && afterSeq !== undefined) { clauses.push('seq > ?'); params.push(Number(afterSeq) || 0); }
+    if (beforeSeq !== null && beforeSeq !== undefined) { clauses.push('seq <= ?'); params.push(Number(beforeSeq) || 0); }
+    if (Array.isArray(kinds) && kinds.length > 0) {
+      clauses.push(`kind IN (${kinds.map(() => '?').join(', ')})`);
+      params.push(...kinds);
+    }
+    if (status) { clauses.push('status = ?'); params.push(status); }
+    if (since !== null && since !== undefined) { clauses.push('created_at >= ?'); params.push(Number(since) || 0); }
+    if (until !== null && until !== undefined) { clauses.push('created_at < ?'); params.push(Number(until) || 0); }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const n = Math.max(1, Math.min(5001, Number(limit) || 100));
+    const direction = order === 'desc' ? 'DESC' : 'ASC';
+    return this.db.prepare(
+      `SELECT * FROM wake_events ${where} ORDER BY seq ${direction} LIMIT ?`
+    ).all(...params, n);
+  }
+
+  lastWakeEvent({ chatId = null, agentId = null } = {}) {
+    const clauses = [];
+    const params = [];
+    if (chatId) { clauses.push('chat_id = ?'); params.push(chatId); }
+    if (agentId) { clauses.push('agent_id = ?'); params.push(agentId); }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    return this.db.prepare(
+      `SELECT * FROM wake_events ${where} ORDER BY seq DESC LIMIT 1`
+    ).get(...params) ?? null;
+  }
+
+  lastWakeRunAt({ chatId, agentId }) {
+    const row = this.db.prepare(
+      `SELECT MAX(created_at) AS at FROM wake_events
+        WHERE chat_id = ? AND agent_id = ? AND delivery_task_id IS NOT NULL`
+    ).get(chatId, agentId);
+    return row?.at === null || row?.at === undefined ? null : Number(row.at);
+  }
+
+  // One wake run per attempt. A retry updates the same event row's attempts
+  // counter, so summing attempts counts runs rather than events.
+  countWakeAttemptsSince({ chatId = null, agentId = null, since = 0, until = null } = {}) {
+    const clauses = ['delivery_task_id IS NOT NULL', 'created_at >= ?'];
+    const params = [Number(since) || 0];
+    if (chatId) { clauses.push('chat_id = ?'); params.push(chatId); }
+    if (agentId) { clauses.push('agent_id = ?'); params.push(agentId); }
+    if (until !== null && until !== undefined) { clauses.push('created_at < ?'); params.push(Number(until) || 0); }
+    const row = this.db.prepare(
+      `SELECT COALESCE(SUM(CASE WHEN attempts > 0 THEN attempts ELSE 1 END), 0) AS n
+         FROM wake_events WHERE ${clauses.join(' AND ')}`
+    ).get(...params);
+    return Number(row?.n ?? 0);
+  }
+
+  countWakeEvents({ chatId = null, agentId = null, status = null } = {}) {
+    const clauses = [];
+    const params = [];
+    if (chatId) { clauses.push('chat_id = ?'); params.push(chatId); }
+    if (agentId) { clauses.push('agent_id = ?'); params.push(agentId); }
+    if (status) { clauses.push('status = ?'); params.push(status); }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    return Number(this.db.prepare(`SELECT COUNT(*) AS n FROM wake_events ${where}`).get(...params)?.n ?? 0);
+  }
+
+  maxWakeEventSeq() {
+    return Number(this.db.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM wake_events').get()?.m ?? 0);
+  }
+
+  minWakeEventSeq() {
+    const row = this.db.prepare('SELECT MIN(seq) AS m FROM wake_events').get();
+    return row?.m === null || row?.m === undefined ? null : Number(row.m);
+  }
+
+  pruneWakeEvents(before) {
+    const info = this.db.prepare('DELETE FROM wake_events WHERE created_at < ?').run(Number(before) || 0);
+    return Number(info.changes ?? 0);
+  }
+
+  // -------------------------------------------- REA Phase 3: listener sessions
+  insertListenerSession(session) {
+    const now = Number(session.connected_at) || Date.now();
+    this.db.prepare(
+      `INSERT INTO listener_sessions
+         (id, agent_id, chat_id, last_event_seq, status, connected_at, last_seen_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      session.id,
+      session.agent_id,
+      session.chat_id ?? null,
+      Number(session.last_event_seq) || 0,
+      session.status ?? 'connected',
+      now,
+      Number(session.last_seen_at) || now
+    );
+    return this.getListenerSession(session.id);
+  }
+
+  getListenerSession(id) {
+    return this.db.prepare('SELECT * FROM listener_sessions WHERE id = ?').get(id) ?? null;
+  }
+
+  updateListenerSession(id, patch) {
+    const allowed = ['last_event_seq', 'status', 'last_seen_at', 'chat_id'];
+    const keys = Object.keys(patch).filter((key) => allowed.includes(key));
+    if (keys.length === 0) return this.getListenerSession(id);
+    const sets = keys.map((key) => `${key} = ?`).join(', ');
+    this.db.prepare(`UPDATE listener_sessions SET ${sets} WHERE id = ?`).run(
+      ...keys.map((key) => patch[key] ?? null),
+      id
+    );
+    return this.getListenerSession(id);
+  }
+
+  listListenerSessions({ agentId = null, status = null } = {}) {
+    const clauses = [];
+    const params = [];
+    if (agentId) { clauses.push('agent_id = ?'); params.push(agentId); }
+    if (status) { clauses.push('status = ?'); params.push(status); }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    return this.db.prepare(
+      `SELECT * FROM listener_sessions ${where} ORDER BY last_seen_at DESC LIMIT 200`
+    ).all(...params);
+  }
+
+  disconnectAllListenerSessions() {
+    const info = this.db.prepare(
+      'UPDATE listener_sessions SET status = \'disconnected\' WHERE status <> \'disconnected\''
+    ).run();
+    return Number(info.changes ?? 0);
+  }
+
+  // ---------------------------------------------------- REA Phase 3: check-ins
+  upsertCheckin({ agent_id: agentId, every_minutes: everyMinutes = 10, last_checkin_at: lastCheckinAt = null,
+    consecutive_empty: consecutiveEmpty = 0, updated_at: updatedAt = null } = {}) {
+    const now = Number(updatedAt) || Date.now();
+    this.db.prepare(
+      `INSERT INTO checkins (agent_id, every_minutes, last_checkin_at, consecutive_empty, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(agent_id) DO UPDATE SET
+         every_minutes = excluded.every_minutes,
+         last_checkin_at = excluded.last_checkin_at,
+         consecutive_empty = excluded.consecutive_empty,
+         updated_at = excluded.updated_at`
+    ).run(agentId, Number(everyMinutes) || 10, lastCheckinAt ?? null, Number(consecutiveEmpty) || 0, now);
+    return this.getCheckin(agentId);
+  }
+
+  getCheckin(agentId) {
+    return this.db.prepare('SELECT * FROM checkins WHERE agent_id = ?').get(agentId) ?? null;
+  }
+
+  listCheckins() {
+    return this.db.prepare('SELECT * FROM checkins ORDER BY updated_at DESC').all();
+  }
+
+  // -------------------------------------------------- REA Phase 3: wake config
+  getAgentWake(agentId, chatId) {
+    return this.db.prepare(
+      'SELECT * FROM agent_wake WHERE agent_id = ? AND chat_id = ?'
+    ).get(agentId, chatId) ?? null;
+  }
+
+  listAgentWake({ agentId = null, chatId = null } = {}) {
+    const clauses = [];
+    const params = [];
+    if (agentId) { clauses.push('agent_id = ?'); params.push(agentId); }
+    if (chatId) { clauses.push('chat_id = ?'); params.push(chatId); }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    return this.db.prepare(
+      `SELECT * FROM agent_wake ${where} ORDER BY agent_id ASC, chat_id ASC`
+    ).all(...params);
+  }
+
+  upsertAgentWake({
+    agent_id: agentId, chat_id: chatId, enabled = true, wake_kinds: wakeKinds = null,
+    consecutive_failures: consecutiveFailures = 0, disabled_at: disabledAt = null,
+    updated_at: updatedAt = null
+  } = {}) {
+    const now = Number(updatedAt) || Date.now();
+    const kinds = Array.isArray(wakeKinds) ? JSON.stringify(wakeKinds) : (wakeKinds ?? null);
+    this.db.prepare(
+      `INSERT INTO agent_wake
+         (agent_id, chat_id, enabled, wake_kinds, consecutive_failures, disabled_at, updated_at)
+       VALUES (?, ?, ?, COALESCE(?, '["mention","reply","owner_post"]'), ?, ?, ?)
+       ON CONFLICT(agent_id, chat_id) DO UPDATE SET
+         enabled = excluded.enabled,
+         wake_kinds = COALESCE(?, agent_wake.wake_kinds),
+         consecutive_failures = excluded.consecutive_failures,
+         disabled_at = excluded.disabled_at,
+         updated_at = excluded.updated_at`
+    ).run(
+      agentId, chatId, enabled ? 1 : 0, kinds,
+      Number(consecutiveFailures) || 0, disabledAt ?? null, now,
+      kinds
+    );
+    return this.getAgentWake(agentId, chatId);
+  }
+
+  recordWakeFailure(agentId, chatId, now = Date.now()) {
+    this.db.prepare(
+      `INSERT INTO agent_wake (agent_id, chat_id, enabled, wake_kinds, consecutive_failures, updated_at)
+       VALUES (?, ?, 1, '["mention","reply","owner_post"]', 1, ?)
+       ON CONFLICT(agent_id, chat_id) DO UPDATE SET
+         consecutive_failures = agent_wake.consecutive_failures + 1,
+         updated_at = excluded.updated_at`
+    ).run(agentId, chatId, Number(now) || Date.now());
+    return this.getAgentWake(agentId, chatId);
+  }
+
+  resetWakeFailures(agentId, chatId, now = Date.now()) {
+    this.db.prepare(
+      `INSERT INTO agent_wake (agent_id, chat_id, enabled, wake_kinds, consecutive_failures, updated_at)
+       VALUES (?, ?, 1, '["mention","reply","owner_post"]', 0, ?)
+       ON CONFLICT(agent_id, chat_id) DO UPDATE SET
+         consecutive_failures = 0,
+         disabled_at = NULL,
+         updated_at = excluded.updated_at`
+    ).run(agentId, chatId, Number(now) || Date.now());
+    return this.getAgentWake(agentId, chatId);
+  }
+
+  disableAgentWake(agentId, chatId, now = Date.now()) {
+    this.db.prepare(
+      `INSERT INTO agent_wake
+         (agent_id, chat_id, enabled, wake_kinds, consecutive_failures, disabled_at, updated_at)
+       VALUES (?, ?, 0, '["mention","reply","owner_post"]',
+               COALESCE((SELECT consecutive_failures FROM agent_wake WHERE agent_id = ? AND chat_id = ?), 0), ?, ?)
+       ON CONFLICT(agent_id, chat_id) DO UPDATE SET
+         enabled = 0,
+         disabled_at = excluded.disabled_at,
+         updated_at = excluded.updated_at`
+    ).run(agentId, chatId, agentId, chatId, Number(now) || Date.now(), Number(now) || Date.now());
+    return this.getAgentWake(agentId, chatId);
   }
 
   close() {

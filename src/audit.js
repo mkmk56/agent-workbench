@@ -61,15 +61,22 @@ export function formatAuditLine(event, fields = {}, now = new Date()) {
   return `${parts.join(' ')}\n`;
 }
 
-// Append one audit line. Returns the path written, or null when the write was
-// skipped/failed; callers treat auditing as best effort.
-export function auditEvent(dataDir, event, fields = {}) {
-  if (!dataDir || !event) return null;
-  const path = join(dataDir, AUDIT_FILE);
+// Append one line to an append-only file in the data directory. Used by the
+// security audit trail and by data/wake.log, which follows the same
+// append-only, never-read-back, redact-before-write rules.
+export function appendAuditFile(dataDir, fileName, event, fields = {}, now = new Date()) {
+  if (!dataDir || !event || !fileName) return null;
+  const path = join(dataDir, fileName);
   try {
-    appendFileSync(path, formatAuditLine(event, fields), 'utf8');
+    appendFileSync(path, formatAuditLine(event, fields, now), 'utf8');
     return path;
   } catch {
     return null;
   }
+}
+
+// Append one audit line. Returns the path written, or null when the write was
+// skipped/failed; callers treat auditing as best effort.
+export function auditEvent(dataDir, event, fields = {}) {
+  return appendAuditFile(dataDir, AUDIT_FILE, event, fields);
 }

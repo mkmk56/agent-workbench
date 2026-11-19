@@ -8,6 +8,7 @@ import {
   AgentService, agentIdForParticipant, participantForAgentId
 } from './agents.js';
 import { auditEvent } from './audit.js';
+import { computeCheckin } from './events.js';
 
 const asText = (value) => ({
   content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }]
@@ -71,7 +72,7 @@ function summarizeResult(result) {
   return text ? truncate(text.replace(/\s+/g, ' '), 160) : 'ok';
 }
 
-export function registerTools(server, { scheduler, store, messages, approvals, chats, files, config, agents = null }, auth = { master: true, participant: 'user', token_kind: 'master' }) {
+export function registerTools(server, { scheduler, store, messages, approvals, chats, files, config, agents = null, wake = null }, auth = { master: true, participant: 'user', token_kind: 'master' }) {
   const master = isMaster(auth);
   const readAll = isReadAll(auth);
   const requestId = auth?.request_id || '-';
@@ -723,6 +724,236 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
         result.total_unread = result.chats.reduce((sum, entry) => sum + entry.unread, 0);
       }
       return asText(result);
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  // --------------------------------------------------- REA Phase 3 wake tools
+  const requireWake = () => {
+    if (!wake) throw new Error('wake service is not available');
+    return wake;
+  };
+  const selfAgentId = () => auth?.agent_id ?? agentIdForParticipant(auth?.participant);
+  const resolveAgentTarget = (requested) => {
+    const own = selfAgentId();
+    const target = requested ? (agentIdForParticipant(requested) || requested) : own;
+    return { own, target };
+  };
+
+  register('agent_checkin', {
+    description: 'Set this listener\'s check-in interval (2-1440 minutes; default 10), record the check-in '
+      + 'and return an Inbox summary (unread, unread mentions/replies, latest event seq). Agent tokens may only '
+      + 'check in as themselves; human/master may pass agent_id. This is the pull fallback when SSE is unavailable.',
+    inputSchema: {
+      every: z.number().int().min(2).max(1440).optional().describe('Check-in interval in minutes; default keeps the stored value'),
+      agent_id: z.string().min(1).optional().describe('Agent id; defaults to the token identity'),
+      chat_id: z.string().min(1).optional().describe('Limit the Inbox summary to one chat')
+    }
+  }, async ({ every, agent_id, chat_id }) => {
+    try {
+      const { own, target } = resolveAgentTarget(agent_id);
+      if (!readAll && target !== own) {
+        auditDenied({
+          surface: 'tool:agent_checkin', code: 'forbidden_checkin', status: 403,
+          target: String(target ?? ''), detail: `agent '${auth?.participant}' can only check in as itself`
+        });
+        throw new Error(`agent '${auth?.participant}' can only check in as itself`);
+      }
+      if (!target) throw new Error('agent id is required');
+      const result = computeCheckin({
+        store, agents: agentService, agentId: target, every, now: Date.now()
+      });
+      if (chat_id) {
+        result.inbox.chats = result.inbox.chats.filter((chat) => chat.chat_id === chat_id);
+        result.inbox.total_unread = result.inbox.chats
+          .reduce((sum, chat) => sum + Number(chat.unread ?? 0), 0);
+      }
+      return asText(result);
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('listener_status', {
+    description: 'Show listener sessions for one agent (status, last seen, resume cursor) plus the stored '
+      + 'check-in interval. Agent tokens may only read their own status; human/master may pass agent_id.',
+    inputSchema: {
+      agent_id: z.string().min(1).optional().describe('Agent id; defaults to the token identity')
+    }
+  }, async ({ agent_id }) => {
+    try {
+      const { own, target } = resolveAgentTarget(agent_id);
+      if (!readAll && target !== own) {
+        auditDenied({
+          surface: 'tool:listener_status', code: 'forbidden_listener_status', status: 403,
+          target: String(target ?? ''), detail: `agent '${auth?.participant}' can only read its own listener status`
+        });
+        throw new Error(`agent '${auth?.participant}' can only read its own listener status`);
+      }
+      const sessions = store.listListenerSessions({ agentId: target });
+      const checkin = store.getCheckin(target);
+      const lastEvent = store.lastWakeEvent({ agentId: target });
+      return asText({
+        agent_id: target,
+        participant_id: participantForAgentId(target),
+        online: sessions.some((session) => session.status === 'connected'),
+        last_event_seq: lastEvent ? Number(lastEvent.seq) : 0,
+        checkin: checkin ? {
+          every_minutes: Number(checkin.every_minutes),
+          last_checkin_at: checkin.last_checkin_at ?? null,
+          consecutive_empty: Number(checkin.consecutive_empty ?? 0)
+        } : null,
+        sessions: sessions.map((session) => ({
+          id: session.id,
+          chat_id: session.chat_id ?? null,
+          status: session.status,
+          last_event_seq: Number(session.last_event_seq ?? 0),
+          connected_at: Number(session.connected_at),
+          last_seen_at: Number(session.last_seen_at)
+        }))
+      });
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('wake_status', {
+    description: 'Per-chat wake state for one agent: enabled switch, accepted event kinds, consecutive failures, '
+      + 'today\'s wake-run count and the last event. Agent tokens may only read their own state; human/master may '
+      + 'pass agent_id.',
+    inputSchema: {
+      agent_id: z.string().min(1).optional().describe('Agent id; defaults to the token identity'),
+      chat_id: z.string().min(1).optional().describe('Return only this chat')
+    }
+  }, async ({ agent_id, chat_id }) => {
+    try {
+      const service = requireWake();
+      const { own, target } = resolveAgentTarget(agent_id);
+      if (!readAll && target !== own) {
+        auditDenied({
+          surface: 'tool:wake_status', code: 'forbidden_wake_status', status: 403,
+          target: String(target ?? ''), detail: `agent '${auth?.participant}' can only read its own wake status`
+        });
+        throw new Error(`agent '${auth?.participant}' can only read its own wake status`);
+      }
+      const participant = participantForAgentId(target);
+      const chats = new Map();
+      for (const chat of store.listChatsForAgent(target)) {
+        chats.set(chat.chat_id, { chat_id: chat.chat_id, name: chat.name });
+      }
+      for (const row of store.listAgentWake({ agentId: target })) {
+        if (!chats.has(row.chat_id)) {
+          const chat = store.getChat(row.chat_id);
+          chats.set(row.chat_id, { chat_id: row.chat_id, name: chat?.name ?? null });
+        }
+      }
+      const dayStart = (() => {
+        const date = new Date();
+        date.setHours(0, 0, 0, 0);
+        return date.getTime();
+      })();
+      const rows = [...chats.values()]
+        .filter((chat) => !chat_id || chat.chat_id === chat_id)
+        .map((chat) => {
+          const config = service.getConfig(target, chat.chat_id);
+          const lastEvent = store.lastWakeEvent({ chatId: chat.chat_id, agentId: target });
+          return {
+            chat_id: chat.chat_id,
+            name: chat.name,
+            enabled: config.enabled,
+            wake_kinds: config.wake_kinds,
+            consecutive_failures: config.consecutive_failures,
+            disabled_at: config.disabled_at,
+            today_runs: store.countWakeAttemptsSince({
+              chatId: chat.chat_id, agentId: target, since: dayStart
+            }),
+            last_event: lastEvent ? {
+              id: lastEvent.id,
+              seq: Number(lastEvent.seq),
+              kind: lastEvent.kind,
+              status: lastEvent.status,
+              created_at: Number(lastEvent.created_at)
+            } : null
+          };
+        });
+      return asText({
+        agent_id: target,
+        participant_id: participant,
+        enabled: rows.some((row) => row.enabled),
+        chats: rows
+      });
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('wake_enable', {
+    description: 'Enable wake for one agent in one chat. Owner only (human/master). Resets the consecutive-failure '
+      + 'counter so a circuit breaker does not re-trip on the next failure.',
+    inputSchema: {
+      agent_id: z.string().min(1).describe('Agent id or handle (agent_claude, claude)'),
+      chat_id: z.string().min(1).describe('Chat id'),
+      kinds: z.array(z.enum(['mention', 'reply', 'owner_post'])).min(1).max(3).optional()
+        .describe('Event kinds that may wake this agent; default keeps the stored set or all three')
+    }
+  }, async ({ agent_id, chat_id, kinds }) => {
+    try {
+      requireChatAdmin('wake_enable');
+      return asText(requireWake().setEnabled({
+        agentId: agent_id, chatId: chat_id, enabled: true, kinds: kinds ?? null,
+        actor: auth?.participant || 'user'
+      }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('wake_disable', {
+    description: 'Disable wake for one agent in one chat. Owner only (human/master). Events are still recorded '
+      + 'and stay in Inbox; only the automatic wake run stops.',
+    inputSchema: {
+      agent_id: z.string().min(1).describe('Agent id or handle (agent_claude, claude)'),
+      chat_id: z.string().min(1).describe('Chat id')
+    }
+  }, async ({ agent_id, chat_id }) => {
+    try {
+      requireChatAdmin('wake_disable');
+      return asText(requireWake().setEnabled({
+        agentId: agent_id, chatId: chat_id, enabled: false,
+        actor: auth?.participant || 'user'
+      }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('wake_now', {
+    description: 'Manually wake one agent in one chat. Bypasses the interval throttle but still counts against '
+      + 'the daily run cap. Human/master may wake any agent; an agent token may only wake itself (used by the '
+      + 'listener CLI). Third-party agents have no local executor and are told to consume SSE/check-in instead.',
+    inputSchema: {
+      agent_id: z.string().min(1).describe('Agent id or handle (agent_claude, claude)'),
+      chat_id: z.string().min(1).describe('Chat id'),
+      message_id: z.string().min(1).optional().describe('Message that triggered the manual wake')
+    }
+  }, async ({ agent_id, chat_id, message_id }) => {
+    try {
+      const owner = master || auth?.role === 'human';
+      const own = selfAgentId();
+      const target = agentIdForParticipant(agent_id) || agent_id;
+      if (!owner && target !== own) {
+        auditDenied({
+          surface: 'tool:wake_now', code: 'forbidden_wake_now', status: 403,
+          target: String(target ?? ''), chat_id,
+          detail: `agent '${auth?.participant}' can only wake itself`
+        });
+        throw new Error(`agent '${auth?.participant}' can only wake itself`);
+      }
+      assertChatAccess(store, auth, chat_id);
+      return asText(requireWake().wakeNow({
+        agentId: target, chatId: chat_id, messageId: message_id, actor: auth?.participant || 'user'
+      }));
     } catch (error) {
       return serviceError(error);
     }

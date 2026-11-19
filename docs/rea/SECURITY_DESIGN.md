@@ -72,3 +72,22 @@ per-task `logs` 表演化为该文件，因为连接事件没有 task_id）。�
 64 位 hex token 在写入前一律替换为 `<redacted>`；敏感字段名（含 `code_hash`
 类键名）保留键名、值替换为 `<redacted>`；审计写失败不影响主流程。同一拒绝
 只记一行（服务层写入后标记 `error.audited`，工具层兜底不重复）。
+
+## 6. Phase 3：Listener / 事件流 / 唤醒
+
+- **`GET /events`**：Bearer 鉴权；agent token 只能订阅自己是成员的群，且只
+  收到 `agent_id` 指向自己的事件；越权 `chat_id` 返回 403 并写
+  `access_denied(code=sse_chat_denied)`。master/human/muse 是只读全量协作者。
+- **`PUT /checkin`**：agent token 只能以自己的身份 check-in；跨 Agent 返回
+  403 并写 `access_denied(code=forbidden_checkin)`。
+- **唤醒开关**：`wake_enable` / `wake_disable` 只接受 human/master（群主）；
+  跨 Agent 读取状态同样被拒并审计。
+- **`wake_now`**：跨 Agent 唤醒 owner-only；为了让第三方 Listener 用自己
+  独立凭据触发自身运行，agent token 可唤醒**自己**（且必须是该群成员）。
+  引擎没有本地执行器时明确返回 `woken:false`，不会伪装成功。
+- **`AGENT_AUTO_DELIVER=0`**：安装级“不自动起运行”开关，唤醒只记录事件，
+  不创建任务；`Inbox` / check-in 仍能看到，群主可显式 `wake_now`。
+- **日志**：`data/wake.log` append-only，与 `security-audit.log` 同一脱敏
+  规则；失败、熔断、禁用、节流都有明确状态，绝不静默吞掉。
+- **Listener CLI**：token 只从 600 权限文件读取、不进命令行/日志/state；
+  1 分钟连不上即退出；运行失败写失败日志。

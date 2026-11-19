@@ -13,6 +13,8 @@ import { ChatService } from './chats.js';
 import { AgentService } from './agents.js';
 import { ApprovalService } from './approvals.js';
 import { FileService } from './files.js';
+import { WakeService } from './wake.js';
+import { handleCheckin, handleEvents } from './events.js';
 import { removeLegacyAgentMcpConfigs } from './mcp-config.js';
 import { setExecutorTempDir } from './executors/process.js';
 import { hardenPath } from './security.js';
@@ -22,11 +24,22 @@ const store = new Store(config.dbPath, config.dataDir);
 const scheduler = new Scheduler(store, config);
 const files = new FileService({ store, config });
 const agents = new AgentService({ store, config });
-const messages = new MessageService({ store, scheduler, config, files, agents });
+// Phase 3: WakeService records every @/reply/owner event and wakes the two
+// built-in executors through the existing Scheduler channel. It is constructed
+// before MessageService so the message path can hold bound callbacks; the
+// reverse reference (messages for owner notifications) is set right after.
+const wake = new WakeService({ store, scheduler, config, agents });
+const messages = new MessageService({
+  store, scheduler, config, files, agents,
+  onMention: (event) => wake.onMention(event),
+  onWakeEvent: (event) => wake.onWakeEvent(event)
+});
+wake.messages = messages;
 const chats = new ChatService({ store, messages, config });
 const approvals = new ApprovalService({ store, config, messages, scheduler });
 scheduler.messages = messages;
 scheduler.approvals = approvals;
+scheduler.wake = wake;
 // P1-1 reconciliation also repairs the Phase 2 tables (agents/chat_members/
 // inbox_cursors) before any pending delivery is replayed.
 scheduler.agents = agents;
@@ -88,6 +101,11 @@ for (const [label, result] of Object.entries(aclResults)) {
 // directories/ACLs/temp root are in place. Replay can start sub-tasks, so
 // running it here keeps every spawned process on the hardened paths.
 scheduler.reconcile({ reason: 'service restart' });
+// Phase 3 reconciliation: an SSE connection and an in-flight wake run cannot
+// survive a restart. Switches, failure counters, cursors and check-in state
+// are read back from the database unchanged.
+wake.reconcile();
+wake.start();
 
 const rateBuckets = new Map();
 const rateLimitPerMinute = Number(process.env.RATE_LIMIT_PER_MIN || 600);
@@ -135,7 +153,7 @@ function createMcpServer(auth) {
     { name: 'agent-workbench', version: '0.1.0' },
     { capabilities: { logging: {} } }
   );
-  registerTools(server, { scheduler, store, messages, approvals, chats, files, config, agents }, auth);
+  registerTools(server, { scheduler, store, messages, approvals, chats, files, config, agents, wake }, auth);
   return server;
 }
 
@@ -230,8 +248,38 @@ const server = http.createServer(async (req, res) => {
       ok: true,
       service: 'agent-workbench',
       version: '0.1.0',
-      uptime_s: Math.floor((Date.now() - startedAt) / 1000)
+      uptime_s: Math.floor((Date.now() - startedAt) / 1000),
+      wake: wake.status()
     });
+    return;
+  }
+
+  // Phase 3 event stream and pull fallback. Both authenticate exactly like
+  // /mcp; the scope comes from the token, never from a query parameter.
+  if (url.pathname === '/events' && req.method === 'GET') {
+    const credential = extractBearer(req);
+    const auth = enrichAuth(
+      identifyToken(credential, config) || agents.identifyAccessToken(credential), req);
+    handleEvents({ req, res, url, store, wake, config, auth });
+    return;
+  }
+
+  if (url.pathname === '/checkin' && req.method === 'PUT') {
+    const credential = extractBearer(req);
+    const auth = enrichAuth(
+      identifyToken(credential, config) || agents.identifyAccessToken(credential), req);
+    if (!auth) {
+      sendJson(res, 401, { error: 'unauthorized' });
+      return;
+    }
+    let body = {};
+    try {
+      body = (await readBody(req)) ?? {};
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+      return;
+    }
+    handleCheckin({ res, store, agents, auth, config, body });
     return;
   }
 
@@ -375,6 +423,7 @@ function shutdown(signal) {
   if (closing) return;
   closing = true;
   console.log(`received ${signal}; shutting down`);
+  try { wake.stop(); } catch { /* ignore */ }
   scheduler.shutdown();
   server.close(() => {
     store.close();
@@ -393,4 +442,4 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 // Exported for the isolated verification harness (scripts/verify-upgrade.mjs).
 // Importing this module still starts the listener; callers close `server` and
 // `store` when finished.
-export { server, store, scheduler, messages, chats, approvals, files, agents, config };
+export { server, store, scheduler, messages, chats, approvals, files, agents, wake, config };

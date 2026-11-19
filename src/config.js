@@ -204,6 +204,23 @@ export const config = {
   // A queued delivery older than this is assumed to have lost its
   // task-finished hook and is replay-checked by the sweep.
   deliveryStaleQueuedMs: intEnv('DELIVERY_STALE_QUEUED_MS', 120_000),
+  // ---------------------------------------------------------------------
+  // REA Phase 3: listener / check-in / wake
+  // ---------------------------------------------------------------------
+  wakeEnabled: process.env.WAKE_ENABLED !== '0',
+  wakeMinIntervalMs: intEnv('WAKE_MIN_INTERVAL_MS', 10 * 60 * 1000),
+  wakeDailyPerAgentChat: intEnv('WAKE_DAILY_PER_AGENT_CHAT', 30),
+  wakeDailyPerChat: intEnv('WAKE_DAILY_PER_CHAT', 100),
+  wakeMaxConsecutiveFailures: intEnv('WAKE_MAX_CONSECUTIVE_FAILURES', 3),
+  wakeRetryCount: intEnv('WAKE_RETRY_COUNT', 1),
+  wakeNoOutputMs: intEnv('WAKE_NO_OUTPUT_MS', 15 * 60 * 1000),
+  wakeHardCapMs: intEnv('WAKE_HARD_CAP_MS', 60 * 60 * 1000),
+  wakeEventRetentionMs: intEnv('WAKE_EVENT_RETENTION_MS', 7 * 24 * 60 * 60 * 1000),
+  wakeMaxBacklog: intEnv('WAKE_MAX_BACKLOG', 1000),
+  wakeSseHeartbeatMs: intEnv('WAKE_SSE_HEARTBEAT_MS', 25 * 1000),
+  wakeMentionUnreadMs: intEnv('WAKE_MENTION_UNREAD_MS', 10 * 60 * 1000),
+  wakeSweepMs: intEnv('WAKE_SWEEP_MS', 60 * 1000),
+  checkinDefaultMinutes: intEnv('CHECKIN_DEFAULT_MINUTES', 10),
   // dsh's model is known only after its usage ledger is read; these let an
   // installation state it up front without hard-coding a profile value.
   dshProvider: process.env.WORKBENCH_DSH_PROVIDER || 'deepseek',

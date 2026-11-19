@@ -89,8 +89,11 @@ export function makeConfig(dir, overrides = {}) {
 export class StubScheduler {
   constructor() {
     this.calls = [];
+    this.cancelled = [];
     this.messages = null;
     this.approvals = null;
+    this.wake = null;
+    this.lastActivity = null;
   }
 
   createTask(input) {
@@ -104,6 +107,15 @@ export class StubScheduler {
 
   statusPayload(task) {
     return { task_id: task.id, agent: task.agent, state: task.state };
+  }
+
+  cancel(taskId) {
+    this.cancelled.push(taskId);
+    return { task_id: taskId, status: 'CANCELLED' };
+  }
+
+  lastActivityAt() {
+    return this.lastActivity;
   }
 }
 

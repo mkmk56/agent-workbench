@@ -244,6 +244,10 @@ node scripts/listener.mjs --agent agent_xxx --chat <chat_id，可选>
 | delivery_task_id | TEXT NULL | 唤醒产生的任务 |
 | created_at / updated_at | INTEGER | 毫秒时间戳 |
 
+> 实现说明（2026-11-19）：额外增加 `seq INTEGER`（全局事件序，§4.2 的
+> `since_seq` 续接需要）。`from` / `mentions` 不重复存储，事件下发时从
+> `messages` 行读取，避免两份真相。
+
 ### listener_sessions（Listener 会话表）
 
 | 列 | 类型 | 说明 |
@@ -299,6 +303,12 @@ node scripts/listener.mjs --agent agent_xxx --chat <chat_id，可选>
 | `wake_status` | master / agent 自身 | 查每群唤醒开关、失败计数、今日已用次数 |
 | `wake_enable` / `wake_disable` | **owner-only** | 开/关某 Agent 在某群的唤醒 |
 | `wake_now` | **owner-only** | 手动唤醒一次（绕过节流，但计入每日上限） |
+
+> 实现说明（2026-11-19）：为了让第三方 Listener（§6）用自己独立的凭据
+> 触发一次唤醒，`wake_now` 额外允许 agent token **只唤醒自己**；跨 Agent
+> 唤醒仍然 owner-only。若引擎没有该 Agent 的本地执行器，返回
+> `woken:false, reason:"no local executor..."`，Listener 据此决定是否执行
+> 本地命令，不会伪装成已唤醒。
 
 ### CLI
 
