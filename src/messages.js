@@ -334,6 +334,7 @@ export class MessageService {
       seq: row.seq ?? null,
       summary: row.summary,
       body: row.body ?? row.summary,
+      kind: row.kind ?? 'user',
       mentions: parseJsonArray(row.mentions_json),
       files: parseFiles(row.files_json),
       root_message_id: row.root_message_id ?? null,
@@ -566,6 +567,14 @@ export class MessageService {
     if (!body.trim()) throw new Error('body must not be empty');
     const summary = truncateSummary(body, this.config.agentSummaryMaxTokens);
     if (!summary.text) throw new Error('summary must not be empty');
+
+    // Phase 4: user|system. No MCP tool exposes this yet; it is the internal
+    // write path reserved for system notices so they can be hidden from the
+    // normal chat stream once those notices exist.
+    const kind = input.kind ?? 'user';
+    if (kind !== 'user' && kind !== 'system') {
+      throw new Error("kind must be 'user' or 'system'");
+    }
 
     const mentions = normalizeMentions(input.mentions);
 
@@ -812,7 +821,8 @@ export class MessageService {
         provider: execution?.provider ?? null,
         model: execution?.model ?? null,
         token_usage_json: execution?.token_usage_json ?? null,
-        latency_ms: execution?.latency_ms ?? null
+        latency_ms: execution?.latency_ms ?? null,
+        kind
       }, { deliveries, fileIds, bumpEpoch });
     } catch (error) {
       if (clientMsgId && /UNIQUE constraint failed/i.test(error.message)) {

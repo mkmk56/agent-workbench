@@ -9,6 +9,8 @@ import {
 export const DEFAULT_CHAT_NAME = '新群聊';
 const NAME_MAX = 200;
 const CATEGORY_MAX = 40;
+const SETTINGS_DESCRIPTION_MAX = 2000;
+const SETTINGS_ANNOUNCEMENT_MAX = 4000;
 const CHAT_STATUSES = new Set(['active', 'archived']);
 const CHAT_SENDERS = new Set(['user', 'muse']);
 const AGENTS = new Set(['claude', 'dsh']);
@@ -38,6 +40,18 @@ function parseJsonArray(json) {
   }
 }
 
+// Phase 4 chat settings live in one JSON column. A missing or malformed value
+// is an empty object so a corrupt row can never break the chat list.
+export function parseChatSettings(raw) {
+  if (!raw) return {};
+  try {
+    const value = JSON.parse(raw);
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
 export class ChatService {
   constructor({ store, messages, config }) {
     this.store = store;
@@ -54,6 +68,7 @@ export class ChatService {
       category: chat.category ?? null,
       visibility: chat.visibility ?? 'link',
       epoch: Number(chat.epoch ?? 0),
+      settings: parseChatSettings(chat.settings),
       created_at: chat.created_at,
       updated_at: chat.updated_at,
       last_message_at: chat.last_message_at ?? null,
@@ -126,6 +141,36 @@ export class ChatService {
     const trimmed = name.trim();
     if (trimmed.length > NAME_MAX) throw new Error(`name must be at most ${NAME_MAX} characters`);
     return this.describe(this.store.updateChat(chat.chat_id, { name: trimmed }));
+  }
+
+  // Phase 4: chat description and announcement. Either field may be omitted;
+  // null clears it. Stored as one JSON object in chats.settings.
+  updateSettings({ chat_id: chatId, description, announcement } = {}) {
+    const chat = this.requireChat(chatId);
+    if (description === undefined && announcement === undefined) {
+      throw new Error('description or announcement is required');
+    }
+    const current = parseChatSettings(chat.settings);
+    const next = { ...current };
+    if (description !== undefined) {
+      if (description !== null && typeof description !== 'string') {
+        throw new Error('description must be a string or null');
+      }
+      if (typeof description === 'string' && description.length > SETTINGS_DESCRIPTION_MAX) {
+        throw new Error(`description must be at most ${SETTINGS_DESCRIPTION_MAX} characters`);
+      }
+      next.description = description;
+    }
+    if (announcement !== undefined) {
+      if (announcement !== null && typeof announcement !== 'string') {
+        throw new Error('announcement must be a string or null');
+      }
+      if (typeof announcement === 'string' && announcement.length > SETTINGS_ANNOUNCEMENT_MAX) {
+        throw new Error(`announcement must be at most ${SETTINGS_ANNOUNCEMENT_MAX} characters`);
+      }
+      next.announcement = announcement;
+    }
+    return this.describe(this.store.updateChat(chat.chat_id, { settings: JSON.stringify(next) }));
   }
 
   // Archiving only flips the list-visibility flag. Messages, files, epoch and
@@ -233,6 +278,7 @@ export class ChatService {
       name: chat.name,
       status: chat.status ?? 'active',
       epoch: Number(chat.epoch ?? 0),
+      settings: parseChatSettings(chat.settings),
       context_version: Number(last?.seq ?? 0),
       paused: false,
       needs_muse: this.store.chatNeedsMuse(chat.chat_id),
@@ -353,6 +399,7 @@ export class ChatService {
           to: row.to_agent,
           summary: row.summary,
           body: row.body ?? row.summary,
+          kind: row.kind ?? 'user',
           mentions: parseJsonArray(row.mentions_json),
           files: files.map(fileRef),
           legacy_paths: legacyPaths,
@@ -451,6 +498,7 @@ export class ChatService {
       epoch: message.epoch,
       created_at: message.created_at,
       to: message.to,
+      kind: message.kind,
       status: message.status,
       delivery_task_id: message.delivery_task_id ?? null,
       deliveries: message.deliveries ?? [],

@@ -2,7 +2,8 @@
 // REA Phase 3 database migration.
 //
 // Adds the four tables from PHASE3_DESIGN.md §11 through the Store constructor
-// (which registers schema_version 6):
+// (which registers schema_version 6 for this step; later phases may raise the
+// ledger further):
 //   wake_events, listener_sessions, checkins, agent_wake
 // The constructor also creates the internal app_meta persistent counter table
 // and, since the P1/P2/P3 leftovers fix, wake_unread_notices (persisted

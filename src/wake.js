@@ -24,7 +24,8 @@ import {
 //   * At most one active wake task per (chat, agent). Later events are marked
 //     merged and the running task's context already contains them.
 //   * Failures are counted per run. Three consecutive failures disable the
-//     (agent, chat) wake switch and notify the owner in the chat.
+//     (agent, chat) wake switch. Owner notices are logged and surfaced through
+//     wake_status; they never enter the chat message stream (Phase 4).
 //   * data/wake.log is append-only and goes through the same redaction rules
 //     as the security audit trail.
 // ---------------------------------------------------------------------------
@@ -733,32 +734,20 @@ export class WakeService extends EventEmitter {
   }
 
   // -------------------------------------------------------------- owner notice
+  // Phase 4: owner notices never enter the chat stream. Unread-@ reminders are
+  // persisted by _checkUnreadMentions in wake_unread_notices and surfaced by
+  // wake_status (and the GUI banner); this helper only writes the wake log.
+  // A future system notice may be written with messages.send({kind:'system'}),
+  // but nothing uses that path yet.
   _notifyOwner(chatId, body, dedupeKey) {
-    if (!this.messages?.send) {
-      this._log('wake_owner_notice', { chat_id: chatId, dedupe_key: dedupeKey, delivered: false });
-      return null;
-    }
-    try {
-      const message = this.messages.send({
-        auth: {
-          role: 'muse', master: false, participant: 'muse', principal_id: 'muse',
-          token_kind: 'internal', can_post_as: ['muse'], can_dispatch: false,
-          can_operate: false, request_id: `wake:${dedupeKey}`
-        },
-        from: 'muse',
-        to: 'user',
-        chat_id: chatId,
-        summary: body.slice(0, 120),
-        body,
-        client_msg_id: dedupeKey,
-        is_final: true
-      });
-      this._log('wake_owner_notice', { chat_id: chatId, dedupe_key: dedupeKey, delivered: true, message_id: message?.message_id });
-      return message;
-    } catch (error) {
-      this._log('wake_owner_notice_failed', { chat_id: chatId, dedupe_key: dedupeKey, error: error.message });
-      return null;
-    }
+    this._log('wake_owner_notice', {
+      chat_id: chatId,
+      dedupe_key: dedupeKey,
+      delivered: false,
+      channel: 'wake_status',
+      body: String(body ?? '').slice(0, 300)
+    });
+    return null;
   }
 
   // ------------------------------------------------------------------- sweep
@@ -779,7 +768,8 @@ export class WakeService extends EventEmitter {
   }
 
   // D3: an @ that stays unread for the configured window (default 10 minutes)
-  // is surfaced to the owner in the chat. Only agents with a local executor are
+  // is surfaced to the owner through wake_unread_notices / wake_status, never
+  // as a chat message. Only agents with a local executor are
   // reminded: external participants (muse) record mention events for SSE /
   // check-in and never read them, so reminding about them would be noise (P1).
   // Reminder dedupe is persisted in wake_unread_notices, so a restart does not
@@ -813,15 +803,20 @@ export class WakeService extends EventEmitter {
           this.notified.add(row.id);
           continue;
         }
-        const delivered = this._notifyOwner(
-          row.chat_id,
-          `[wake] ${participant} has not read the @ at seq ${row.message_seq ?? '?'} after `
-          + `${Math.round(threshold / 60000)} minutes (event ${row.id}, status ${row.status}).`,
-          `wake-unread:${row.id}`
-        );
-        if (delivered) {
-          this.notified.add(row.id);
+        // Persist the reminder instead of posting it into the chat. wake_status
+        // exposes these rows and Inbox renders them as pending notices.
+        try {
           this.store.recordWakeNotice(row.id, this.now());
+          this.notified.add(row.id);
+          this._log('wake_unread_notice', {
+            event_id: row.id,
+            chat_id: row.chat_id,
+            agent_id: row.agent_id,
+            message_seq: row.message_seq ?? null,
+            status: row.status
+          });
+        } catch (error) {
+          this._log('wake_unread_notice_failed', { event_id: row.id, error: error.message });
         }
       }
       if (rows.length < batchSize) return;

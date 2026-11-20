@@ -19,10 +19,14 @@ const MESSAGE_COLUMNS = [
   // REA Phase 2: recall state and the protocol-level idempotency key. op_key
   // and client_msg_id intentionally hold the same value; the protocol name is
   // an alias, not a second idempotency mechanism.
-  'recalled_at', 'recalled_by', 'op_key'
+  'recalled_at', 'recalled_by', 'op_key',
+  // REA Phase 4: user/system message kind. System notices stay out of the
+  // normal chat stream; historical rows default to 'user'.
+  'kind'
 ];
 
 const MESSAGE_DEFAULTS = Object.freeze({
+  kind: 'user',
   summary_tokens: 0,
   summary_truncated: 0,
   is_final: 0,
@@ -70,7 +74,8 @@ const MESSAGES_DDL = `CREATE TABLE IF NOT EXISTS messages (
         latency_ms INTEGER,
         recalled_at INTEGER,
         recalled_by TEXT,
-        op_key TEXT
+        op_key TEXT,
+        kind TEXT NOT NULL DEFAULT 'user'
       )`;
 
 const TASK_COLUMNS = [
@@ -205,7 +210,10 @@ export class Store {
         status TEXT DEFAULT 'active',
         last_message_at TEXT,
         last_message_preview TEXT,
-        epoch INTEGER NOT NULL DEFAULT 0
+        epoch INTEGER NOT NULL DEFAULT 0,
+        -- REA Phase 4: JSON {description, announcement}. Nullable for chats
+        -- created before the column existed; readers treat null/invalid as {}.
+        settings TEXT
       );
       CREATE TABLE IF NOT EXISTS chat_tasks (
         chat_id TEXT NOT NULL,
@@ -557,7 +565,8 @@ export class Store {
           latency_ms INTEGER,
           recalled_at INTEGER,
           recalled_by TEXT,
-          op_key TEXT
+          op_key TEXT,
+          kind TEXT NOT NULL DEFAULT 'user'
         );
         INSERT INTO messages_chat_migration (${copied.join(', ')})
           SELECT ${copied.join(', ')} FROM messages;
@@ -762,6 +771,16 @@ export class Store {
       + 'DROP TABLE IF EXISTS checkins; '
       + 'DROP TABLE IF EXISTS listener_sessions; '
       + 'DROP TABLE IF EXISTS wake_events;', () => {});
+
+    // REA Phase 4: message kind (user|system) and per-chat settings JSON.
+    // Both columns are additive; rolling back means restoring the backup or
+    // dropping the two columns (no existing column is rewritten).
+    this._migrate(7, 'rea-phase4-message-kind-chat-settings',
+      'ALTER TABLE messages DROP COLUMN kind; '
+      + 'ALTER TABLE chats DROP COLUMN settings;', () => {
+        this._addColumnIfMissing('messages', 'kind', "TEXT NOT NULL DEFAULT 'user'");
+        this._addColumnIfMissing('chats', 'settings', 'TEXT');
+      });
   }
 
   _migrate(version, name, inverse, fn) {
@@ -1140,8 +1159,8 @@ export class Store {
     this.db.prepare(
       `INSERT INTO chats
          (chat_id, name, created_at, updated_at, status, last_message_at, last_message_preview,
-          epoch, category, visibility)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          epoch, category, visibility, settings)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       chat.chat_id,
       chat.name,
@@ -1152,7 +1171,8 @@ export class Store {
       chat.last_message_preview ?? null,
       chat.epoch ?? 0,
       chat.category ?? null,
-      chat.visibility ?? 'link'
+      chat.visibility ?? 'link',
+      chat.settings ?? null
     );
     return this.getChat(chat.chat_id);
   }
@@ -1163,7 +1183,8 @@ export class Store {
 
   updateChat(chatId, patch) {
     const allowed = [
-      'name', 'status', 'last_message_at', 'last_message_preview', 'epoch', 'category', 'visibility'
+      'name', 'status', 'last_message_at', 'last_message_preview', 'epoch', 'category', 'visibility',
+      'settings'
     ];
     const keys = Object.keys(patch).filter((key) => allowed.includes(key));
     if (keys.length === 0) return this.getChat(chatId);
@@ -2069,6 +2090,19 @@ export class Store {
     ).all(messageId);
   }
 
+  // Phase 4 file delete: the registry row and every message reference go in one
+  // transaction. The caller removes the stored body (and any extracted copy)
+  // and returns the row so the audit line can name it.
+  deleteChatFile(fileId) {
+    return this._transaction(() => {
+      const row = this.getChatFile(fileId);
+      if (!row) return null;
+      this.db.prepare('DELETE FROM message_files WHERE file_id = ?').run(fileId);
+      this.db.prepare('DELETE FROM chat_files WHERE file_id = ?').run(fileId);
+      return row;
+    });
+  }
+
   // ------------------------------------------------------------------ approvals
   insertApproval(approval) {
     const columns = [
@@ -2388,6 +2422,36 @@ export class Store {
     return Boolean(this.db.prepare(
       'SELECT 1 AS found FROM wake_unread_notices WHERE event_id = ?'
     ).get(eventId));
+  }
+
+  // Phase 4: owner notices no longer enter the chat stream. wake_status reads
+  // them from this join, newest first, so Inbox can show "待处理提醒".
+  listWakeNotices({ chatId = null, agentId = null, limit = 50 } = {}) {
+    const clauses = [];
+    const params = [];
+    if (chatId) { clauses.push('w.chat_id = ?'); params.push(chatId); }
+    if (agentId) { clauses.push('w.agent_id = ?'); params.push(agentId); }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const n = Math.max(1, Math.min(500, Number(limit) || 50));
+    return this.db.prepare(
+      `SELECT n.event_id, n.notified_at, w.chat_id, w.agent_id, w.kind, w.message_id,
+              w.message_seq, w.status
+         FROM wake_unread_notices n JOIN wake_events w ON w.id = n.event_id
+         ${where}
+        ORDER BY n.notified_at DESC, n.event_id DESC LIMIT ?`
+    ).all(...params, n);
+  }
+
+  countWakeNotices({ chatId = null, agentId = null } = {}) {
+    const clauses = [];
+    const params = [];
+    if (chatId) { clauses.push('w.chat_id = ?'); params.push(chatId); }
+    if (agentId) { clauses.push('w.agent_id = ?'); params.push(agentId); }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    return Number(this.db.prepare(
+      `SELECT COUNT(*) AS n
+         FROM wake_unread_notices n JOIN wake_events w ON w.id = n.event_id ${where}`
+    ).get(...params)?.n ?? 0);
   }
 
   pruneWakeNotices(before) {

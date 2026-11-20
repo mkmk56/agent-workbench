@@ -401,6 +401,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
         name: chat.name,
         category: chat.category ?? null,
         visibility: chat.visibility ?? 'link',
+        settings: chat.settings ?? {},
         epoch: chat.epoch,
         created_at: chat.created_at
       });
@@ -441,6 +442,23 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     try {
       requireChatAdmin('rename_chat');
       return asText(chats.rename({ chat_id, name }));
+    } catch (error) {
+      return asError(error.message);
+    }
+  });
+
+  register('chat_update_settings', {
+    description: 'Update a group chat description and/or announcement. Fields are stored as one JSON object in '
+      + 'chats.settings; null clears a field. Human or master token only.',
+    inputSchema: {
+      chat_id: z.string().min(1).describe('Chat id'),
+      description: z.string().max(2000).nullable().optional().describe('Chat description; null clears it'),
+      announcement: z.string().max(4000).nullable().optional().describe('Chat announcement; null clears it')
+    }
+  }, async ({ chat_id, description, announcement }) => {
+    try {
+      requireChatAdmin('chat_update_settings');
+      return asText(chats.updateSettings({ chat_id, description, announcement }));
     } catch (error) {
       return asError(error.message);
     }
@@ -859,6 +877,11 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
         .map((chat) => {
           const config = service.getConfig(target, chat.chat_id);
           const lastEvent = store.lastWakeEvent({ chatId: chat.chat_id, agentId: target });
+          // Phase 4: unread-@ reminders never enter the chat stream; this is
+          // the pull surface Inbox/群内横幅 use instead.
+          const notices = store.listWakeNotices({
+            chatId: chat.chat_id, agentId: target, limit: 20
+          });
           return {
             chat_id: chat.chat_id,
             name: chat.name,
@@ -869,6 +892,17 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
             today_runs: store.countWakeAttemptsSince({
               chatId: chat.chat_id, agentId: target, since: dayStart
             }),
+            unread_notice_count: store.countWakeNotices({
+              chatId: chat.chat_id, agentId: target
+            }),
+            unread_notices: notices.map((notice) => ({
+              event_id: notice.event_id,
+              message_seq: notice.message_seq === null ? null : Number(notice.message_seq),
+              message_id: notice.message_id ?? null,
+              kind: notice.kind,
+              status: notice.status,
+              notified_at: Number(notice.notified_at)
+            })),
             last_event: lastEvent ? {
               id: lastEvent.id,
               seq: Number(lastEvent.seq),
@@ -1231,6 +1265,24 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
       return asText(files.listFiles({ chat_id, limit }));
     } catch (error) {
       return asError(error.message);
+    }
+  });
+
+  register('chat_delete_file', {
+    description: 'Delete a chat file. The chat owner (human/master) or the participant who uploaded it may '
+      + 'delete. Removes the stored file body (and extracted text/tree), the chat_files row and every '
+      + 'message_files reference, and writes an audit line.',
+    inputSchema: {
+      chat_id: z.string().min(1).describe('Chat id'),
+      file_id: z.string().min(1).describe('file_id from list_chat_files or upload_chat_file_complete')
+    }
+  }, async ({ chat_id, file_id }) => {
+    try {
+      requireFiles(files);
+      requireChatAccess(chat_id, 'chat_delete_file');
+      return asText(files.deleteFile({ chat_id, file_id, actor: auth }));
+    } catch (error) {
+      return serviceError(error);
     }
   });
 

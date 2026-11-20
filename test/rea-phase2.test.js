@@ -74,8 +74,8 @@ test('Phase 2 migration adds the tables, backfills built-ins/members/cursors and
     const chatColumns = store._columns('chats');
     assert.ok(chatColumns.includes('category'));
     assert.ok(chatColumns.includes('visibility'));
-    // Phase 3 adds schema_version 6; the Phase 2 tables are still applied.
-    assert.equal(store.schemaVersion(), 6);
+    // Phase 3 adds v6 and Phase 4 adds v7; the Phase 2 tables are still applied.
+    assert.equal(store.schemaVersion(), 7);
     store.close();
     store = null;
 
@@ -83,7 +83,7 @@ test('Phase 2 migration adds the tables, backfills built-ins/members/cursors and
     const first = runMigration({
       dbPath: services.config.dbPath, dataDir: dir, backupDir, readToMax: true
     });
-    assert.equal(first.schema_version, 6);
+    assert.equal(first.schema_version, 7);
     assert.ok(existsSync(first.backup_path), 'a consistent pre-migration snapshot exists');
     assert.deepEqual(first.tables, ['agents', 'chat_members', 'inbox_cursors', 'pairing_code_uses', 'pairing_codes']);
     assert.equal(first.counts.agents, 3, 'muse/claude/dsh built-ins are seeded');
@@ -91,7 +91,7 @@ test('Phase 2 migration adds the tables, backfills built-ins/members/cursors and
     assert.ok(first.counts.inbox_cursors >= 3);
 
     reopened = new Store(services.config.dbPath, dir);
-    assert.equal(reopened.schemaVersion(), 6);
+    assert.equal(reopened.schemaVersion(), 7);
     for (const id of ['agent_muse', 'agent_claude', 'agent_dsh']) {
       assert.ok(reopened.getAgent(id), `${id} exists`);
     }

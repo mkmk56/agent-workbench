@@ -70,13 +70,15 @@ test('Phase 3 migration creates four tables, snapshots first and is rerunnable',
   let store = null;
   try {
     store = new Store(join(dir, 'workbench.db'), dir);
-    assert.equal(store.schemaVersion(), 6);
+    // Phase 4 adds schema v7 on top of the Phase 3 tables; the Phase 3 script
+    // reports whatever the current ledger says.
+    assert.equal(store.schemaVersion(), 7);
     store.close();
     store = null;
 
     const backupDir = join(dir, 'backups');
     const first = runMigration({ dbPath: join(dir, 'workbench.db'), dataDir: dir, backupDir });
-    assert.equal(first.schema_version, 6);
+    assert.equal(first.schema_version, 7);
     assert.ok(existsSync(first.backup_path), 'pre-migration snapshot exists');
     assert.deepEqual(first.tables, ['agent_wake', 'checkins', 'listener_sessions', 'wake_events']);
 
@@ -95,7 +97,7 @@ test('Phase 3 migration creates four tables, snapshots first and is rerunnable',
     const second = runMigration({
       dbPath: join(dir, 'workbench.db'), dataDir: dir, backupDir, backup: false
     });
-    assert.equal(second.schema_version, 6);
+    assert.equal(second.schema_version, 7);
     assert.equal(second.counts.wake_events, 1);
     assert.equal(second.counts.agent_wake, 1);
     assert.equal(second.counts.checkins, 1);
@@ -251,7 +253,7 @@ test('daily per-chat cap stops wake runs and records them as throttled', () => {
 // ---------------------------------------------------------------------------
 // Failure policy
 // ---------------------------------------------------------------------------
-test('a failed run retries once; three consecutive failures disable wake and notify the owner', () => {
+test('a failed run retries once; three consecutive failures disable wake without posting to the chat', () => {
   const h = makeHarness({ wakeMinIntervalMs: 0 });
   try {
     const chatId = seedChat(h.store, { id: 'chat-failures' });
@@ -277,9 +279,9 @@ test('a failed run retries once; three consecutive failures disable wake and not
     const config = h.wake.getConfig('claude', chatId);
     assert.equal(config.enabled, false, 'wake is disabled after three failures');
     assert.ok(config.disabled_at);
-    const last = h.store.lastChatMessage(chatId);
-    assert.equal(last.from_agent, 'muse');
-    assert.match(last.body, /disabled/);
+    // Phase 4: the disable notice is logged, not posted into the chat stream.
+    assert.equal(h.store.lastChatMessage(chatId), null,
+      'the owner notice must not enter the chat message stream');
   } finally {
     h.wake.stop();
     cleanupDir(h.dir, h.store);
@@ -919,24 +921,21 @@ test('P1: unread-@ reminders skip external participants and survive a restart', 
       message_seq: 2, status: 'pending', created_at: old
     });
 
-    const notices = [];
-    h.wake._notifyOwner = (_chatId, body, key) => {
-      notices.push({ body, key });
-      return { message_id: `notice-${key}` };
-    };
     h.wake._checkUnreadMentions();
-    assert.deepEqual(notices.map((notice) => notice.key), ['wake-unread:evt-claude'],
-      '@muse is external: it must not produce a false "has not read" notice');
-    assert.match(notices[0].body, /claude has not read the @/);
     assert.equal(h.store.hasWakeNotice('evt-claude'), true);
-    assert.equal(h.store.hasWakeNotice('evt-muse'), false);
+    assert.equal(h.store.hasWakeNotice('evt-muse'), false,
+      '@muse is external: it must not produce a false "has not read" notice');
+    const notices = h.store.listWakeNotices({ chatId, agentId: 'agent_claude', limit: 10 });
+    assert.deepEqual(notices.map((notice) => notice.event_id), ['evt-claude']);
+    assert.equal(notices[0].message_seq, 2);
+    assert.equal(h.store.lastChatMessage(chatId), null,
+      'the unread reminder must not be posted into the chat stream');
 
     // A restart gets a fresh in-memory cache; the persisted notice must hold.
     const restarted = new WakeService({ store: h.store, now: () => h.clock.now });
-    const repeated = [];
-    restarted._notifyOwner = (_chatId, _body, key) => { repeated.push(key); return {}; };
     restarted._checkUnreadMentions();
-    assert.deepEqual(repeated, [], 'a restart must not repeat an already-notified event');
+    assert.equal(h.store.countWakeNotices({ chatId, agentId: 'agent_claude' }), 1,
+      'a restart must not repeat an already-notified event');
   } finally {
     h.wake.stop();
     cleanupDir(h.dir, h.store);
@@ -957,15 +956,15 @@ test('P2: the unread-@ sweep pages past 500 expired mentions', () => {
         created_at: old + (i % 5)
       });
     }
-    const keys = [];
-    h.wake._notifyOwner = (_chatId, _body, key) => { keys.push(key); return { message_id: key }; };
     h.wake._checkUnreadMentions();
-    assert.equal(keys.length, 600, 'every expired mention is covered, not only the newest 500');
-    assert.equal(new Set(keys).size, 600);
+    const notices = h.store.listWakeNotices({ chatId, agentId: 'agent_claude', limit: 500 });
+    assert.equal(h.store.countWakeNotices({ chatId, agentId: 'agent_claude' }), 600,
+      'every expired mention is covered, not only the newest 500');
+    assert.equal(new Set(notices.map((notice) => notice.event_id)).size, notices.length);
 
-    const beforeSecond = keys.length;
     h.wake._checkUnreadMentions();
-    assert.equal(keys.length, beforeSecond, 'persisted notices are not repeated');
+    assert.equal(h.store.countWakeNotices({ chatId, agentId: 'agent_claude' }), 600,
+      'persisted notices are not repeated');
   } finally {
     h.wake.stop();
     cleanupDir(h.dir, h.store);

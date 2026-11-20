@@ -5,6 +5,8 @@ import {
 } from 'node:fs';
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { inflateRawSync, inflateSync } from 'node:zlib';
+import { auditEvent } from './audit.js';
+import { ProtocolError, agentIdForParticipant } from './agents.js';
 
 const TEXT_EXTENSIONS = new Set([
   '.txt', '.md', '.markdown', '.json', '.jsonl', '.csv', '.tsv', '.log', '.yaml', '.yml',
@@ -869,6 +871,87 @@ export class FileService {
       truncated: result.truncated,
       total_bytes: result.bytes
     };
+  }
+
+  // ------------------------------------------------------------------
+  // Phase 4 file delete. The chat owner (human/master or the role=owner
+  // membership row) or the participant who uploaded the file may delete it.
+  // The stored body, any extracted text/tree and both registry tables go; the
+  // deletion is audited whether it succeeds or is denied.
+  // ------------------------------------------------------------------
+  _isOwner({ chatId, actor }) {
+    if (!actor) return false;
+    if (actor.master === true || actor.role === 'human' || actor.participant === 'user') return true;
+    const agentId = agentIdForParticipant(actor.participant) || actor.participant;
+    return this.store.getChatMember?.(chatId, agentId)?.role === 'owner';
+  }
+
+  delete({ chat_id: chatId, file_id: fileId, actor = null }) {
+    if (!chatId) throw new Error('chat_id is required');
+    if (!fileId) throw new Error('file_id is required');
+    const row = this.store.getChatFile(fileId);
+    if (!row) {
+      auditEvent(this.dataDir, 'chat_file_delete_denied', {
+        chat_id: chatId, file_id: fileId, code: 'file_not_found',
+        actor: actor?.participant ?? 'unknown'
+      });
+      throw new ProtocolError('file_not_found', 404, `file not found: ${fileId}`);
+    }
+    if (row.chat_id !== chatId) {
+      auditEvent(this.dataDir, 'chat_file_delete_denied', {
+        chat_id: chatId, file_id: fileId, code: 'file_chat_mismatch',
+        actor: actor?.participant ?? 'unknown'
+      });
+      throw new ProtocolError('file_chat_mismatch', 403,
+        `file ${fileId} belongs to chat ${row.chat_id}, not ${chatId}`);
+    }
+
+    const isUploader = Boolean(actor?.participant) && actor.participant === row.uploader_id;
+    if (!isUploader && !this._isOwner({ chatId, actor })) {
+      const error = new ProtocolError('file_delete_forbidden', 403,
+        `only the chat owner or the uploader (${row.uploader_id}) may delete file ${fileId}`);
+      auditEvent(this.dataDir, 'access_denied', {
+        surface: 'chat_delete_file', code: error.code, status: 403,
+        chat_id: chatId, file_id: fileId,
+        actor: actor?.participant ?? 'unknown', detail: error.message
+      });
+      error.audited = true;
+      throw error;
+    }
+
+    // Resolve every path before touching disk or rows; a stored path that
+    // escapes the chat directory must fail closed.
+    const storedPath = this._resolveStored(row);
+    let extractedPath = null;
+    if (row.extracted_path) {
+      extractedPath = this._assertInside(
+        this._chatDir(row.chat_id),
+        resolve(this.dataDir, row.extracted_path)
+      );
+    }
+
+    rmSync(storedPath, { force: true });
+    if (extractedPath) rmSync(extractedPath, { force: true, recursive: true });
+    const deleted = this.store.deleteChatFile(fileId);
+    auditEvent(this.dataDir, 'chat_file_deleted', {
+      chat_id: chatId, file_id: fileId, name: row.original_name,
+      uploader: row.uploader_id, size: Number(row.size ?? 0),
+      actor: actor?.participant ?? 'unknown',
+      owner: this._isOwner({ chatId, actor }) ? 1 : 0
+    });
+    return {
+      deleted: true,
+      file_id: fileId,
+      chat_id: chatId,
+      name: row.original_name,
+      uploader: row.uploader_id,
+      size: Number(row.size ?? 0),
+      rows_removed: deleted ? 1 : 0
+    };
+  }
+
+  deleteFile({ chat_id: chatId, file_id: fileId, actor = null }) {
+    return this.delete({ chat_id: chatId, file_id: fileId, actor });
   }
 
   // Clean up an upload session that was abandoned (best effort).
