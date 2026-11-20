@@ -175,7 +175,15 @@ export interface EngineTaskStatus {
     output: number;
   };
   files_modified: string[];
+  /** Result text written when the run finishes — never the input prompt. */
   summary: string | null;
+  /**
+   * Original prompt and working directory stored with the task (REA Phase 4).
+   * Optional: an older engine does not send them, and the inspector then
+   * disables "重试" instead of guessing from `summary`.
+   */
+  prompt?: string | null;
+  cwd?: string | null;
   thread_id?: string;
   thread_state?: string;
   waiting_for_user?: boolean;

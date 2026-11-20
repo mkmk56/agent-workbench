@@ -20,9 +20,12 @@ import type {
  *    never invent an agent, a status, a platform or a join date.
  *  - `platform === 'muse'` / `agent_id === 'agent_muse'` is an **external** agent:
  *    Muse has no local executor in this build, so the UI must show it read-only and
- *    never offer a "启动执行器" button. The human owner row (`role === 'owner'` or
+ *    never offer a "启动执行器" button. The three built-in identities
+ *    (`agent_muse` / `agent_claude` / `agent_dsh`) are read-only as well: the engine
+ *    answers `cannot_revoke_builtin` 403 for every one of them, so a revoke button
+ *    there would only ever fail. The human owner row (`role === 'owner'` or
  *    `agent_id === 'agent_user'`) is read-only for the same reason (you cannot
- *    revoke yourself).
+ *    revoke yourself). Only genuinely paired agents expose revocation.
  *  - The engine has no enable/disable tool either. `agents.status` is the real,
  *    authoritative state; the only mutation that exists is token revocation, which
  *    is what "停用" maps to (documented in the page as well).
@@ -36,6 +39,18 @@ export const AGENT_LIST_SOURCE_NOTE =
 
 export const MUSE_AGENT_ID = 'agent_muse';
 export const OWNER_AGENT_ID = 'agent_user';
+
+/**
+ * The three identities that ship with the engine (src/agents.js BUILTIN_AGENTS).
+ * The engine refuses to revoke any of them (`cannot_revoke_builtin`, 403): they
+ * have no per-agent access token to revoke, so a "停用（撤销 Token）" button for
+ * them could only ever fail — the exact kind of dead control Phase 4 removes.
+ */
+export const BUILTIN_AGENT_IDS: readonly string[] = Object.freeze([
+  'agent_muse',
+  'agent_claude',
+  'agent_dsh',
+]);
 
 /** Statuses that mean "this token is already gone" — nothing left to revoke. */
 const REVOKED_STATUSES = new Set(['revoked', 'disabled', 'inactive', 'deactivated']);
@@ -144,21 +159,48 @@ export function isOwnerAgent(agent: Pick<PairedAgent, 'agent_id' | 'role'>): boo
 }
 
 /**
- * Read-only rows: external agents (Muse, no local executor) and the human owner
- * (the engine cannot revoke the owner token from the GUI).
+ * Built-in engine identities (Muse / Claude / dsh). They exist without a pairing
+ * cycle and hold no per-agent token, so the engine rejects revoking them.
  */
-export function isReadOnlyAgent(
-  agent: Pick<PairedAgent, 'agent_id' | 'platform' | 'role'>,
-): boolean {
-  return isExternalAgent(agent) || isOwnerAgent(agent);
+export function isBuiltinAgent(agent: Pick<PairedAgent, 'agent_id'>): boolean {
+  return BUILTIN_AGENT_IDS.includes(text(agent.agent_id));
 }
 
-/** One mutation exists: revoke the token. External/owner rows never expose it. */
+/**
+ * Read-only rows: built-in identities (the engine returns
+ * `cannot_revoke_builtin`) and the human owner (you cannot revoke yourself).
+ * A genuinely paired agent stays mutable even when its platform label is
+ * `muse`, because it *does* own a token the engine will revoke.
+ */
+export function isReadOnlyAgent(
+  agent: Pick<PairedAgent, 'agent_id' | 'role'>,
+): boolean {
+  return isBuiltinAgent(agent) || isOwnerAgent(agent);
+}
+
+/** One mutation exists: revoke the token. Read-only rows never expose it. */
 export function canRevokeAgent(agent: PairedAgent): boolean {
   if (isReadOnlyAgent(agent)) {
     return false;
   }
   return !REVOKED_STATUSES.has(text(agent.status).toLowerCase());
+}
+
+/**
+ * Why a row has no action. Kept here (not in JSX) so the label is unit-tested
+ * and every surface says the same thing. `null` means the row is actionable.
+ */
+export function agentReadOnlyReason(agent: PairedAgent): string | null {
+  if (isBuiltinAgent(agent)) {
+    return isExternalAgent(agent) ? '内置外部 Agent，无独立 Token' : '内置执行器，无独立 Token';
+  }
+  if (isOwnerAgent(agent)) {
+    return '所有者，只读';
+  }
+  if (REVOKED_STATUSES.has(text(agent.status).toLowerCase())) {
+    return 'Token 已撤销，只读';
+  }
+  return null;
 }
 
 /** Map one `chat_members` row; rows without an `agent_id` are dropped. */
@@ -334,11 +376,69 @@ export function validatePairForm(input: PairFormInput): string | null {
   return null;
 }
 
-/** Pull the useful fields out of `agent_pair`'s free-form result object. */
+/** One chat the pairing form can join the new agent to. */
+export interface PairChatOption {
+  chat_id: string;
+  name: string;
+  status: string;
+}
+
+/** Chat picker options: active chats, name-ordered, never a made-up row. */
+export function pairChatOptions(
+  chats: readonly ChatSummary[] | null | undefined,
+): PairChatOption[] {
+  if (!Array.isArray(chats)) {
+    return [];
+  }
+  return chats
+    .filter((chat) => chat != null && text(chat.chat_id).length > 0)
+    .map((chat) => ({
+      chat_id: chat.chat_id,
+      name: text(chat.name) || chat.chat_id,
+      status: text(chat.status) || 'active',
+    }))
+    .filter((chat) => chat.status !== 'archived')
+    .sort(
+      (a, b) =>
+        a.name.localeCompare(b.name, 'zh-Hans-CN') || a.chat_id.localeCompare(b.chat_id),
+    );
+}
+
+/**
+ * The paired-agent list is the union of `chat_members`, so an agent paired
+ * without joining a chat cannot appear in it (acceptance §11 #5: pair → list).
+ * The form therefore requires at least one chat, and says why.
+ */
+export function validatePairChatSelection(
+  chatIds: readonly string[] | null | undefined,
+): string | null {
+  if (!Array.isArray(chatIds) || chatIds.length === 0) {
+    return '至少选择一个群：已配对 Agent 只能从群成员表推导，不加入群就不会出现在上面的列表里。';
+  }
+  return null;
+}
+
+/**
+ * Pull the useful fields out of `agent_pair`'s result object.
+ *
+ * The live engine returns `{ agent: publicAgent(...), token, reclaim, pairing_id }`
+ * (src/agents.js `_redeemPairingCode`), so the identity lives in the nested
+ * `agent` block. Flat `agent_id` / `display_name` are still accepted for
+ * compatibility with older engine builds.
+ */
 export function describePairResult(data: Record<string, unknown>): PairOutcome {
+  const nested = data?.agent;
+  const agent =
+    nested != null && typeof nested === 'object' && !Array.isArray(nested)
+      ? (nested as Record<string, unknown>)
+      : {};
   return {
-    agentId: optionalText(data?.agent_id),
-    displayName: optionalText(data?.display_name) ?? optionalText(data?.name),
+    agentId: optionalText(agent.agent_id) ?? optionalText(data?.agent_id),
+    displayName:
+      optionalText(agent.display_name) ??
+      optionalText(agent.name) ??
+      optionalText(data?.display_name) ??
+      optionalText(data?.name),
     token: optionalText(data?.token),
   };
 }

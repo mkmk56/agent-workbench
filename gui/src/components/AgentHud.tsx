@@ -6,6 +6,7 @@ import dshMark from '../assets/sidebar/dsh-mark.png';
 import claudeMark from '../assets/sidebar/claude-mark.png';
 import museMark from '../assets/sidebar/muse-mark.png';
 import type { EngineStatus } from '../types';
+import { useEngineEventsStatus } from '../lib/engine';
 import {
   hudElapsedLabel,
   useHudConfig,
@@ -126,7 +127,8 @@ function HudPopover({
  */
 export function AgentHud({ engine }: { engine: EngineStatus | null }) {
   const { config } = useHudConfig();
-  const { slots, flights, markRead, messagesError } = useHudData(engine, config.paperPlanes);
+  const { slots, flights, markRead, countsError } = useHudData(engine, config.paperPlanes);
+  const eventsStatus = useEngineEventsStatus();
   const [queued, setQueued] = useState<Partial<Record<HudAgentId, number>>>({});
   const [flashNonce, setFlashNonce] = useState<Record<HudAgentId, number>>({
     muse: 0,
@@ -156,14 +158,19 @@ export function AgentHud({ engine }: { engine: EngineStatus | null }) {
   const slotNote = useCallback(
     (slot: HudSlot): string | undefined => {
       const notes: string[] = [];
-      if (slot.id === 'muse' && messagesError != null) {
-        // No saturation note any more: the unread/paper-plane source is the
-        // per-chat incremental cursor, so a long history cannot freeze it.
-        notes.push(`消息读取失败：${messagesError}（未读与纸飞机可能不完整）`);
+      if (slot.id === 'muse' && countsError != null) {
+        // Unread comes from `inbox` counters and the chat list, never from a
+        // pull-to-read message window: a long history cannot freeze the badge.
+        notes.push(`未读计数读取失败：${countsError}（显示的是上次读数）`);
+      }
+      if (config.paperPlanes && eventsStatus.state !== 'connected') {
+        // Paper planes are driven by pushed wake events; without the live feed
+        // there is no non-mutating way to see agent-to-agent traffic.
+        notes.push('实时推送未连接：纸飞机暂停，未读仍按引擎计数轮询更新。');
       }
       return notes.length > 0 ? notes.join(' ') : undefined;
     },
-    [messagesError],
+    [countsError, config.paperPlanes, eventsStatus.state],
   );
 
   const showFor = useCallback(

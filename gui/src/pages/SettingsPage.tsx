@@ -17,6 +17,7 @@ import type { ReactNode } from 'react';
 import { Notice } from '../components/Layout';
 import {
   AGENT_LIST_SOURCE_NOTE,
+  agentReadOnlyReason,
   agentRoleLabel,
   agentStatusLabel,
   agentStatusTone,
@@ -24,14 +25,17 @@ import {
   describePairResult,
   formatJoinedAt,
   formatPairingExpiry,
+  isBuiltinAgent,
   isExternalAgent,
   isOwnerAgent,
   loadPairedAgents,
+  pairChatOptions,
   platformLabel,
+  validatePairChatSelection,
   validatePairForm,
 } from '../lib/agent-registry';
-import type { PairOutcome } from '../lib/agent-registry';
-import { createPairingCode, pairAgent, revokeAgentToken } from '../lib/chat';
+import type { PairChatOption, PairOutcome } from '../lib/agent-registry';
+import { createPairingCode, listChatsOnce, pairAgent, revokeAgentToken } from '../lib/chat';
 import { useHudConfig } from '../lib/hud';
 import { startEngine, stopEngine, useAgentInfo, useEngineStatus } from '../lib/engine';
 import {
@@ -100,6 +104,10 @@ export function SettingsPage() {
   const [pairForm, setPairForm] = useState({ code: '', name: '', platform: '' });
   const [pairing, setPairing] = useState(false);
   const [pairResult, setPairResult] = useState<PairOutcome | null>(null);
+  // Paired agents are only visible through chat membership, so the form joins
+  // the new agent to at least one chat (acceptance §11 #5: pair → list seen).
+  const [pairChatChoices, setPairChatChoices] = useState<PairChatOption[]>([]);
+  const [pairChatIds, setPairChatIds] = useState<string[]>([]);
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
 
@@ -140,7 +148,17 @@ export function SettingsPage() {
   const refreshAgents = useCallback(async () => {
     setAgentsLoading(true);
     try {
-      const result = await loadPairedAgents();
+      // The chat list feeds the pairing form's chat picker: a new agent has to
+      // join a chat to be visible at all (the list is the chat_members union).
+      const [result, chatResult] = await Promise.all([loadPairedAgents(), listChatsOnce()]);
+      if (chatResult.ok) {
+        const choices = pairChatOptions(chatResult.data);
+        setPairChatChoices(choices);
+        // Drop selections whose chat disappeared or became archived.
+        setPairChatIds((current) =>
+          current.filter((id) => choices.some((choice) => choice.chat_id === id)),
+        );
+      }
       if (!result.ok) {
         // Real engine error, shown verbatim; the previous list is kept as-is.
         setAgentsError(result.error);
@@ -195,6 +213,11 @@ export function SettingsPage() {
       setNotice({ tone: 'warning', title: '配对信息不完整', text: problem });
       return;
     }
+    const chatProblem = validatePairChatSelection(pairChatIds);
+    if (chatProblem != null) {
+      setNotice({ tone: 'warning', title: '还没有选择群', text: chatProblem });
+      return;
+    }
     setPairing(true);
     setPairResult(null);
     try {
@@ -203,6 +226,9 @@ export function SettingsPage() {
         code: pairForm.code.trim(),
         name: pairForm.name.trim(),
         platform: platform.length > 0 ? platform : undefined,
+        // `agent_pair` joins these chats in the same transaction, which is what
+        // makes the new agent show up in the list above right away.
+        chatIds: pairChatIds,
       });
       if (!result.ok) {
         setNotice({ tone: 'error', title: '配对失败', text: result.error });
@@ -213,13 +239,22 @@ export function SettingsPage() {
       setNotice({
         tone: 'success',
         title: `${outcome.displayName ?? outcome.agentId ?? '新 Agent'} 已配对`,
-        text: '引擎已创建 Agent 记录，列表已刷新。',
+        text: `引擎已创建 Agent 记录并加入 ${pairChatIds.length} 个群，列表已刷新。`,
       });
       setPairForm({ code: '', name: '', platform: '' });
+      setPairChatIds([]);
       await refreshAgents();
     } finally {
       setPairing(false);
     }
+  };
+
+  const togglePairChat = (chatId: string) => {
+    setPairChatIds((current) =>
+      current.includes(chatId)
+        ? current.filter((id) => id !== chatId)
+        : [...current, chatId],
+    );
   };
 
   /**
@@ -941,6 +976,7 @@ export function SettingsPage() {
                 <div className="agent-admin__list">
                   {agents.map((agent) => {
                     const external = isExternalAgent(agent);
+                    const builtin = isBuiltinAgent(agent);
                     const owner = isOwnerAgent(agent);
                     const confirming = confirmRevokeId === agent.agent_id;
                     const revocable = canRevokeAgent(agent);
@@ -965,6 +1001,7 @@ export function SettingsPage() {
                             label={agentStatusLabel(agent.status)}
                           />
                           {external && <AppBadge tone="warning" label="外部 Agent" />}
+                          {builtin && !external && <AppBadge tone="neutral" label="内置" />}
                           {owner && <AppBadge tone="neutral" label="所有者" />}
                         </div>
                         <div className="agent-admin__actions">
@@ -1000,14 +1037,11 @@ export function SettingsPage() {
                               onClick={() => setConfirmRevokeId(agent.agent_id)}
                             />
                           ) : (
-                            /* Muse has no local executor and the owner cannot revoke
+                            /* Built-ins are rejected by the engine
+                               (cannot_revoke_builtin) and the owner cannot revoke
                                itself: no button, just the honest reason. */
                             <span className="agent-admin__readonly">
-                              {external
-                                ? '外部 Agent，只读'
-                                : owner
-                                  ? '所有者，只读'
-                                  : 'Token 已撤销，只读'}
+                              {agentReadOnlyReason(agent) ?? '只读'}
                             </span>
                           )}
                         </div>
@@ -1020,7 +1054,9 @@ export function SettingsPage() {
               <p className="agent-admin__note">
                 引擎没有独立的启用/停用工具：“停用”执行的就是撤销该 Agent 的 Token
                 （<span className="mono">agent_revoke_token</span>），撤销后它不能再调用引擎，
-                需要重新配对才能恢复。Muse 是外部 Agent，本机没有它的执行器，因此只读。
+                需要重新配对才能恢复。Muse、Claude、dsh 是引擎内置身份，不持有独立 Token，
+                撤销会被引擎拒绝（<span className="mono">cannot_revoke_builtin</span>），
+                因此只读；只有真正配对出来的 Agent 可以撤销。
               </p>
 
               <div className="agent-admin__pair">
@@ -1086,11 +1122,44 @@ export function SettingsPage() {
                       tone="primary"
                       size="sm"
                       isLoading={pairing}
-                      isDisabled={pairing}
+                      isDisabled={pairing || pairChatChoices.length === 0}
                       onClick={() => void submitPair()}
                     />
                   </div>
                 </div>
+
+                {/* `agent_pair` accepts `chat_ids`; joining here is what makes the
+                    new agent appear in the list above immediately. */}
+                <fieldset className="agent-admin__chats">
+                  <legend className="setting-label">加入哪些群（至少一个）</legend>
+                  <p className="field__hint">
+                    已配对 Agent 的列表来自各群成员表（引擎没有全局 Agent 列表工具），
+                    不加入任何群的 Agent 不会出现在上面的列表里。
+                  </p>
+                  {pairChatChoices.length === 0 ? (
+                    <p className="agent-admin__empty">
+                      引擎还没有可加入的群聊：先在聊天里建一个群，再回来配对。
+                    </p>
+                  ) : (
+                    <div
+                      className="agent-admin__chat-list"
+                      role="group"
+                      aria-label="选择要加入的群"
+                    >
+                      {pairChatChoices.map((choice) => (
+                        <label className="agent-admin__chat" key={choice.chat_id}>
+                          <input
+                            type="checkbox"
+                            checked={pairChatIds.includes(choice.chat_id)}
+                            onChange={() => togglePairChat(choice.chat_id)}
+                          />
+                          <span className="agent-admin__chat-name">{choice.name}</span>
+                          <span className="agent-admin__chat-id">{choice.chat_id}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </fieldset>
 
                 {pairResult != null && (
                   <div className="agent-admin__result">

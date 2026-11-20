@@ -288,3 +288,45 @@ export function buildChatStream(
 export function countSystemMessages(messages: ChatMessage[]): number {
   return messages.filter((message) => message.kind === 'system').length;
 }
+
+/* ------------------------------------------------------------------ *
+ * Task inspector retry: the engine-recorded original parameters
+ * ------------------------------------------------------------------ */
+
+/** The `task_status` fields a retry reads (REA Phase 4 §4 / cross-review M2). */
+export interface TaskRetrySource {
+  prompt?: string | null;
+  cwd?: string | null;
+}
+
+/**
+ * The prompt a "重试" must reuse — verbatim, never the summary.
+ *
+ * `task_status.summary` is the *result* text written when the run finishes, not
+ * the input, so reusing it starts a different task. The engine now exposes the
+ * stored `prompt` and `cwd`; when the prompt is missing (older engine) the
+ * caller has to disable the action rather than invent one from the summary or
+ * fall back to the task id.
+ */
+export function retryPromptOf(task: TaskRetrySource | null | undefined): string | null {
+  if (task == null) {
+    return null;
+  }
+  const prompt = task.prompt;
+  if (typeof prompt !== 'string' || prompt.trim().length === 0) {
+    return null;
+  }
+  return prompt;
+}
+
+/** Original working directory, or null when the engine reported none. */
+export function retryCwdOf(task: TaskRetrySource | null | undefined): string | null {
+  if (task == null) {
+    return null;
+  }
+  const cwd = task.cwd;
+  if (typeof cwd !== 'string' || cwd.trim().length === 0) {
+    return null;
+  }
+  return cwd;
+}

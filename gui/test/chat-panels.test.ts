@@ -18,6 +18,8 @@ import {
   isSameDay,
   nudgeInspectorWidth,
   parseInspectorLayout,
+  retryCwdOf,
+  retryPromptOf,
   readDraft,
   readHideSystemMessages,
   readInspectorLayout,
@@ -223,4 +225,27 @@ test('isSameDay compares local calendar days, not 24h windows', () => {
   assert.equal(isSameDay('2026-11-20T00:00:01', '2026-11-20T23:59:59'), true);
   assert.equal(isSameDay('2026-11-20T23:59:59', '2026-11-21T00:00:01'), false);
   assert.equal(isSameDay('garbage', 'garbage'), true);
+});
+
+test('retry reuses the stored prompt, never the finished summary', () => {
+  // `summary` is the result text of a finished run (src/scheduler.js); feeding it
+  // back as the prompt starts a different task, which is exactly what M2 fixed.
+  assert.equal(
+    retryPromptOf({ prompt: '修复登录超时', summary: '已经修好了' }),
+    '修复登录超时',
+  );
+  // Verbatim: an internal newline / trailing space is part of the prompt.
+  assert.equal(retryPromptOf({ prompt: '  keep  me \n' }), '  keep  me \n');
+  assert.equal(retryPromptOf({ prompt: '   ', summary: '结论' }), null);
+  assert.equal(retryPromptOf({ prompt: null, summary: '结论' }), null);
+  assert.equal(retryPromptOf({ summary: '结论' }), null, 'an old engine has no prompt');
+  assert.equal(retryPromptOf(null), null);
+  assert.equal(retryPromptOf(undefined), null);
+});
+
+test('retry reads the stored cwd and omits it when the engine has none', () => {
+  assert.equal(retryCwdOf({ prompt: 'p', cwd: 'C:\\work' }), 'C:\\work');
+  assert.equal(retryCwdOf({ prompt: 'p', cwd: '   ' }), null);
+  assert.equal(retryCwdOf({ prompt: 'p' }), null);
+  assert.equal(retryCwdOf(null), null);
 });

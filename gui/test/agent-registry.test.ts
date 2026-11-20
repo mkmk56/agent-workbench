@@ -22,8 +22,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   AGENT_LIST_SOURCE_NOTE,
+  BUILTIN_AGENT_IDS,
   MUSE_AGENT_ID,
   OWNER_AGENT_ID,
+  agentReadOnlyReason,
   agentRoleLabel,
   agentStatusLabel,
   agentStatusTone,
@@ -31,14 +33,17 @@ import {
   describePairResult,
   formatJoinedAt,
   formatPairingExpiry,
+  isBuiltinAgent,
   isExternalAgent,
   isOwnerAgent,
   isReadOnlyAgent,
   loadPairedAgents,
   mergePairedAgents,
+  pairChatOptions,
   platformLabel,
   toIsoTimestamp,
   toPairedAgent,
+  validatePairChatSelection,
   validatePairForm,
 } from '../src/lib/agent-registry.ts';
 
@@ -156,29 +161,75 @@ test('mergePairedAgents fills gaps from later chats and sorts owners first', () 
   assert.equal(muse?.external, true, 'external is derived after the merge');
 });
 
-test('Muse and the human owner are read-only, so revoke is never offered for them', () => {
+test('built-in identities and the human owner are read-only, so revoke is never offered', () => {
   const museById = toPairedAgent(member({ agent_id: MUSE_AGENT_ID, platform: null }));
   const museByPlatform = toPairedAgent(
     member({ agent_id: 'agent_muse_external', platform: 'muse' }),
   );
+  const claude = toPairedAgent(member()); // agent_claude: built-in
+  const dsh = toPairedAgent(member({ agent_id: 'agent_dsh', participant_id: 'dsh', platform: 'dsh' }));
   const owner = toPairedAgent(member({ agent_id: OWNER_AGENT_ID, role: 'owner' }));
-  const regular = toPairedAgent(member());
+  // A genuinely paired agent: the engine will revoke its token.
+  const paired = toPairedAgent(
+    member({ agent_id: 'agent_reviewer', participant_id: 'agent_reviewer', platform: 'custom' }),
+  );
 
+  assert.deepEqual([...BUILTIN_AGENT_IDS], ['agent_muse', 'agent_claude', 'agent_dsh']);
   assert.equal(isExternalAgent(museById!), true);
   assert.equal(isExternalAgent(museByPlatform!), true);
   assert.equal(isOwnerAgent(owner!), true);
+  assert.equal(isBuiltinAgent(museById!), true);
+  assert.equal(isBuiltinAgent(claude!), true, 'Claude is built in');
+  assert.equal(isBuiltinAgent(dsh!), true, 'dsh is built in');
+  assert.equal(isBuiltinAgent(paired!), false);
   assert.equal(isReadOnlyAgent(museById!), true);
+  assert.equal(isReadOnlyAgent(claude!), true);
+  assert.equal(isReadOnlyAgent(dsh!), true);
   assert.equal(isReadOnlyAgent(owner!), true);
-  assert.equal(isReadOnlyAgent(regular!), false);
+  assert.equal(isReadOnlyAgent(paired!), false);
 
+  // The engine answers cannot_revoke_builtin 403 for all three built-ins, so no
+  // revoke button may be rendered for them (M3: no control that can only fail).
   assert.equal(canRevokeAgent(museById!), false);
-  assert.equal(canRevokeAgent(museByPlatform!), false);
-  assert.equal(canRevokeAgent(owner!), false);
-  assert.equal(canRevokeAgent(regular!), true);
+  assert.equal(canRevokeAgent(claude!), false);
+  assert.equal(canRevokeAgent(dsh!), false);
   assert.equal(
-    canRevokeAgent(toPairedAgent(member({ status: 'revoked' }))!),
+    canRevokeAgent(museByPlatform!),
+    true,
+    'a paired agent whose platform label says muse still owns a revocable token',
+  );
+  assert.equal(canRevokeAgent(owner!), false);
+  assert.equal(canRevokeAgent(paired!), true);
+  assert.equal(
+    canRevokeAgent(toPairedAgent(member({ agent_id: 'agent_reviewer', status: 'revoked' }))!),
     false,
     'nothing left to revoke once the token is gone',
+  );
+});
+
+test('the read-only label states the real reason, never a generic "只读"', () => {
+  assert.equal(
+    agentReadOnlyReason(toPairedAgent(member())!),
+    '内置执行器，无独立 Token',
+  );
+  assert.equal(
+    agentReadOnlyReason(toPairedAgent(member({ agent_id: MUSE_AGENT_ID, platform: 'muse' }))!),
+    '内置外部 Agent，无独立 Token',
+  );
+  assert.equal(
+    agentReadOnlyReason(toPairedAgent(member({ agent_id: OWNER_AGENT_ID, role: 'owner' }))!),
+    '所有者，只读',
+  );
+  assert.equal(
+    agentReadOnlyReason(toPairedAgent(member({ agent_id: 'agent_reviewer', status: 'revoked' }))!),
+    'Token 已撤销，只读',
+  );
+  assert.equal(
+    agentReadOnlyReason(
+      toPairedAgent(member({ agent_id: 'agent_reviewer', platform: 'custom' }))!,
+    ),
+    null,
+    'an actionable row has no read-only reason',
   );
 });
 
@@ -235,7 +286,26 @@ test('validatePairForm guards the client-side minimum only', () => {
   );
 });
 
-test('describePairResult reads agent_pair output without inventing fields', () => {
+test('describePairResult reads the real agent_pair envelope without inventing fields', () => {
+  // Live engine shape (src/agents.js `_redeemPairingCode`):
+  //   { agent: publicAgent(row), token, reclaim, pairing_id }
+  assert.deepEqual(
+    describePairResult({
+      agent: {
+        agent_id: 'agent_x',
+        participant_id: 'agent_x',
+        display_name: 'Reviewer',
+        platform: 'custom',
+        status: 'active',
+        created_at: 1_735_689_600_000,
+      },
+      token: 'pachat_abc',
+      reclaim: false,
+      pairing_id: 'pair-1',
+    }),
+    { agentId: 'agent_x', displayName: 'Reviewer', token: 'pachat_abc' },
+  );
+  // Flat shapes from older engine builds stay readable.
   assert.deepEqual(describePairResult({ agent_id: 'agent_x', display_name: 'X', token: 't' }), {
     agentId: 'agent_x',
     displayName: 'X',
@@ -246,7 +316,36 @@ test('describePairResult reads agent_pair output without inventing fields', () =
     displayName: 'Y',
     token: null,
   });
+  // A nested block wins over a stale flat duplicate.
+  assert.deepEqual(
+    describePairResult({ agent: { agent_id: 'agent_new', display_name: 'New' }, agent_id: 'agent_old' }),
+    { agentId: 'agent_new', displayName: 'New', token: null },
+  );
   assert.deepEqual(describePairResult({}), { agentId: null, displayName: null, token: null });
+});
+
+test('pairChatOptions lists active chats, name-ordered, and never invents one', () => {
+  const options = pairChatOptions([
+    { chat_id: 'chat-b', name: 'Beta', status: 'active' },
+    { chat_id: 'chat-a', name: 'Alpha', status: 'active' },
+    { chat_id: 'chat-old', name: 'Old', status: 'archived' },
+    { chat_id: '', name: 'No id', status: 'active' },
+    { chat_id: 'chat-c', name: '  ', status: 'active' },
+  ] as never);
+  assert.deepEqual(
+    options.map((option) => option.chat_id),
+    ['chat-a', 'chat-b', 'chat-c'],
+  );
+  assert.equal(options[2]?.name, 'chat-c', 'an unnamed chat falls back to its id');
+  assert.deepEqual(pairChatOptions(null), []);
+  assert.deepEqual(pairChatOptions(undefined), []);
+});
+
+test('pairing must join at least one chat so the new agent is visible', () => {
+  assert.match(validatePairChatSelection([])!, /至少选择一个群/);
+  assert.match(validatePairChatSelection(null)!, /至少选择一个群/);
+  assert.match(validatePairChatSelection(undefined)!, /至少选择一个群/);
+  assert.equal(validatePairChatSelection(['chat-1']), null);
 });
 
 test('loadPairedAgents unions chat_members over all chats (archived included)', async () => {

@@ -1,18 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AgentInfo,
-  ChatMessage,
-  ChatSummary,
   EngineStatus,
   EngineTaskSummary,
   HudConfig,
 } from '../types';
-import { listChatMessages, listChatsOnce } from './chat';
+import { chatInboxOnce, listChatsOnce } from './chat';
+import {
+  FLIGHT_WINDOW_MS,
+  HUD_AGENT_IDS,
+  HUD_COUNTER_IDS,
+  flightFromEvent,
+  inboxUnreadTotal,
+  reconciledFloor,
+  unreadBadge,
+  type HudCounterExecutorId,
+  type HudCounterId,
+} from './hud-counters';
 import { engineEvents, useAgentInfo, useTaskList } from './engine';
 import { formatDuration, formatRelative, taskDisplayTitle } from './labels';
 
-export type HudAgentId = 'muse' | 'claude' | 'dsh';
-export type HudExecutorId = 'claude' | 'dsh';
+export type HudAgentId = HudCounterId;
+export type HudExecutorId = HudCounterExecutorId;
 export type HudState = 'idle' | 'working' | 'waiting' | 'error';
 
 export interface HudSlot {
@@ -47,10 +56,17 @@ const ACTIVE_STATES = new Set([
 ]);
 const ERROR_ACTIVE_STATES = new Set(['BLOCKED', 'STALE']);
 const RECENT_FAILURE_MS = 15 * 60 * 1000;
-/** Bound on how many chats the glance HUD tracks in one poll. */
-const MAX_HUD_CHATS = 12;
-/** Incremental page size per chat; the cursor makes it window-free. */
-const HUD_PAGE_LIMIT = 200;
+/** Chat list poll: waiting-for-user flags and agent statuses (read-only). */
+const CHAT_POLL_MS = 3_000;
+/**
+ * Unread counters poll. `inbox` recomputes per-chat categories server-side, so
+ * it runs at the Inbox page cadence (15 s) instead of the HUD's 3 s glance tick;
+ * a pushed wake event refreshes it earlier, throttled by UNREAD_PUSH_THROTTLE_MS.
+ */
+const UNREAD_POLL_MS = 15_000;
+const UNREAD_PUSH_THROTTLE_MS = 5_000;
+/** Cap on remembered message ids so an SSE replay cannot grow without bound. */
+const MAX_SEEN_FLIGHTS = 500;
 
 const STATE_TEXT: Record<HudState, string> = {
   idle: '空闲',
@@ -58,10 +74,6 @@ const STATE_TEXT: Record<HudState, string> = {
   waiting: '等你输入',
   error: '出错',
 };
-
-function isExecutor(value: string): value is HudExecutorId {
-  return value === 'claude' || value === 'dsh';
-}
 
 function byCreatedAt(a: EngineTaskSummary, b: EngineTaskSummary): number {
   return Date.parse(b.created_at) - Date.parse(a.created_at);
@@ -305,18 +317,25 @@ export function useHudConfig(): {
  * Builds the HUD from real engine data only:
  * - agent_info for availability/model,
  * - task_list for activity, waiting and recent failures,
- * - the chat list + per-chat message cursors for user-directed reports,
- *   agent-to-agent flights and "waiting for the user".
+ * - `inbox` per-agent unread counters (read-only),
+ * - the chat list for "waiting for the user",
+ * - pushed `GET /events` envelopes for the agent-to-agent paper planes.
  *
  * Muse has no direct API; its activity is the aggregate of engine tasks and the
  * detail text says so explicitly.
  *
- * Phase 4 §7.3 fixes the old 500-row saturation bug: the HUD used to derive
- * unread / paper planes from `list_messages({limit:500})`, which returns the
- * OLDEST 500 rows, so past 500 messages no new row ever entered the window and
- * the counters froze for good (a restart did not help). The activity source is
- * now the chat stream itself, read incrementally with a per-chat `after_seq`
- * cursor, so the window never saturates no matter how long the history grows.
+ * Phase 4 §7.3 — the 500-row saturation bug and its regression:
+ *  - The old HUD derived unread / paper planes from `list_messages({limit:500})`,
+ *    which returns the OLDEST 500 rows, so past 500 messages the counters froze
+ *    for good.
+ *  - The first fix switched to incrementally reading `list_chat_messages`, but
+ *    that tool is pull-to-read: it advances the master token's read cursor, so
+ *    the background poll marked every chat read and the sidebar unread badges
+ *    went permanently empty (cross-review M1).
+ *  - This version never advances a read cursor: unread comes from `inbox`
+ *    counters (absolute, no window, history length irrelevant) and the paper
+ *    planes come from pushed wake events. Only the chat the user has open is
+ *    allowed to pull-to-read (that is the chat store's job, not the HUD's).
  */
 export function useHudData(
   engine: EngineStatus | null,
@@ -325,152 +344,206 @@ export function useHudData(
   slots: HudSlot[];
   flights: HudFlight[];
   markRead: (id: HudAgentId) => void;
-  messagesError: string | null;
+  countsError: string | null;
 } {
   const agentState = useAgentInfo(30_000);
   const taskState = useTaskList(200, 4_000);
-  const [chats, setChats] = useState<ChatSummary[]>([]);
-  const [messagesError, setMessagesError] = useState<string | null>(null);
-  const [unread, setUnread] = useState<Record<HudAgentId, number>>({
+  const [waitingForUser, setWaitingForUser] = useState(false);
+  /** Absolute unread per slot, straight from `inbox` (`total_unread`). */
+  const [unreadAbsolute, setUnreadAbsolute] = useState<Record<HudAgentId, number>>({
     muse: 0,
     claude: 0,
     dsh: 0,
   });
+  /** Engine count at the moment the user last dismissed a slot's badge. */
+  const [unreadFloor, setUnreadFloor] = useState<Record<HudAgentId, number>>({
+    muse: 0,
+    claude: 0,
+    dsh: 0,
+  });
+  const [chatsError, setChatsError] = useState<string | null>(null);
+  const [unreadError, setUnreadError] = useState<string | null>(null);
   const [flights, setFlights] = useState<HudFlight[]>([]);
-  /** Highest seq seen per chat; the incremental cursor that never saturates. */
-  const cursors = useRef<Map<string, number>>(new Map());
-  /** First pass only establishes the cursors: history is not "unread". */
-  const baselined = useRef(false);
+  const alive = useRef(true);
   const nextFlight = useRef(1);
-  const inFlight = useRef(false);
+  /** Message ids already animated, so an SSE replay never duplicates a flight. */
+  const seenFlights = useRef<Set<string>>(new Set());
+  const lastUnreadAt = useRef(0);
+  const pendingUnreadRefresh = useRef<number | null>(null);
+  const unreadRef = useRef(unreadAbsolute);
+  unreadRef.current = unreadAbsolute;
+  const paperPlanesRef = useRef(paperPlanes);
+  paperPlanesRef.current = paperPlanes;
 
   useEffect(() => {
-    let alive = true;
-    const poll = async () => {
-      if (!window.workbench || inFlight.current) {
-        return;
-      }
-      inFlight.current = true;
-      try {
-        const listResult = await listChatsOnce();
-        if (!alive) {
-          return;
-        }
-        if (!listResult.ok) {
-          setMessagesError(listResult.error);
-          return;
-        }
-        // Bound the fan-out: the HUD is a glance view, not an archive reader.
-        const active = listResult.data
-          .filter((chat) => chat.status !== 'archived')
-          .slice(0, MAX_HUD_CHATS);
-        setChats(active);
-
-        const fresh: ChatMessage[] = [];
-        let failure: string | null = null;
-        for (const chat of active) {
-          const afterSeq = cursors.current.get(chat.chat_id) ?? 0;
-          const page = await listChatMessages({
-            chatId: chat.chat_id,
-            afterSeq: afterSeq > 0 ? afterSeq : undefined,
-            limit: HUD_PAGE_LIMIT,
-          });
-          if (!alive) {
-            return;
-          }
-          if (!page.ok) {
-            failure = failure ?? page.error;
-            continue;
-          }
-          let maxSeq = afterSeq;
-          for (const message of page.data.messages) {
-            maxSeq = Math.max(maxSeq, message.seq);
-          }
-          cursors.current.set(chat.chat_id, maxSeq);
-          if (baselined.current) {
-            fresh.push(...page.data.messages);
-          }
-        }
-        setMessagesError(failure);
-        if (!baselined.current) {
-          baselined.current = true;
-          return;
-        }
-        if (fresh.length === 0) {
-          return;
-        }
-
-        const increments: Record<HudAgentId, number> = { muse: 0, claude: 0, dsh: 0 };
-        for (const row of fresh) {
-          if (row.from === 'user') {
-            continue;
-          }
-          if (row.to === 'claude' || row.to === 'dsh') {
-            increments[row.to] += 1;
-          } else if (row.to === 'user') {
-            increments.muse += 1;
-          }
-        }
-        setUnread((current) => ({
-          muse: current.muse + increments.muse,
-          claude: current.claude + increments.claude,
-          dsh: current.dsh + increments.dsh,
-        }));
-
-        if (paperPlanes) {
-          const agentFlights: HudFlight[] = [];
-          for (const row of fresh) {
-            if (isExecutor(row.from) && isExecutor(row.to)) {
-              agentFlights.push({
-                seq: nextFlight.current++,
-                messageId: row.message_id,
-                from: row.from,
-                to: row.to,
-              });
-            }
-          }
-          if (agentFlights.length > 0) {
-            setFlights((current) => [...current.slice(-20), ...agentFlights]);
-          }
-        }
-      } catch {
-        if (alive) {
-          setMessagesError('读取消息失败。');
-        }
-      } finally {
-        inFlight.current = false;
-      }
-    };
-
-    void poll();
-    const timer = setInterval(() => {
-      if (!document.hidden) {
-        void poll();
-      }
-    }, 3_000);
-    // A pushed wake event means a new message exists right now: refresh at once
-    // instead of waiting for the next tick (the interval stays as the fallback).
-    const detach = engineEvents.subscribeEvents(() => {
-      void poll();
-    });
+    alive.current = true;
     return () => {
-      alive = false;
-      clearInterval(timer);
-      detach();
+      alive.current = false;
     };
-  }, [paperPlanes]);
-
-  const markRead = useCallback((id: HudAgentId) => {
-    setUnread((current) => ({ ...current, [id]: 0 }));
   }, []);
 
-  // "Waiting for the user" comes from the chat list, which is the same source
-  // the chat header uses; it has no row window to saturate.
-  const waitingForUser =
-    chats.some((chat) => chat.needs_muse === true) ||
-    chats.some((chat) =>
-      ['muse', 'claude', 'dsh'].some((id) => chat.agents?.[id as HudAgentId] === 'waiting'),
-    );
+  /**
+   * Chat list poll: only "waiting for the user" and the agent statuses are read
+   * from here. `list_chats` is a plain read — it never advances a read cursor.
+   */
+  const refreshChats = useCallback(async () => {
+    if (!window.workbench) {
+      return;
+    }
+    try {
+      const result = await listChatsOnce();
+      if (!alive.current) {
+        return;
+      }
+      if (!result.ok) {
+        setChatsError(result.error);
+        return;
+      }
+      setChatsError(null);
+      setWaitingForUser(
+        result.data.some((chat) => chat.needs_muse === true) ||
+          result.data.some((chat) =>
+            HUD_COUNTER_IDS.some((id) => chat.agents?.[id] === 'waiting'),
+          ),
+      );
+    } catch {
+      if (alive.current) {
+        setChatsError('读取群聊列表失败（主进程调用异常）。');
+      }
+    }
+  }, []);
+
+  /**
+   * Unread counters. `inbox` is the only engine read that returns message counts
+   * without advancing the viewer's cursor ("Reading the inbox does not mark
+   * messages read", src/tools.js). A failed agent keeps its previous number
+   * instead of silently dropping to 0, and the verbatim error is surfaced.
+   */
+  const refreshUnread = useCallback(async () => {
+    if (!window.workbench) {
+      return;
+    }
+    try {
+      const results = await Promise.all(
+        HUD_COUNTER_IDS.map((id) => chatInboxOnce(HUD_AGENT_IDS[id])),
+      );
+      if (!alive.current) {
+        return;
+      }
+      const next: Record<HudAgentId, number> = { ...unreadRef.current };
+      let failure: string | null = null;
+      HUD_COUNTER_IDS.forEach((id, index) => {
+        const result = results[index];
+        if (result.ok) {
+          next[id] = inboxUnreadTotal(result.data);
+        } else {
+          failure = failure ?? result.error;
+        }
+      });
+      lastUnreadAt.current = Date.now();
+      setUnreadAbsolute(next);
+      // Keep the dismissed floor honest when the engine count drops (the agent
+      // read its inbox) so a later message is not swallowed by a stale floor.
+      setUnreadFloor((floor) => {
+        const reconciled: Record<HudAgentId, number> = { ...floor };
+        for (const id of HUD_COUNTER_IDS) {
+          reconciled[id] = reconciledFloor(floor[id], next[id]);
+        }
+        return reconciled;
+      });
+      setUnreadError(failure);
+    } catch {
+      if (alive.current) {
+        setUnreadError('读取未读计数失败（主进程调用异常）。');
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!window.workbench) {
+      return;
+    }
+    void refreshChats();
+    void refreshUnread();
+    const chatTimer = window.setInterval(() => {
+      if (!document.hidden) {
+        void refreshChats();
+      }
+    }, CHAT_POLL_MS);
+    const unreadTimer = window.setInterval(() => {
+      if (!document.hidden) {
+        void refreshUnread();
+      }
+    }, UNREAD_POLL_MS);
+    return () => {
+      window.clearInterval(chatTimer);
+      window.clearInterval(unreadTimer);
+    };
+  }, [refreshChats, refreshUnread]);
+
+  // A pushed wake event means something just happened: refresh at once instead
+  // of waiting for the next tick (the intervals stay as the polling fallback).
+  // Paper planes are derived from the same envelopes, so they need no message
+  // read at all and therefore no read cursor either.
+  useEffect(() => {
+    const detach = engineEvents.subscribeEvents((event) => {
+      void refreshChats();
+      // `inbox` recomputes server-side counters, so push-triggered refreshes are
+      // throttled; a burst of events cannot turn it into a hot loop.
+      const now = Date.now();
+      const sinceLast = now - lastUnreadAt.current;
+      if (sinceLast >= UNREAD_PUSH_THROTTLE_MS) {
+        void refreshUnread();
+      } else if (pendingUnreadRefresh.current == null) {
+        pendingUnreadRefresh.current = window.setTimeout(() => {
+          pendingUnreadRefresh.current = null;
+          void refreshUnread();
+        }, UNREAD_PUSH_THROTTLE_MS - sinceLast);
+      }
+      if (!paperPlanesRef.current) {
+        return;
+      }
+      const hint = flightFromEvent(event, now, FLIGHT_WINDOW_MS);
+      if (hint == null) {
+        return;
+      }
+      const key = hint.messageId ?? `event:${event.id ?? event.seq}`;
+      if (seenFlights.current.has(key)) {
+        return;
+      }
+      if (seenFlights.current.size >= MAX_SEEN_FLIGHTS) {
+        seenFlights.current.clear();
+      }
+      seenFlights.current.add(key);
+      setFlights((current) => [
+        ...current.slice(-20),
+        { seq: nextFlight.current++, messageId: key, from: hint.from, to: hint.to },
+      ]);
+    });
+    return () => {
+      detach();
+      if (pendingUnreadRefresh.current != null) {
+        window.clearTimeout(pendingUnreadRefresh.current);
+        pendingUnreadRefresh.current = null;
+      }
+    };
+  }, [refreshChats, refreshUnread]);
+
+  const markRead = useCallback((id: HudAgentId) => {
+    // Glance-only dismissal. The engine read cursor is deliberately NOT advanced
+    // here: a background panel marking chats read is exactly the M1 regression.
+    setUnreadFloor((floor) => ({ ...floor, [id]: unreadRef.current[id] ?? 0 }));
+  }, []);
+
+  // Badge = absolute engine unread minus the local dismissed floor. Both are
+  // counters, so no row window exists that a long history could saturate.
+  const unread = useMemo(() => {
+    const badges: Record<HudAgentId, number> = { muse: 0, claude: 0, dsh: 0 };
+    for (const id of HUD_COUNTER_IDS) {
+      badges[id] = unreadBadge(unreadAbsolute[id], unreadFloor[id]);
+    }
+    return badges;
+  }, [unreadAbsolute, unreadFloor]);
 
   const slots = useMemo(
     () => [
@@ -509,7 +582,7 @@ export function useHudData(
     ],
   );
 
-  return { slots, flights, markRead, messagesError };
+  return { slots, flights, markRead, countsError: chatsError ?? unreadError };
 }
 
 export function hudElapsedLabel(ms: number | null): string {

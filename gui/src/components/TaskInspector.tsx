@@ -37,6 +37,8 @@ import {
   dragInspectorWidth,
   nudgeInspectorWidth,
   readInspectorLayout,
+  retryCwdOf,
+  retryPromptOf,
   writeInspectorLayout,
   type PanelStorage,
 } from '../lib/chat-panels';
@@ -205,18 +207,29 @@ export function TaskInspector({
 
   /**
    * Retry re-runs the task with the parameters the engine recorded: the same
-   * executor and prompt. `task_status` does not expose the original cwd, so the
-   * engine's default working directory applies (same as a plain task_start).
+   * executor, the stored `prompt` and the stored `cwd` (both now returned by
+   * `task_status`). `summary` is the finished task's *result* text and must
+   * never be reused as the input prompt — when the engine does not send the
+   * original prompt the action is disabled instead of inventing one.
    */
+  const retryPrompt = retryPromptOf(task);
+  const retryCwd = retryCwdOf(task);
+
   const runRetry = async () => {
-    if (task == null) {
+    if (task == null || retryPrompt == null) {
+      setNotice({
+        tone: 'warning',
+        title: '无法按原参数重跑',
+        text: '引擎没有返回该任务的原 prompt，重跑会变成另一个任务。',
+      });
       return;
     }
     setBusy(true);
     try {
       const result = await startTask({
         agent: task.agent,
-        prompt: task.summary != null && task.summary.length > 0 ? task.summary : task.task_id,
+        prompt: retryPrompt,
+        ...(retryCwd != null ? { cwd: retryCwd } : {}),
       });
       if (!result.ok) {
         setNotice({ tone: 'error', title: '重跑失败', text: result.error });
@@ -226,7 +239,9 @@ export function TaskInspector({
       setNotice({
         tone: 'success',
         title: '已用原参数重跑',
-        text: `新任务 #${result.data.task_id}（执行器 ${task.agent}）。`,
+        text: `新任务 #${result.data.task_id}（执行器 ${task.agent}${
+          retryCwd != null ? `，工作目录 ${retryCwd}` : ''
+        }）。`,
       });
     } finally {
       setBusy(false);
@@ -362,8 +377,14 @@ export function TaskInspector({
             <button
               type="button"
               className="btn btn-secondary btn-sm"
-              disabled={!terminal || busy}
-              title={terminal ? '用原执行器与原 prompt 重新开始' : '只有已结束的任务可以重跑'}
+              disabled={!terminal || busy || retryPrompt == null}
+              title={
+                terminal
+                  ? retryPrompt == null
+                    ? '引擎没有返回原 prompt，无法按原参数重跑'
+                    : '用原执行器、原 prompt 与原工作目录重新开始'
+                  : '只有已结束的任务可以重跑'
+              }
               onClick={() => void runRetry()}
             >
               <RotateCw size={13} aria-hidden="true" />
@@ -587,7 +608,8 @@ export function TaskInspector({
               </div>
               <p className="inspector__hint">
                 追问通过 task_send 在同一会话中创建新任务；<Timer size={11} aria-hidden="true" />{' '}
-                重试会按原执行器与原 prompt 重新开始。
+                重试会按 task_status 返回的原 prompt 与原工作目录重新开始
+                {retryPrompt == null ? '（本次引擎未返回原 prompt，重试已禁用）' : ''}。
               </p>
             </section>
           )}
