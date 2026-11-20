@@ -1,5 +1,5 @@
 import { Theme } from '@astryxdesign/core';
-import type { ReactElement } from 'react';
+import { lazy, Suspense, type ReactElement } from 'react';
 import { AppFrame } from './components/AppFrame';
 import { useRoute } from './lib/router';
 import { useAppTheme } from './lib/theme';
@@ -14,6 +14,12 @@ import { SettingsPage } from './pages/SettingsPage';
 import { TaskDetailPage } from './pages/TaskDetailPage';
 import { TasksPage } from './pages/TasksPage';
 import { brandTheme } from './theme/brand-theme.mjs';
+
+// Preview-only route: lazy so reicon-react stays in its own chunk and never
+// rides along with the production chat screens.
+const PreviewReiconPage = lazy(() =>
+  import('./pages/PreviewReiconPage').then((module) => ({ default: module.PreviewReiconPage })),
+);
 
 export function App() {
   const route = useRoute();
@@ -51,6 +57,13 @@ export function App() {
       break;
     case 'about':
       page = <AboutPage />;
+      break;
+    case 'preview-reicon':
+      page = (
+        <Suspense fallback={<p>正在加载图标预览…</p>}>
+          <PreviewReiconPage />
+        </Suspense>
+      );
       break;
   }
 

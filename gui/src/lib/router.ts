@@ -40,6 +40,11 @@ export function parseHash(hash: string): Route {
   if (parts[0] === 'about') {
     return { name: 'about' };
   }
+  // Hidden preview route (Lucide ⇄ Reicon comparison). Deliberately not in
+  // the nav rail and not reachable from any production screen.
+  if (parts[0] === 'preview' && parts[1] === 'reicon') {
+    return { name: 'preview-reicon' };
+  }
   return { name: 'chats' };
 }
 

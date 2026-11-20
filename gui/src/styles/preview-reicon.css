@@ -1,0 +1,380 @@
+/* Isolated Lucide ⇄ Reicon comparison page (#/preview/reicon).
+ *
+ * Preview-only: every rule is scoped under .rp-* so no production surface is
+ * touched. Colours come from the existing brand tokens, so the matte-black
+ * palette (and the chat bubble colours, which are not used here) stay as-is.
+ * The frame reuses the real Phase 4 class names (.nav-rail, .chat-sidebar,
+ * .chat-item, .chat-settings-*) and only overrides the few fixed-position /
+ * viewport-height rules so the components can sit inside a comparison pane.
+ */
+
+.rp-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-bottom: 32px;
+}
+
+/* --- Header + controls -------------------------------------------- */
+.rp-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.rp-head__text {
+  max-width: 760px;
+}
+
+.rp-eyebrow {
+  margin: 0 0 6px;
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.rp-head h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.rp-lede {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 21px;
+  color: var(--text-secondary);
+}
+
+.rp-controls {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.rp-control {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.rp-control__label {
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.rp-seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.rp-seg__btn {
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+.rp-seg__btn + .rp-seg__btn {
+  border-left: 1px solid var(--border);
+}
+
+.rp-seg__btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.rp-seg__btn.is-active {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.rp-seg__btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.rp-note {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+  font-size: 12px;
+  line-height: 19px;
+  color: var(--text-secondary);
+}
+
+/* --- Side-by-side panes ------------------------------------------- */
+.rp-compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.rp-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-workspace);
+}
+
+.rp-pane__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rp-pane__tag {
+  flex: none;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 14px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.rp-pane__title h2 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.rp-pane__title p {
+  margin: 2px 0 0;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--text-muted);
+}
+
+.rp-frame-row {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.rp-frame {
+  display: grid;
+  grid-template-columns: var(--nav-rail-width) 336px;
+  flex: none;
+  height: 432px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg);
+}
+
+/* Components are position: sticky / height: 100vh in the real app; inside a
+ * pane they must fill the frame box instead. */
+.rp-frame .nav-rail {
+  position: static;
+  height: 100%;
+}
+
+.rp-frame .chat-sidebar {
+  position: relative;
+  top: auto;
+  height: 100%;
+}
+
+.rp-frame .chat-sidebar__sash-collapse {
+  display: none;
+}
+
+/* Forced hover on one row so the hover-only archive chip can be compared. */
+.rp-sidebar .chat-item-wrap.rp-force-hover .chat-item__time {
+  visibility: hidden;
+}
+
+.rp-sidebar .chat-item-wrap.rp-force-hover .chat-item__archive {
+  opacity: 1;
+}
+
+.rp-points {
+  margin: 0;
+  padding: 2px 0 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 17px;
+  color: var(--text-secondary);
+}
+
+.rp-points li {
+  position: relative;
+  padding-left: 12px;
+}
+
+.rp-points li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent-secondary);
+}
+
+/* Static mocks: no fake interactive affordances. */
+.rp-settings {
+  gap: 10px;
+  padding: 0;
+  overflow: visible;
+}
+
+.rp-settings .page-head {
+  margin-bottom: 0;
+}
+
+.rp-settings .page-head__text h1 {
+  font-size: 16px;
+  line-height: 22px;
+}
+
+.rp-settings .page-head__text p {
+  font-size: 11px;
+}
+
+.rp-settings .btn,
+.rp-settings .chat-settings-wake__switch {
+  cursor: default;
+}
+
+.rp-settings .btn:hover,
+.rp-settings .chat-settings-wake__switch:hover {
+  background: var(--surface-subtle);
+}
+
+.rp-settings .btn-primary:hover {
+  background: var(--accent);
+}
+
+.rp-settings .chat-settings-wake__switch.is-on:hover {
+  background: var(--success-text);
+}
+
+/* --- Icon matrix --------------------------------------------------- */
+.rp-matrix {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.rp-matrix__head h2 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.rp-matrix__head p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 17px;
+  color: var(--text-muted);
+}
+
+.rp-matrix__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.rp-matrix__table th,
+.rp-matrix__table td {
+  padding: 6px 8px;
+  border-top: 1px solid var(--border-subtle);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.rp-matrix__table thead th {
+  border-top: 0;
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.rp-matrix__table tbody th {
+  width: 34%;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+
+.rp-matrix__table td {
+  width: 22%;
+  color: var(--text-secondary);
+}
+
+.rp-matrix__table td svg {
+  display: block;
+}
+
+.rp-matrix__table tbody tr:hover {
+  background: var(--surface-subtle);
+}
+
+/* --- Responsive ---------------------------------------------------- */
+@media (max-width: 1260px) {
+  .rp-compare {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 820px) {
+  .rp-frame-row {
+    flex-direction: column;
+  }
+
+  .rp-frame {
+    width: 100%;
+    grid-template-columns: var(--nav-rail-width) minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rp-seg__btn {
+    transition: none;
+  }
+}

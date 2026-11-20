@@ -919,4 +919,6 @@ export type Route =
   | { name: 'dispatch' }
   | { name: 'settings' }
   | { name: 'about' }
-  | { name: 'files' };
+  | { name: 'files' }
+  /** Hidden Phase 4 follow-up: Lucide ⇄ Reicon comparison (#/preview/reicon). */
+  | { name: 'preview-reicon' };
