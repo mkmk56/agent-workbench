@@ -280,7 +280,12 @@ export function computeCheckin({
   const totalUnread = chatId
     ? chats.reduce((sum, chat) => sum + Number(chat.unread ?? 0), 0)
     : Number(inbox.total_unread ?? 0);
-  const empty = totalUnread === 0;
+  // P3: `consecutive_empty` is an agent-level counter and must always be
+  // derived from the full inbox. A chat-scoped check-in only narrows the
+  // returned view (`inbox.chats` / `total_unread`); it must never make an agent
+  // look idle because one chat happens to be empty.
+  const agentUnread = Number(inbox.total_unread ?? 0);
+  const empty = agentUnread === 0;
   const consecutiveEmpty = empty ? Number(previous?.consecutive_empty ?? 0) + 1 : 0;
   store.upsertCheckin({
     agent_id: canonical,

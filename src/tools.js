@@ -617,9 +617,7 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
       // after the cursor, including the caller's own. The per-category inbox
       // counters below are the protocol view and exclude the caller's own
       // messages.
-      const unread = store.listChatMessages({
-        chatId: chat_id, afterSeq: counts.last_read_seq, limit: 500
-      }).length;
+      const unread = store.countChatMessagesAfter(chat_id, counts.last_read_seq);
       return asText({
         ok: true,
         chat_id,

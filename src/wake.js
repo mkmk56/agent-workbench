@@ -774,35 +774,57 @@ export class WakeService extends EventEmitter {
     const before = this.now() - retention;
     const pruned = this.store.pruneWakeEvents(before);
     if (pruned > 0) this._log('wake_pruned', { count: pruned, before });
+    try { this.store.pruneWakeNotices?.(before); } catch { /* notice pruning is best-effort */ }
     return pruned;
   }
 
   // D3: an @ that stays unread for the configured window (default 10 minutes)
-  // is surfaced to the owner in the chat. `notified` is in-memory so a restart
-  // can repeat at most one reminder per event; it never repeats within a run.
+  // is surfaced to the owner in the chat. Only agents with a local executor are
+  // reminded: external participants (muse) record mention events for SSE /
+  // check-in and never read them, so reminding about them would be noise (P1).
+  // Reminder dedupe is persisted in wake_unread_notices, so a restart does not
+  // repeat a reminder for the same event; `notified` is only a per-run cache.
   _checkUnreadMentions() {
     const threshold = Math.max(60_000, num(this.config.wakeMentionUnreadMs, 10 * 60 * 1000));
     const cutoff = this.now() - threshold;
-    const rows = this.store.listWakeEvents({
-      kinds: ['mention'], status: null, limit: 500, order: 'desc'
-    }).filter((row) => Number(row.created_at) <= cutoff
-      && [WAKE_STATUS.PENDING, WAKE_STATUS.THROTTLED, WAKE_STATUS.MERGED, WAKE_STATUS.DISABLED]
-        .includes(row.status));
-    for (const row of rows) {
-      if (this.notified.has(row.id)) continue;
-      const cursor = this.store.getInboxCursor(row.chat_id, row.agent_id);
-      if (cursor && Number(cursor.last_read_seq) >= Number(row.message_seq ?? 0)) {
-        this.notified.add(row.id);
-        continue;
+    const statuses = [
+      WAKE_STATUS.PENDING, WAKE_STATUS.THROTTLED, WAKE_STATUS.MERGED, WAKE_STATUS.DISABLED
+    ];
+    const batchSize = 500;
+    let afterCreatedAt = null;
+    let afterId = null;
+    // P2: page through every expired, not-yet-notified mention. The old fixed
+    // LIMIT 500 silently dropped anything older than the newest 500 events.
+    for (;;) {
+      const rows = this.store.listUnnotifiedMentionWakeEvents({
+        cutoff, statuses, limit: batchSize, afterCreatedAt, afterId
+      });
+      if (rows.length === 0) return;
+      for (const row of rows) {
+        afterCreatedAt = Number(row.created_at) || 0;
+        afterId = row.id;
+        const participant = participantForAgentId(row.agent_id) || row.agent_id;
+        // P1: external participants have no inbox cursor and no local run;
+        // they must not generate false "has not read the @" owner notices.
+        if (!LOCAL_EXECUTORS.has(participant)) continue;
+        if (this.notified.has(row.id)) continue;
+        const cursor = this.store.getInboxCursor(row.chat_id, row.agent_id);
+        if (cursor && Number(cursor.last_read_seq) >= Number(row.message_seq ?? 0)) {
+          this.notified.add(row.id);
+          continue;
+        }
+        const delivered = this._notifyOwner(
+          row.chat_id,
+          `[wake] ${participant} has not read the @ at seq ${row.message_seq ?? '?'} after `
+          + `${Math.round(threshold / 60000)} minutes (event ${row.id}, status ${row.status}).`,
+          `wake-unread:${row.id}`
+        );
+        if (delivered) {
+          this.notified.add(row.id);
+          this.store.recordWakeNotice(row.id, this.now());
+        }
       }
-      this.notified.add(row.id);
-      const participant = participantForAgentId(row.agent_id) || row.agent_id;
-      this._notifyOwner(
-        row.chat_id,
-        `[wake] ${participant} has not read the @ at seq ${row.message_seq ?? '?'} after `
-        + `${Math.round(threshold / 60000)} minutes (event ${row.id}, status ${row.status}).`,
-        `wake-unread:${row.id}`
-      );
+      if (rows.length < batchSize) return;
     }
   }
 

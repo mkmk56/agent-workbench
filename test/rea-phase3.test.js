@@ -901,3 +901,142 @@ test('listener CLI parses args, requires a 600 token file and resumes from its s
     cleanupDir(dir);
   }
 });
+// ---------------------------------------------------------------------------
+// Phase 3 leftovers (P1/P2/P3)
+// ---------------------------------------------------------------------------
+test('P1: unread-@ reminders skip external participants and survive a restart', () => {
+  const h = makeHarness();
+  try {
+    const chatId = seedChat(h.store, { id: 'chat-p1' });
+    addAgent(h.store, chatId, 'claude');
+    const old = h.clock.now - 11 * 60 * 1000;
+    h.store.insertWakeEvent({
+      id: 'evt-muse', chat_id: chatId, agent_id: 'agent_muse', kind: 'mention',
+      message_seq: 1, status: 'pending', created_at: old
+    });
+    h.store.insertWakeEvent({
+      id: 'evt-claude', chat_id: chatId, agent_id: 'agent_claude', kind: 'mention',
+      message_seq: 2, status: 'pending', created_at: old
+    });
+
+    const notices = [];
+    h.wake._notifyOwner = (_chatId, body, key) => {
+      notices.push({ body, key });
+      return { message_id: `notice-${key}` };
+    };
+    h.wake._checkUnreadMentions();
+    assert.deepEqual(notices.map((notice) => notice.key), ['wake-unread:evt-claude'],
+      '@muse is external: it must not produce a false "has not read" notice');
+    assert.match(notices[0].body, /claude has not read the @/);
+    assert.equal(h.store.hasWakeNotice('evt-claude'), true);
+    assert.equal(h.store.hasWakeNotice('evt-muse'), false);
+
+    // A restart gets a fresh in-memory cache; the persisted notice must hold.
+    const restarted = new WakeService({ store: h.store, now: () => h.clock.now });
+    const repeated = [];
+    restarted._notifyOwner = (_chatId, _body, key) => { repeated.push(key); return {}; };
+    restarted._checkUnreadMentions();
+    assert.deepEqual(repeated, [], 'a restart must not repeat an already-notified event');
+  } finally {
+    h.wake.stop();
+    cleanupDir(h.dir, h.store);
+  }
+});
+
+test('P2: the unread-@ sweep pages past 500 expired mentions', () => {
+  const h = makeHarness();
+  try {
+    const chatId = seedChat(h.store, { id: 'chat-p2a' });
+    addAgent(h.store, chatId, 'claude');
+    const old = h.clock.now - 11 * 60 * 1000;
+    for (let i = 0; i < 600; i += 1) {
+      h.store.insertWakeEvent({
+        id: `evt-p2a-${i}`, chat_id: chatId, agent_id: 'agent_claude', kind: 'mention',
+        message_seq: i + 1, status: 'pending',
+        // Duplicate timestamps exercise the (created_at, id) keyset cursor.
+        created_at: old + (i % 5)
+      });
+    }
+    const keys = [];
+    h.wake._notifyOwner = (_chatId, _body, key) => { keys.push(key); return { message_id: key }; };
+    h.wake._checkUnreadMentions();
+    assert.equal(keys.length, 600, 'every expired mention is covered, not only the newest 500');
+    assert.equal(new Set(keys).size, 600);
+
+    const beforeSecond = keys.length;
+    h.wake._checkUnreadMentions();
+    assert.equal(keys.length, beforeSecond, 'persisted notices are not repeated');
+  } finally {
+    h.wake.stop();
+    cleanupDir(h.dir, h.store);
+  }
+});
+
+test('P2: chat_mark_read returns an exact unread count beyond 500', async () => {
+  const h = makeHarness();
+  try {
+    const chatId = seedChat(h.store, { id: 'chat-p2b' });
+    addAgent(h.store, chatId, 'claude');
+    const now = new Date().toISOString();
+    for (let i = 0; i < 600; i += 1) {
+      h.store.insertChatMessageBundle({
+        id: `p2b-${i}`, thread_id: `chat:${chatId}`, from_agent: 'user', to_agent: 'claude',
+        summary: `m${i}`, body: `m${i}`, status: 'stored', chat_id: chatId,
+        mentions_json: '[]', created_at: now, updated_at: now
+      });
+    }
+    const tools = makeToolRunner(h, authClaude);
+    const result = payload(await tools.invoke('chat_mark_read', { chat_id: chatId, up_to_seq: 0 }));
+    assert.equal(result.last_read_seq, 0);
+    assert.equal(result.unread, 600, 'COUNT(*) must not stop at the old 500-row page');
+  } finally {
+    h.wake.stop();
+    cleanupDir(h.dir, h.store);
+  }
+});
+
+test('P3: a chat-scoped check-in never rewrites the agent-level empty counter', () => {
+  const h = makeHarness();
+  try {
+    const chatA = seedChat(h.store, { id: 'chat-p3-a' });
+    const chatB = seedChat(h.store, { id: 'chat-p3-b' });
+    addAgent(h.store, chatA, 'claude');
+    addAgent(h.store, chatB, 'claude');
+    const now = new Date().toISOString();
+    h.store.insertChatMessageBundle({
+      id: 'p3-a-1', thread_id: `chat:${chatA}`, from_agent: 'user', to_agent: 'claude',
+      summary: 'hi', body: 'hi', status: 'stored', chat_id: chatA,
+      mentions_json: JSON.stringify(['claude']), created_at: now, updated_at: now
+    });
+
+    const scopedEmpty = computeCheckin({
+      store: h.store, agents: h.agents, agentId: 'claude', chatId: chatB, now: 1000
+    });
+    assert.equal(scopedEmpty.inbox.total_unread, 0, 'the scoped view still shows only chat B');
+    assert.equal(scopedEmpty.consecutive_empty, 0, 'the agent still has unread mail in chat A');
+    assert.equal(Number(h.store.getCheckin('agent_claude').consecutive_empty), 0);
+
+    // Once chat A is read the agent really is idle, and the scoped call counts it.
+    const last = h.store.lastChatMessage(chatA);
+    h.agents.markRead({ chatId: chatA, agentId: 'agent_claude', upToSeq: last.seq });
+    const scopedIdle = computeCheckin({
+      store: h.store, agents: h.agents, agentId: 'claude', chatId: chatB, now: 2000
+    });
+    assert.equal(scopedIdle.consecutive_empty, 1);
+
+    // Unread in the scoped chat resets the counter exactly like the full view.
+    h.store.insertChatMessageBundle({
+      id: 'p3-b-1', thread_id: `chat:${chatB}`, from_agent: 'user', to_agent: 'claude',
+      summary: 'ping', body: 'ping', status: 'stored', chat_id: chatB,
+      mentions_json: '[]', created_at: now, updated_at: now
+    });
+    const scopedBusy = computeCheckin({
+      store: h.store, agents: h.agents, agentId: 'claude', chatId: chatB, now: 3000
+    });
+    assert.equal(scopedBusy.consecutive_empty, 0);
+    assert.equal(Number(h.store.getCheckin('agent_claude').consecutive_empty), 0);
+  } finally {
+    h.wake.stop();
+    cleanupDir(h.dir, h.store);
+  }
+});

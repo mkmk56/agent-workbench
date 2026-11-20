@@ -427,6 +427,15 @@ export class Store {
         ON wake_events(status, created_at);
       CREATE INDEX IF NOT EXISTS idx_wake_events_created
         ON wake_events(created_at);
+      -- P1: unread-@ reminders sent to the owner. Kept out of wake_events so
+      -- the delivery status keeps its meaning, and persisted so an engine
+      -- restart does not repeat a reminder for the same event.
+      CREATE TABLE IF NOT EXISTS wake_unread_notices (
+        event_id TEXT PRIMARY KEY,
+        notified_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_wake_unread_notices_at
+        ON wake_unread_notices(notified_at);
       CREATE TABLE IF NOT EXISTS listener_sessions (
         id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL,
@@ -1803,6 +1812,15 @@ export class Store {
     };
   }
 
+  // P2: exact unread count for the legacy chat_mark_read response. Counting in
+  // SQL avoids the old "read at most 500 rows and take their length" truncation.
+  countChatMessagesAfter(chatId, afterSeq) {
+    const row = this.db.prepare(
+      'SELECT COUNT(*) AS n FROM messages WHERE chat_id = ? AND seq > ?'
+    ).get(chatId, Number(afterSeq) || 0);
+    return Number(row?.n ?? 0);
+  }
+
   countChatMessagesSince(chatId, sinceIso) {
     const row = this.db.prepare(
       'SELECT COUNT(*) AS n FROM messages WHERE chat_id = ? AND created_at >= ?'
@@ -2328,6 +2346,54 @@ export class Store {
 
   pruneWakeEvents(before) {
     const info = this.db.prepare('DELETE FROM wake_events WHERE created_at < ?').run(Number(before) || 0);
+    return Number(info.changes ?? 0);
+  }
+
+  // ------------------------------------ REA Phase 3 leftover: unread-@ notices
+  // P2: every mention past the unread window that has not been notified yet.
+  // Keyset-paged by (created_at, id) so an old event can never be hidden
+  // behind a fixed row limit. Read cursors are applied by the caller because
+  // they live per (chat, agent).
+  listUnnotifiedMentionWakeEvents({
+    cutoff, statuses = [], limit = 500, afterCreatedAt = null, afterId = null
+  } = {}) {
+    if (!Array.isArray(statuses) || statuses.length === 0) return [];
+    const clauses = [
+      "w.kind = 'mention'",
+      'w.created_at <= ?',
+      `w.status IN (${statuses.map(() => '?').join(', ')})`,
+      'NOT EXISTS (SELECT 1 FROM wake_unread_notices n WHERE n.event_id = w.id)'
+    ];
+    const params = [Number(cutoff) || 0, ...statuses];
+    if (afterCreatedAt !== null && afterCreatedAt !== undefined) {
+      clauses.push('(w.created_at > ? OR (w.created_at = ? AND w.id > ?))');
+      params.push(Number(afterCreatedAt) || 0, Number(afterCreatedAt) || 0, String(afterId ?? ''));
+    }
+    const n = Math.max(1, Math.min(1000, Number(limit) || 500));
+    return this.db.prepare(
+      `SELECT w.* FROM wake_events w
+        WHERE ${clauses.join(' AND ')}
+        ORDER BY w.created_at ASC, w.id ASC LIMIT ?`
+    ).all(...params, n);
+  }
+
+  recordWakeNotice(eventId, at = Date.now()) {
+    this.db.prepare(
+      `INSERT INTO wake_unread_notices (event_id, notified_at) VALUES (?, ?)
+       ON CONFLICT(event_id) DO UPDATE SET notified_at = excluded.notified_at`
+    ).run(eventId, Number(at) || Date.now());
+  }
+
+  hasWakeNotice(eventId) {
+    return Boolean(this.db.prepare(
+      'SELECT 1 AS found FROM wake_unread_notices WHERE event_id = ?'
+    ).get(eventId));
+  }
+
+  pruneWakeNotices(before) {
+    const info = this.db.prepare(
+      'DELETE FROM wake_unread_notices WHERE notified_at < ?'
+    ).run(Number(before) || 0);
     return Number(info.changes ?? 0);
   }
 

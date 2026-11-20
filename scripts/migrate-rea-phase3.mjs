@@ -4,8 +4,10 @@
 // Adds the four tables from PHASE3_DESIGN.md §11 through the Store constructor
 // (which registers schema_version 6):
 //   wake_events, listener_sessions, checkins, agent_wake
-// The constructor also creates the internal app_meta persistent counter table;
-// it is not part of the phase 3 surface and is not listed in `tables`.
+// The constructor also creates the internal app_meta persistent counter table
+// and, since the P1/P2/P3 leftovers fix, wake_unread_notices (persisted
+// unread-@ reminder dedupe). Neither is part of the phase 3 surface and neither
+// is listed in `tables`.
 //
 // The database is snapshotted first with VACUUM INTO, which is consistent even
 // while the engine is running in WAL mode. Creating the tables is guarded by
