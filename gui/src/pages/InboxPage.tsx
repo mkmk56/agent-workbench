@@ -26,6 +26,7 @@ import {
   wakeEventStatusLabel,
   wakeKindLabel,
   wakeStatusOnce,
+  wakeToggleFailureText,
 } from '../lib/wake';
 import type {
   ListenerStatusPayload,
@@ -111,7 +112,11 @@ export function InboxPage() {
   // failure never hides the unread counters (and vice versa).
   const [wake, setWake] = useState<WakeStatusPayload | null>(null);
   const [listener, setListener] = useState<ListenerStatusPayload | null>(null);
-  const [wakeError, setWakeError] = useState<string | null>(null);
+  // Reading the status and flipping the switch are different operations with
+  // different failures (the switch is owner-only and can be refused). Keep
+  // their banners apart so a poll that succeeds never hides a refusal.
+  const [wakeLoadError, setWakeLoadError] = useState<string | null>(null);
+  const [wakeToggleError, setWakeToggleError] = useState<string | null>(null);
   const [listenerError, setListenerError] = useState<string | null>(null);
   const [wakeBusy, setWakeBusy] = useState<string | null>(null);
   // Monotonic id per inbox request. A response that is no longer the newest one
@@ -145,10 +150,10 @@ export function InboxPage() {
         }
         if (wakeResult.ok) {
           setWake(wakeResult.data);
-          setWakeError(null);
+          setWakeLoadError(null);
         } else {
           setWake(null);
-          setWakeError(wakeResult.error);
+          setWakeLoadError(wakeResult.error);
         }
         if (listenerResult.ok) {
           setListener(listenerResult.data);
@@ -173,7 +178,8 @@ export function InboxPage() {
     setInbox(null);
     setWake(null);
     setListener(null);
-    setWakeError(null);
+    setWakeLoadError(null);
+    setWakeToggleError(null);
     setListenerError(null);
     setWakeBusy(null);
     setLoading(true);
@@ -231,6 +237,9 @@ export function InboxPage() {
       return;
     }
     setWakeBusy(row.chat_id);
+    // A new attempt supersedes the previous rejection; the banner is rebuilt
+    // from this attempt's outcome only.
+    setWakeToggleError(null);
     const result = await setWakeEnabled({
       agentId: agent,
       chatId: row.chat_id,
@@ -241,10 +250,10 @@ export function InboxPage() {
       return; // The owner switched tabs while the toggle was in flight.
     }
     if (!result.ok) {
-      setWakeError(result.error);
+      setWakeToggleError(result.error);
       return;
     }
-    setWakeError(null);
+    setWakeToggleError(null);
     await load(agent);
   };
 
@@ -344,15 +353,22 @@ export function InboxPage() {
           </span>
         </header>
 
-        {wakeError != null && (
+        {wakeLoadError != null && (
           <p className="wake-panel__error" role="alert">
             <CircleAlert size={14} aria-hidden="true" />
-            唤醒状态读取失败：{wakeError}
+            读取唤醒状态失败：{wakeLoadError}
+          </p>
+        )}
+
+        {wakeToggleError != null && (
+          <p className="wake-panel__error" role="alert">
+            <CircleAlert size={14} aria-hidden="true" />
+            切换唤醒开关失败：{wakeToggleFailureText(wakeToggleError)}
           </p>
         )}
 
         {wake == null ? (
-          wakeError == null ? (
+          wakeLoadError == null ? (
             <p className="wake-panel__status" role="status">
               正在读取唤醒状态…
             </p>

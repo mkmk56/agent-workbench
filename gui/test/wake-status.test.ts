@@ -28,6 +28,7 @@ import {
   wakeEventStatusLabel,
   wakeKindLabel,
   wakeStatusOnce,
+  wakeToggleFailureText,
 } from '../src/lib/wake.ts';
 
 const wakePayload = {
@@ -214,6 +215,22 @@ test('wake labels fall back to the raw engine value', () => {
   assert.equal(formatWakeKinds([]), '');
 });
 
+test('manual wakes and cancelled runs have Chinese labels', () => {
+  // `manual` is a wake *kind* written by the wake_now tool; `cancelled` is a
+  // terminal *status* added with the queued-cancel fix (engine a3888a5).
+  assert.equal(wakeKindLabel('manual'), '手动唤醒');
+  assert.equal(wakeEventStatusLabel('cancelled'), '已取消');
+  assert.equal(formatWakeKinds(['mention', 'manual']), '提及、手动唤醒');
+});
+
+test('a permission refusal is explained as owner-only without hiding the reason', () => {
+  const refused = wakeToggleFailureText('wake_enable requires a human or master token');
+  assert.match(refused, /仅群主/);
+  assert.match(refused, /human or master token/);
+  // Non-permission failures keep the engine's own text.
+  assert.equal(wakeToggleFailureText('socket hang up'), 'socket hang up');
+});
+
 /* ------------------------------------------------------------------ *
  * IPC wiring: the renderer calls the bridge with camelCase args and the
  * engine tool names are selected by the switch direction.
@@ -303,4 +320,76 @@ test('a refused switch surfaces the engine error instead of a fake toggle', asyn
   assert.equal(result.ok, false);
   assert.ok(!result.ok);
   assert.match(result.error, /human or master token/);
+});
+
+test('setWakeEnabled accepts a reply for the requested handle or its canonical id', async () => {
+  const toggle = (agentId: string) =>
+    withBridge(
+      {
+        wakeEnable: async () => ({
+          ok: true,
+          data: {
+            agent_id: agentId,
+            chat_id: 'chat-1',
+            enabled: true,
+            wake_kinds: ['mention'],
+            consecutive_failures: 0,
+            disabled_at: null,
+          },
+        }),
+      },
+      () => setWakeEnabled({ agentId: 'claude', chatId: 'chat-1', enabled: true }),
+    );
+
+  // The engine answers with `agent_claude`; a future engine that echoes the
+  // participant handle must not be rejected either.
+  assert.equal((await toggle('agent_claude')).ok, true);
+  assert.equal((await toggle('claude')).ok, true);
+});
+
+test('setWakeEnabled rejects a reply for a different agent', async () => {
+  const result = await withBridge(
+    {
+      wakeEnable: async () => ({
+        ok: true,
+        data: {
+          agent_id: 'agent_dsh',
+          chat_id: 'chat-1',
+          enabled: true,
+          wake_kinds: ['mention'],
+          consecutive_failures: 0,
+          disabled_at: null,
+        },
+      }),
+    },
+    () => setWakeEnabled({ agentId: 'claude', chatId: 'chat-1', enabled: true }),
+  );
+  assert.equal(result.ok, false);
+  assert.ok(!result.ok);
+  assert.match(result.error, /不一致/);
+  assert.match(result.error, /agent_claude|claude/);
+  assert.match(result.error, /agent_dsh/);
+});
+
+test('setWakeEnabled rejects a reply for a different chat', async () => {
+  const result = await withBridge(
+    {
+      wakeDisable: async () => ({
+        ok: true,
+        data: {
+          agent_id: 'agent_claude',
+          chat_id: 'chat-2',
+          enabled: false,
+          wake_kinds: ['mention'],
+          consecutive_failures: 0,
+          disabled_at: 1763003600000,
+        },
+      }),
+    },
+    () => setWakeEnabled({ agentId: 'claude', chatId: 'chat-1', enabled: false }),
+  );
+  assert.equal(result.ok, false);
+  assert.ok(!result.ok);
+  assert.match(result.error, /chat-1/);
+  assert.match(result.error, /chat-2/);
 });

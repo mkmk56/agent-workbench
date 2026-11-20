@@ -39,6 +39,10 @@ export const WAKE_KIND_LABELS: Record<string, string> = {
   mention: '提及',
   reply: '回复',
   owner_post: '群主发言',
+  // `wake_now` (engine 2cccea4) records an explicit manual wake with
+  // `kind: 'manual'`. It is not one of the three configurable WAKE_KINDS, but it
+  // does appear as `last_event.kind` on the inbox row.
+  manual: '手动唤醒',
 };
 
 export const WAKE_EVENT_STATUS_LABELS: Record<string, string> = {
@@ -46,6 +50,9 @@ export const WAKE_EVENT_STATUS_LABELS: Record<string, string> = {
   delivered: '已送达',
   throttled: '已节流',
   merged: '已合并',
+  // A user cancellation is a terminal state of its own (engine a3888a5); it is
+  // not an agent failure and must not be labelled as one.
+  cancelled: '已取消',
   failed: '失败',
   disabled: '已禁用',
 };
@@ -275,6 +282,33 @@ function failureMessage(error: string | null | undefined, fallback: string): str
   return error != null && error.trim().length > 0 ? error : fallback;
 }
 
+// The inbox works with participant handles (claude/dsh/muse), while the engine
+// echoes the canonical agents.id (agent_claude, src/agents.js:24-40) from
+// `wake_enable` / `wake_disable`. Both forms name the same target; anything else
+// is a different target and must not be accepted.
+const CANONICAL_AGENT_IDS: Record<string, string> = {
+  muse: 'agent_muse',
+  claude: 'agent_claude',
+  dsh: 'agent_dsh',
+};
+
+function canonicalAgentId(agentId: string): string {
+  return CANONICAL_AGENT_IDS[agentId] ?? agentId;
+}
+
+// Permission wording comes from the engine (`wake_enable` / `wake_disable`
+// require a human/master token), not from the UI gate. Make that rejection
+// legible in the banner instead of showing only the raw English reason.
+const WAKE_PERMISSION_ERROR =
+  /human or master|forbidden|unauthor|permission|denied|not allowed|admin|owner|403/i;
+
+/** Owner-facing copy for a failed switch; non-permission errors pass through. */
+export function wakeToggleFailureText(error: string): string {
+  return WAKE_PERMISSION_ERROR.test(error)
+    ? `仅群主可以切换唤醒开关，引擎已拒绝本次请求：${error}`
+    : error;
+}
+
 /** Per-chat wake state for one agent (`wake_status`). Reading never mutates. */
 export async function wakeStatusOnce(
   agentId?: string,
@@ -357,9 +391,25 @@ export async function setWakeEnabled(input: {
       return { ok: false, error: failureMessage(result.error, '切换唤醒开关失败。') };
     }
     const toggled = normalizeWakeToggle(result.data);
-    return toggled != null
-      ? { ok: true, data: toggled }
-      : { ok: false, error: '引擎未返回有效的唤醒开关结果。' };
+    if (toggled == null) {
+      return { ok: false, error: '引擎未返回有效的唤醒开关结果。' };
+    }
+    // Never accept a reply for a different (agent, chat): showing another
+    // target's state on the row the owner just clicked would silently flip the
+    // wrong switch. The engine always names the canonical target, so compare
+    // canonical forms rather than raw handles.
+    if (
+      canonicalAgentId(toggled.agent_id) !== canonicalAgentId(input.agentId) ||
+      toggled.chat_id !== input.chatId
+    ) {
+      return {
+        ok: false,
+        error:
+          `引擎返回的唤醒对象与请求不一致（请求 ${input.agentId} / ${input.chatId}，` +
+          `返回 ${toggled.agent_id} / ${toggled.chat_id}），已按失败处理。`,
+      };
+    }
+    return { ok: true, data: toggled };
   } catch {
     return { ok: false, error: '切换唤醒开关失败（主进程调用异常）。' };
   }
