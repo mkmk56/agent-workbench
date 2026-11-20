@@ -539,6 +539,11 @@ export class Scheduler {
       tokens,
       files_modified: filesModified,
       summary: task.summary,
+      // Phase 4 (Claude M2): the stored prompt/cwd are the original task
+      // inputs, unlike `summary` (the agent's final result text). Retry/rerun
+      // must reuse these verbatim, so expose them untruncated.
+      prompt: task.prompt ?? null,
+      cwd: task.cwd ?? null,
       thread_id: thread.thread_id,
       chat_id: this.store.getChatForTask(task.id)?.chat_id ?? null,
       thread_state: thread.state,

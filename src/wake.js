@@ -699,6 +699,21 @@ export class WakeService extends EventEmitter {
         + `Last reason: ${reason}. Re-enable it with wake_enable before the next @ can wake it.`,
         `wake-disabled:${event.chat_id}:${event.agent_id}:${this.now()}`
       );
+      // Phase 4 (dsh M1): _notifyOwner is a log-only stub now, so the circuit
+      // breaker's disable must persist an owner notice itself. wake_status and
+      // the Inbox surface it via wake_unread_notices; the chat stream still
+      // receives no [wake] system message.
+      try {
+        this.store.recordWakeNotice(event.id, this.now());
+        this._log('wake_auto_disabled_notice', {
+          event_id: event.id, agent_id: event.agent_id, chat_id: event.chat_id
+        });
+      } catch (error) {
+        this._log('wake_auto_disabled_notice_failed', {
+          event_id: event.id, agent_id: event.agent_id, chat_id: event.chat_id,
+          error: error.message
+        });
+      }
       return { status: 'DISABLED', retried: false, consecutive_failures: failures };
     }
 

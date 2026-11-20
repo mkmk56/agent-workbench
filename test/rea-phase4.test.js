@@ -7,9 +7,10 @@ import { Store } from '../src/store.js';
 import { WakeService } from '../src/wake.js';
 import { registerTools } from '../src/tools.js';
 import { agentIdForParticipant } from '../src/agents.js';
+import { Scheduler } from '../src/scheduler.js';
 import { runMigration } from '../scripts/migrate-rea-phase4.mjs';
 import {
-  authClaude, authMaster, makeServices, seedChat, tempDir, uploadBuffer
+  authClaude, authMaster, makeConfig, makeServices, seedChat, seedTask, tempDir, uploadBuffer
 } from './helpers.js';
 
 function makeHarness(configOverrides = {}) {
@@ -331,5 +332,67 @@ test('_notifyOwner and unread-@ reminders never write chat messages; wake_status
   } finally {
     h.wake.stop();
     cleanupDir(h.dir, h.store);
+  }
+});
+// ---------------------------------------------------------------------------
+// Phase 4 must-fix: circuit breaker owner notice + retry source of truth
+// ---------------------------------------------------------------------------
+test('dsh M1: the auto-disable circuit breaker persists an owner notice without a chat message', async () => {
+  const h = makeHarness({ wakeMinIntervalMs: 0 });
+  try {
+    const chatId = seedChat(h.store, { id: 'chat-auto-disabled' });
+    addAgent(h.store, chatId, 'claude');
+    const record = () => h.wake.record({
+      chat_id: chatId, kind: 'mention', message_id: 'missing', message_seq: 1, mentions: ['claude']
+    });
+
+    record();
+    h.wake.onTaskFinished('task-1', 'FAILED'); // first run fails, retried once
+    h.wake.onTaskFinished('task-2', 'FAILED'); // second consecutive failure
+    const [disabledEvent] = record();
+    h.wake.onTaskFinished('task-3', 'FAILED'); // third failure trips the breaker
+
+    assert.equal(h.wake.getConfig('claude', chatId).enabled, false,
+      'wake is auto-disabled after three consecutive failures');
+    assert.equal(h.store.hasWakeNotice(disabledEvent.id), true,
+      'the event that tripped the breaker becomes an owner notice');
+
+    const tools = makeToolRunner({ ...h, wake: h.wake }, authClaude);
+    const status = payload(await tools.invoke('wake_status', { chat_id: chatId }));
+    const row = status.chats.find((chat) => chat.chat_id === chatId);
+    assert.equal(row.unread_notice_count, 1, 'wake_status surfaces the disable notice');
+    assert.equal(row.unread_notices[0].event_id, disabledEvent.id);
+    assert.equal(row.unread_notices[0].status, 'disabled');
+
+    assert.equal(h.store.lastChatMessage(chatId), null,
+      'the disable notice must not enter the chat message stream');
+    assert.equal(h.store.db.prepare(
+      "SELECT COUNT(*) AS n FROM messages WHERE kind = 'system'"
+    ).get().n, 0);
+  } finally {
+    h.wake.stop();
+    cleanupDir(h.dir, h.store);
+  }
+});
+
+test('Claude M2: task_status exposes the original prompt and cwd untruncated for retry', async () => {
+  const dir = tempDir('rea4-task-');
+  let services = null;
+  try {
+    services = makeServices(dir);
+    const scheduler = new Scheduler(services.store, services.config);
+    const chatId = seedChat(services.store, { id: 'chat-task-status' });
+    const task = seedTask(services.store, {
+      id: 'task-status-prompt', agent: 'claude', chatId, cwd: dir, state: 'COMPLETED'
+    });
+    const prompt = 'original prompt line 1\nline 2: ' + 'x'.repeat(5000);
+    services.store.updateTask(task.id, { prompt });
+
+    const tools = makeToolRunner({ ...services, scheduler }, authMaster);
+    const status = payload(await tools.invoke('task_status', { task_id: task.id }));
+    assert.equal(status.prompt, prompt, 'the stored prompt is returned verbatim');
+    assert.equal(status.cwd, dir, 'the stored cwd is returned verbatim');
+  } finally {
+    cleanupDir(dir, services?.store);
   }
 });
