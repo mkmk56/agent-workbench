@@ -7,6 +7,7 @@ import type {
   WakeLastEvent,
   WakeStatusPayload,
   WakeToggleResult,
+  WakeUnreadNotice,
 } from '../types';
 
 /**
@@ -202,16 +203,78 @@ export function normalizeWakeStatus(raw: unknown): WakeStatusPayload | null {
   if (agentId == null) {
     return null;
   }
-  const chats = (Array.isArray(record.chats) ? record.chats : [])
-    .map(normalizeWakeChat)
-    .filter(isWakeChat);
+  const chatRows = Array.isArray(record.chats) ? record.chats : [];
+  const chats = chatRows.map(normalizeWakeChat).filter(isWakeChat);
   const enabled = readBoolean(record, 'enabled');
   return {
     agent_id: agentId,
     participant_id: readString(record, 'participant_id', 'participantId'),
     enabled: enabled ?? chats.some((chat) => chat.enabled),
     chats,
+    // The engine reports pending reminders twice: a top-level list (older
+    // shape) and, canonically, `unread_notices` inside each chat row of
+    // `wake_status` (src/tools.js: unread_notices/unread_notice_count). Reading
+    // only the top-level field would leave the banner permanently empty, so
+    // both are merged — the chat row's own `chat_id` wins over any root value.
+    notices: collectWakeNotices(record, chatRows, agentId),
   };
+}
+
+/** Merge the top-level and per-chat pending reminder lists into one array. */
+function collectWakeNotices(
+  record: Record<string, unknown>,
+  chatRows: unknown[],
+  agentId: string,
+): WakeUnreadNotice[] {
+  const collected = normalizeWakeNotices(
+    record.notices ?? record.unread_notices ?? record.unreadNotices,
+    agentId,
+  );
+  for (const row of chatRows) {
+    const chatRecord = asRecord(row);
+    const chatId = readString(chatRecord, 'chat_id', 'chatId');
+    const raw = chatRecord.unread_notices ?? chatRecord.unreadNotices;
+    for (const notice of normalizeWakeNotices(raw, agentId)) {
+      collected.push({ ...notice, chat_id: notice.chat_id ?? chatId });
+    }
+  }
+  return collected;
+}
+
+/**
+ * Pending `[wake]` reminders. Phase 4 moved them out of the chat stream, so the
+ * banner is the only place the owner still sees them; an engine that does not
+ * expose the field yet simply yields an empty list (never a fabricated notice).
+ */
+export function normalizeWakeNotices(raw: unknown, fallbackAgentId: string): WakeUnreadNotice[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const notices: WakeUnreadNotice[] = [];
+  for (const item of raw) {
+    const record = asRecord(item);
+    const id = readString(record, 'id', 'event_id', 'eventId');
+    if (id == null) {
+      continue;
+    }
+    notices.push({
+      id,
+      seq: readNumber(record, 'seq', 'message_seq', 'messageSeq') ?? 0,
+      chat_id: readString(record, 'chat_id', 'chatId'),
+      agent_id: readString(record, 'agent_id', 'agentId') ?? fallbackAgentId,
+      kind: readString(record, 'kind') ?? 'mention',
+      message_id: readString(record, 'message_id', 'messageId'),
+      // `wake_unread_notices` rows carry `notified_at` (epoch ms) and no
+      // created_at, so the reminder time is the notified time.
+      created_at: toIsoTimestamp(
+        record.created_at ??
+          record.createdAt ??
+          record.notified_at ??
+          record.notifiedAt,
+      ),
+    });
+  }
+  return notices;
 }
 
 export function normalizeCheckin(raw: unknown): ListenerCheckin | null {

@@ -2175,12 +2175,94 @@ html[data-theme="dark"] .log-row {
 }
 
 @media (max-width: 900px) {
+  /* REA Phase 4 [I]: on narrow desktop windows the 96px rail stops being a
+   * column and becomes a horizontal icon bar above the content — the rail was
+   * fixed-width and could not shrink, so it ate the width the page needed.
+   * The dead `.sidenav { display: none }` rule that used to live here is gone:
+   * no such element exists in the DOM any more. */
   .app {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
-  .sidenav {
+  .app--chat {
+    grid-template-columns: 240px minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .nav-rail {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    flex-direction: row;
+    align-items: center;
+    gap: 2px;
+    height: auto;
+    padding: 4px 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .nav-rail__mark {
+    height: 36px;
+    margin: 0 8px 0 0;
+  }
+
+  .nav-rail__mark img {
+    width: 28px;
+    height: 28px;
+  }
+
+  /* Names are already icons-only; drop the wordmark so the bar stays one row. */
+  .nav-rail__wordmark {
     display: none;
+  }
+
+  .nav-rail__item {
+    width: 40px;
+    height: 40px;
+  }
+
+  .nav-rail__hud,
+  .nav-rail__bottom {
+    flex: none;
+    flex-direction: row;
+    align-items: center;
+    gap: 2px;
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  .nav-rail__bottom {
+    margin-left: auto;
+    padding-left: 6px;
+    border-left: 1px solid var(--border);
+  }
+
+  .nav-rail__spacer {
+    display: none;
+  }
+
+  .main {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .app--chat .main {
+    grid-column: 2;
+  }
+
+  /* The sidebar is sticky at 100vh; below the bar that would clip its foot. */
+  .chat-sidebar {
+    grid-column: 1;
+    grid-row: 2;
+    position: sticky;
+    top: 49px;
+    height: calc(100vh - 49px);
   }
 
   .topbar__brand {

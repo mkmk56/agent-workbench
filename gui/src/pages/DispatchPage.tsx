@@ -13,6 +13,9 @@ import {
   AppStatus,
   AppTextArea,
 } from '../ui/astryx';
+// Shared with SettingsPage: `.setting-readout` is the read-only value style used
+// by the fake-control cleanup on both pages (styles/settings-agent.css).
+import '../styles/settings-agent.css';
 
 const EXECUTOR_INFO: Record<Executor, string> = {
   claude: '适合代码修改、测试与仓库内操作；支持原生续跑。',
@@ -269,17 +272,14 @@ export function DispatchPage() {
                   <p className="field__hint">超时后引擎会取消任务并记录原因。</p>
                 </div>
                 <div className="field">
-                  <label className="field__label" htmlFor="workdir">
-                    工作目录
-                  </label>
-                  <input
-                    className="input input--mono"
-                    id="workdir"
-                    type="text"
-                    value={workdir}
-                    readOnly
-                  />
-                  <p className="field__hint">来自主进程解析的引擎根目录；目录配置持久化未接入。</p>
+                  <span className="field__label">工作目录</span>
+                  {/* Was a read-only input that could never be edited or saved. The
+                      value is real (it is passed to task_start as cwd), so it stays as
+                      text instead of a control that looks editable. */}
+                  <p className="setting-readout">{workdir || '由引擎默认值决定'}</p>
+                  <p className="field__hint">
+                    主进程解析的引擎根目录，派发时作为 cwd 传给引擎；本期不可修改。
+                  </p>
                 </div>
               </div>
             </div>
@@ -342,7 +342,6 @@ export function DispatchPage() {
                 />
               </div>
             ))}
-            {agentOptions.length === 0 && <p className="rail-note">正在读取执行器状态…</p>}
             <p className="rail-note">不可用的执行器无法选中；状态来自引擎。</p>
           </RailCard>
         </aside>

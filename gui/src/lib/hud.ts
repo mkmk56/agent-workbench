@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AgentInfo,
-  EngineMessage,
+  ChatMessage,
+  ChatSummary,
   EngineStatus,
   EngineTaskSummary,
   HudConfig,
 } from '../types';
-import { useAgentInfo, useTaskList } from './engine';
+import { listChatMessages, listChatsOnce } from './chat';
+import { engineEvents, useAgentInfo, useTaskList } from './engine';
 import { formatDuration, formatRelative, taskDisplayTitle } from './labels';
 
 export type HudAgentId = 'muse' | 'claude' | 'dsh';
@@ -45,8 +47,10 @@ const ACTIVE_STATES = new Set([
 ]);
 const ERROR_ACTIVE_STATES = new Set(['BLOCKED', 'STALE']);
 const RECENT_FAILURE_MS = 15 * 60 * 1000;
-const MESSAGE_LIMIT = 500;
-const MESSAGE_TAIL = 300;
+/** Bound on how many chats the glance HUD tracks in one poll. */
+const MAX_HUD_CHATS = 12;
+/** Incremental page size per chat; the cursor makes it window-free. */
+const HUD_PAGE_LIMIT = 200;
 
 const STATE_TEXT: Record<HudState, string> = {
   idle: '空闲',
@@ -61,10 +65,6 @@ function isExecutor(value: string): value is HudExecutorId {
 
 function byCreatedAt(a: EngineTaskSummary, b: EngineTaskSummary): number {
   return Date.parse(b.created_at) - Date.parse(a.created_at);
-}
-
-function byMessageTime(a: EngineMessage, b: EngineMessage): number {
-  return Date.parse(a.created_at) - Date.parse(b.created_at);
 }
 
 function latestTask(tasks: EngineTaskSummary[], agent: HudExecutorId): EngineTaskSummary | null {
@@ -169,12 +169,12 @@ function agentSlot(
 function museSlot(
   engine: EngineStatus | null,
   tasks: EngineTaskSummary[],
-  messages: EngineMessage[],
+  waitingForUser: boolean,
   unread: number,
   queued: number,
 ): HudSlot {
   const active = tasks.filter((task) => ACTIVE_STATES.has(task.state)).sort(byCreatedAt);
-  const waiting = messages.some((message) => message.waiting_for_user);
+  const waiting = waitingForUser;
   let state: HudState = 'idle';
   let statusText = STATE_TEXT.idle;
   let detail = '暂无进行中的任务。';
@@ -305,10 +305,18 @@ export function useHudConfig(): {
  * Builds the HUD from real engine data only:
  * - agent_info for availability/model,
  * - task_list for activity, waiting and recent failures,
- * - list_messages for user-directed reports, WAITING_USER and agent-to-agent flights.
+ * - the chat list + per-chat message cursors for user-directed reports,
+ *   agent-to-agent flights and "waiting for the user".
  *
  * Muse has no direct API; its activity is the aggregate of engine tasks and the
  * detail text says so explicitly.
+ *
+ * Phase 4 §7.3 fixes the old 500-row saturation bug: the HUD used to derive
+ * unread / paper planes from `list_messages({limit:500})`, which returns the
+ * OLDEST 500 rows, so past 500 messages no new row ever entered the window and
+ * the counters froze for good (a restart did not help). The activity source is
+ * now the chat stream itself, read incrementally with a per-chat `after_seq`
+ * cursor, so the window never saturates no matter how long the history grows.
  */
 export function useHudData(
   engine: EngineStatus | null,
@@ -318,20 +326,21 @@ export function useHudData(
   flights: HudFlight[];
   markRead: (id: HudAgentId) => void;
   messagesError: string | null;
-  messagesSaturated: boolean;
 } {
   const agentState = useAgentInfo(30_000);
   const taskState = useTaskList(200, 4_000);
-  const [messages, setMessages] = useState<EngineMessage[]>([]);
+  const [chats, setChats] = useState<ChatSummary[]>([]);
   const [messagesError, setMessagesError] = useState<string | null>(null);
-  const [messagesSaturated, setMessagesSaturated] = useState(false);
   const [unread, setUnread] = useState<Record<HudAgentId, number>>({
     muse: 0,
     claude: 0,
     dsh: 0,
   });
   const [flights, setFlights] = useState<HudFlight[]>([]);
-  const seenMessages = useRef<Set<string> | null>(null);
+  /** Highest seq seen per chat; the incremental cursor that never saturates. */
+  const cursors = useRef<Map<string, number>>(new Map());
+  /** First pass only establishes the cursors: history is not "unread". */
+  const baselined = useRef(false);
   const nextFlight = useRef(1);
   const inFlight = useRef(false);
 
@@ -343,36 +352,52 @@ export function useHudData(
       }
       inFlight.current = true;
       try {
-        const result = await window.workbench.listMessages({ limit: MESSAGE_LIMIT });
+        const listResult = await listChatsOnce();
         if (!alive) {
           return;
         }
-        if (!result.ok) {
-          setMessagesError(result.error);
+        if (!listResult.ok) {
+          setMessagesError(listResult.error);
           return;
         }
-        setMessagesError(null);
-        // list_messages returns the OLDEST `limit` rows (created_at ASC). Once
-        // the total exceeds 500, newer rows never enter the window; surface
-        // this deterministic degradation instead of silently freezing.
-        setMessagesSaturated(result.data.messages.length >= MESSAGE_LIMIT);
-        const rows = result.data.messages.slice().sort(byMessageTime).slice(-MESSAGE_TAIL);
-        setMessages(rows);
+        // Bound the fan-out: the HUD is a glance view, not an archive reader.
+        const active = listResult.data
+          .filter((chat) => chat.status !== 'archived')
+          .slice(0, MAX_HUD_CHATS);
+        setChats(active);
 
-        if (seenMessages.current == null) {
-          // First successful poll is the baseline: history is unread=0 and
-          // never replays as a paper-plane animation.
-          seenMessages.current = new Set(rows.map((row) => row.message_id));
+        const fresh: ChatMessage[] = [];
+        let failure: string | null = null;
+        for (const chat of active) {
+          const afterSeq = cursors.current.get(chat.chat_id) ?? 0;
+          const page = await listChatMessages({
+            chatId: chat.chat_id,
+            afterSeq: afterSeq > 0 ? afterSeq : undefined,
+            limit: HUD_PAGE_LIMIT,
+          });
+          if (!alive) {
+            return;
+          }
+          if (!page.ok) {
+            failure = failure ?? page.error;
+            continue;
+          }
+          let maxSeq = afterSeq;
+          for (const message of page.data.messages) {
+            maxSeq = Math.max(maxSeq, message.seq);
+          }
+          cursors.current.set(chat.chat_id, maxSeq);
+          if (baselined.current) {
+            fresh.push(...page.data.messages);
+          }
+        }
+        setMessagesError(failure);
+        if (!baselined.current) {
+          baselined.current = true;
           return;
         }
-
-        const seen = seenMessages.current;
-        const fresh = rows.filter((row) => !seen.has(row.message_id));
         if (fresh.length === 0) {
           return;
-        }
-        for (const row of fresh) {
-          seen.add(row.message_id);
         }
 
         const increments: Record<HudAgentId, number> = { muse: 0, claude: 0, dsh: 0 };
@@ -423,9 +448,15 @@ export function useHudData(
         void poll();
       }
     }, 3_000);
+    // A pushed wake event means a new message exists right now: refresh at once
+    // instead of waiting for the next tick (the interval stays as the fallback).
+    const detach = engineEvents.subscribeEvents(() => {
+      void poll();
+    });
     return () => {
       alive = false;
       clearInterval(timer);
+      detach();
     };
   }, [paperPlanes]);
 
@@ -433,9 +464,17 @@ export function useHudData(
     setUnread((current) => ({ ...current, [id]: 0 }));
   }, []);
 
+  // "Waiting for the user" comes from the chat list, which is the same source
+  // the chat header uses; it has no row window to saturate.
+  const waitingForUser =
+    chats.some((chat) => chat.needs_muse === true) ||
+    chats.some((chat) =>
+      ['muse', 'claude', 'dsh'].some((id) => chat.agents?.[id as HudAgentId] === 'waiting'),
+    );
+
   const slots = useMemo(
     () => [
-      museSlot(engine, taskState.rawTasks, messages, unread.muse, 0),
+      museSlot(engine, taskState.rawTasks, waitingForUser, unread.muse, 0),
       agentSlot(
         'claude',
         'Claude',
@@ -462,7 +501,7 @@ export function useHudData(
     [
       engine,
       taskState.rawTasks,
-      messages,
+      waitingForUser,
       unread,
       agentState.agents,
       agentState.loading,
@@ -470,7 +509,7 @@ export function useHudData(
     ],
   );
 
-  return { slots, flights, markRead, messagesError, messagesSaturated };
+  return { slots, flights, markRead, messagesError };
 }
 
 export function hudElapsedLabel(ms: number | null): string {

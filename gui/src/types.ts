@@ -297,7 +297,11 @@ export interface TaskLogsInput {
 
 export type ChatAgentId = 'muse' | 'claude' | 'dsh';
 
-/** Four real participants of a group chat: the user plus the three agents. */
+/**
+ * Built-in participant handles. A chat can also contain paired agents whose
+ * participant id is `agent_<id>`; membership is authoritative in `chat_members`
+ * (REA Phase 4 §6.1), so this union only covers the shipped identities.
+ */
 export type ChatParticipantId = 'user' | 'muse' | 'claude' | 'dsh';
 
 export interface ChatAgentState {
@@ -331,6 +335,8 @@ export interface ChatSummary {
   participants?: ChatParticipant[];
   /** Engine returns plain status strings per agent (CHAT_BACKEND §3.2). */
   agents: Record<ChatAgentId, string>;
+  /** REA Phase 4: user-editable description/announcement (empty object when unset). */
+  settings?: ChatSettings | null;
 }
 
 /**
@@ -374,6 +380,9 @@ export interface ChatMention {
   length: number;
 }
 
+/** REA Phase 4: `user` is ordinary chat, `system` is engine-internal notices. */
+export type ChatMessageKind = 'user' | 'system';
+
 export interface ChatMessage {
   message_id: string;
   chat_id?: string | null;
@@ -390,6 +399,33 @@ export interface ChatMessage {
   status: string;
   created_at: string;
   task_id?: string | null;
+  /** Omitted by pre-Phase-4 engines / databases; treat missing as `user`. */
+  kind?: ChatMessageKind | null;
+  /** True once `chat_recall` replaced the body with the engine placeholder. */
+  recalled?: boolean;
+}
+
+/** One canonical membership row (`chat_members`), owner-only mutations. */
+export interface ChatMember {
+  agent_id: string;
+  participant_id: string | null;
+  /** owner | member */
+  role: string;
+  owner: string | null;
+  /** claude | dsh | muse | null for the human owner. */
+  platform: string | null;
+  display_name: string;
+  color: string | null;
+  /** active | revoked … */
+  status: string;
+  /** Epoch ms from the engine membership row. */
+  joined_at: number | string | null;
+}
+
+/** Per-chat JSON settings column (`chats.settings`). */
+export interface ChatSettings {
+  description: string;
+  announcement: string;
 }
 
 export interface ChatStatusPayload {
@@ -487,6 +523,25 @@ export interface WakeStatusPayload {
   /** True when at least one chat has wake enabled. */
   enabled: boolean;
   chats: WakeChatStatus[];
+  /**
+   * REA Phase 4 [B]: `[wake]` unread reminders that have not been delivered as
+   * a chat message (they no longer enter the stream). Absent on engines that do
+   * not expose them yet — the banner then simply shows nothing.
+   */
+  notices?: WakeUnreadNotice[];
+}
+
+/** One pending `[wake]` unread reminder (engine `wake_unread_notices`). */
+export interface WakeUnreadNotice {
+  id: string;
+  seq: number;
+  chat_id: string | null;
+  agent_id: string;
+  /** mention | reply | owner_post | manual */
+  kind: string;
+  message_id: string | null;
+  /** ISO string (engine stores epoch ms). */
+  created_at: string | null;
 }
 
 export interface ListenerCheckin {
@@ -522,6 +577,71 @@ export interface WakeToggleResult {
   wake_kinds: string[];
   consecutive_failures: number;
   disabled_at: string | null;
+}
+
+/* ------------------------------------------------------------------ *
+ * REA Phase 4 §7.1: GET /events (SSE) pushed from the main process
+ * ------------------------------------------------------------------ */
+
+/**
+ * One wake event envelope from `GET /events`. It is the only push channel the
+ * engine has: every panel refreshes from it instead of guessing via polling.
+ */
+export interface EngineEvent {
+  id?: string | null;
+  seq: number;
+  chat_id: string | null;
+  /** mention | reply | owner_post | … */
+  kind: string;
+  from: string | null;
+  agent_id: string | null;
+  message_id: string | null;
+  message_seq: number | null;
+  mentions: string[];
+  /** Epoch ms. */
+  created_at: number;
+}
+
+/** Live state of the single SSE connection owned by the main process. */
+export interface EngineEventsStatus {
+  /** connected = stream open; connecting = opening/retrying; off = not running. */
+  state: 'off' | 'connecting' | 'connected';
+  /** True when the connection dropped and the GUI is back to polling. */
+  degraded: boolean;
+  lastSeq: number;
+  lastEventAt: string | null;
+  error: string | null;
+}
+
+/** Paired agent row for the Settings → Agent 管理 section. */
+export interface PairedAgent {
+  agent_id: string;
+  display_name: string;
+  /** claude | dsh | muse | custom platform label from the engine. */
+  platform: string | null;
+  /** active | revoked … */
+  status: string;
+  role: string;
+  color: string | null;
+  /** Muse has no local executor: the UI must not offer to start one. */
+  external: boolean;
+  joined_at: string | null;
+}
+
+export interface PairingCodeResult {
+  pairing_id: string;
+  code: string;
+  expires_at: number;
+  expires_in_ms: number;
+  max_agents: number;
+  uses: number;
+}
+
+export interface PairResult {
+  agent_id?: string;
+  display_name?: string;
+  token?: string;
+  [key: string]: unknown;
 }
 
 /** Draft returned by the main process after a dialog / drop / paste intake. */
@@ -670,6 +790,58 @@ export interface WorkbenchApi {
   wakeDisable: (input: { agentId: string; chatId: string }) => Promise<
     EngineResult<WakeToggleResult>
   >;
+  /** REA Phase 4: canonical membership list (`chat_members`, owner-only writes). */
+  chatMembers: (chatId: string) => Promise<
+    EngineResult<{ chat_id: string; members: ChatMember[] }>
+  >;
+  /** REA Phase 4: owner-only membership mutation (`chat_add_member`). */
+  chatAddMember: (input: {
+    chatId: string;
+    agentId: string;
+  }) => Promise<EngineResult<{ chat_id: string; members: ChatMember[] }>>;
+  /** REA Phase 4: owner-only membership mutation (`chat_remove_member`). */
+  chatRemoveMember: (input: {
+    chatId: string;
+    agentId: string;
+  }) => Promise<EngineResult<{ chat_id: string; members: ChatMember[] }>>;
+  /** REA Phase 4: per-chat description / announcement (`chat_settings` write). */
+  chatUpdateSettings: (input: {
+    chatId: string;
+    description?: string;
+    announcement?: string;
+  }) => Promise<EngineResult<{ chat_id: string; settings: ChatSettings }>>;
+  /** REA Phase 4: recall a message inside the engine window (`chat_recall`). */
+  chatRecall: (input: {
+    chatId: string;
+    messageId: string;
+  }) => Promise<EngineResult<Record<string, unknown>>>;
+  /** REA Phase 4: delete an uploaded file (`chat_delete_file`). */
+  chatDeleteFile: (input: {
+    chatId: string;
+    fileId: string;
+  }) => Promise<EngineResult<{ chat_id: string; file_id: string; deleted: boolean }>>;
+  /** REA Phase 4: one-time pairing code (`agent_pairing_code`). */
+  agentPairingCode: (input?: {
+    ttlHours?: number;
+    maxAgents?: number;
+  }) => Promise<EngineResult<PairingCodeResult>>;
+  /** REA Phase 4: exchange a pairing code for a token (`agent_pair`). */
+  agentPair: (input: {
+    code: string;
+    name: string;
+    platform?: string;
+    profile?: string;
+    reclaim?: boolean;
+    chatIds?: string[];
+  }) => Promise<EngineResult<PairResult>>;
+  /** REA Phase 4: revoke an agent token (`agent_revoke_token`). */
+  agentRevokeToken: (input?: {
+    agentId?: string;
+  }) => Promise<EngineResult<{ agent_id: string; status: string }>>;
+  /** REA Phase 4: live SSE status of the main-process event stream. */
+  getEventsStatus: () => Promise<EngineEventsStatus>;
+  onEngineEvent: (callback: (event: EngineEvent) => void) => () => void;
+  onEventsStatus: (callback: (status: EngineEventsStatus) => void) => () => void;
   pickChatFiles: () => Promise<EngineResult<{ drafts: ChatUploadDraft[] }>>;
   registerChatFiles: (
     files: File[],
@@ -732,6 +904,8 @@ export type Route =
   | { name: 'chats' }
   | { name: 'inbox' }
   | { name: 'chat'; id: string }
+  /** REA Phase 4 [D]: per-chat settings page (#/chats/:id/settings). */
+  | { name: 'chat-settings'; id: string }
   | { name: 'tasks'; scope?: 'history' }
   | { name: 'task'; id: string }
   | { name: 'dispatch' }

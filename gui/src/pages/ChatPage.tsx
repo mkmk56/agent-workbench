@@ -2,8 +2,11 @@ import { CircleAlert, MessagesSquare, Plus } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AgentMentionMenu } from '../components/AgentMentionMenu';
 import { ChatHeader } from '../components/ChatHeader';
+import { ChatMembersDrawer } from '../components/ChatMembersDrawer';
 import { Composer } from '../components/Composer';
 import { MessageList } from '../components/MessageList';
+import { TaskInspector } from '../components/TaskInspector';
+import { WakeBanner } from '../components/WakeBanner';
 import {
   useChatListView,
   useChatMessagesView,
@@ -11,19 +14,48 @@ import {
   useChatStore,
   useMarkChatRead,
 } from '../lib/chat-store';
-import { createChat } from '../lib/chat';
+import {
+  chatMembersOnce,
+  createChat,
+  recallChatMessage,
+  type ChatMessage,
+} from '../lib/chat';
+import {
+  readHideSystemMessages,
+  writeHideSystemMessages,
+  type PanelStorage,
+} from '../lib/chat-panels';
 import { invalidateChatFileIndex, useChatFileIndex } from '../lib/chat-file-index';
 import { mergeMessageFiles } from '../lib/chat-files';
 import type { MentionRequest, MenuPoint } from '../lib/mention-menu';
 import { navigate } from '../lib/router';
-import type { ChatAgentId } from '../types';
+import type { ChatAgentId, ChatMember } from '../types';
 import '../styles/chat.css';
+import '../styles/chat-phase4.css';
+
+function panelStorage(): PanelStorage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+const SENDER_NAMES: Record<string, string> = {
+  user: '你',
+  muse: 'Muse',
+  claude: 'Claude',
+  dsh: 'dsh',
+};
 
 /**
  * One group chat: header, message stream and composer. The shell router mounts
  * this page with the active chat id; all content comes from the single
  * ChatStore (one scheduler, incremental seq cursor). With no chat selected it
  * shows the central empty state.
+ *
+ * Phase 4 owns the chat-level surfaces here: the task inspector drawer, the
+ * members drawer, the wake banner and the per-chat system-message filter.
  */
 export function ChatPage({ chatId }: { chatId: string | null }) {
   const [creating, setCreating] = useState(false);
@@ -39,7 +71,26 @@ export function ChatPage({ chatId }: { chatId: string | null }) {
   } | null>(null);
   const [mentionRequest, setMentionRequest] = useState<MentionRequest | null>(null);
   const requestSeq = useRef(0);
-  const { setActiveChat, refreshActive, fetchChats } = useChatStore();
+  const { setActiveChat, refreshActive, fetchChats, markRecalled } = useChatStore();
+
+  // Phase 4 [A]: which task the inspector shows (null = closed).
+  const [inspectorTaskId, setInspectorTaskId] = useState<string | null>(null);
+  // Phase 4 [C]: the members drawer, fed by the engine's canonical rows.
+  const [membersOpen, setMembersOpen] = useState(false);
+  const [members, setMembers] = useState<ChatMember[] | null>(null);
+  const [membersError, setMembersError] = useState<string | null>(null);
+  const [membersLoading, setMembersLoading] = useState(false);
+  // Phase 4 [B]: hide system messages (preference in localStorage).
+  const [hideSystem, setHideSystem] = useState(() =>
+    readHideSystemMessages(panelStorage()),
+  );
+  // Phase 4 [H]: the message the next send replies to.
+  const [replyTo, setReplyTo] = useState<{
+    messageId: string;
+    from: string;
+    summary: string;
+  } | null>(null);
+  const [recallError, setRecallError] = useState<string | null>(null);
 
   // Drop a pending mention request during render (not in an effect): the
   // composer is remounted per chat, so an effect-time reset would let the new
@@ -48,9 +99,13 @@ export function ChatPage({ chatId }: { chatId: string | null }) {
     setMentionRequest(null);
   }
 
-  // A menu anchored to a message of the previous chat must not survive a switch.
+  // Anything anchored to a message of the previous chat must not survive a switch.
   useEffect(() => {
     setAvatarMenu(null);
+    setInspectorTaskId(null);
+    setMembersOpen(false);
+    setReplyTo(null);
+    setRecallError(null);
   }, [chatId]);
 
   const openAvatarMenu = useCallback((agent: ChatAgentId, point: MenuPoint) => {
@@ -78,14 +133,41 @@ export function ChatPage({ chatId }: { chatId: string | null }) {
     setSearchQuery('');
   }, [chatId]);
 
+  useEffect(() => {
+    writeHideSystemMessages(panelStorage(), hideSystem);
+  }, [hideSystem]);
+
   const { chats } = useChatListView();
   const {
     messages,
     error: messagesError,
     loading: messagesLoading,
+    hasMore,
+    loadingEarlier,
     refresh: refreshMessages,
+    loadEarlier,
   } = useChatMessagesView(chatId);
   const { status, error: statusError, loading: statusLoading } = useChatStatusView(chatId);
+
+  const loadMembers = useCallback(async () => {
+    if (chatId == null) {
+      setMembers(null);
+      return;
+    }
+    setMembersLoading(true);
+    const result = await chatMembersOnce(chatId);
+    setMembersLoading(false);
+    if (!result.ok) {
+      setMembersError(result.error);
+      return;
+    }
+    setMembersError(null);
+    setMembers(result.data);
+  }, [chatId]);
+
+  useEffect(() => {
+    void loadMembers();
+  }, [loadMembers]);
 
   // P0-5 scheme B: merge the chat's attachment list into the message objects so
   // every attachment row can show a real name, size and parse status. The index
@@ -96,73 +178,119 @@ export function ChatPage({ chatId }: { chatId: string | null }) {
     [messages, fileIndex.files],
   );
 
-  const chat = chatId != null ? (chats.find((item) => item.chat_id === chatId) ?? null) : null;
-
-  // P0-6 / REA Phase 2 §5: pulling messages is "read". The engine advances the
-  // cursor on list_chat_messages; this explicit chat_mark_read keeps the chat
-  // list's unread badge and the inbox counters in step with what is on screen.
-  const newestSeq = messages.reduce((max, message) => Math.max(max, message.seq), 0);
+  const newestSeq = mergedMessages.reduce((max, message) => Math.max(max, message.seq), 0);
   useMarkChatRead(chatId, newestSeq);
 
-  const needle = searchQuery.trim().toLowerCase();
-  const searchMatchCount =
-    needle.length === 0
-      ? 0
-      : messages.filter((message) => message.summary.toLowerCase().includes(needle)).length;
+  const chat = useMemo(
+    () => chats.find((item) => item.chat_id === chatId) ?? null,
+    [chats, chatId],
+  );
 
   const onSent = useCallback(async () => {
-    // New uploads/sends change the attachment list: drop the cached index so
-    // the next render reads the authoritative rows again.
-    invalidateChatFileIndex(chatId);
+    if (chatId != null) {
+      invalidateChatFileIndex(chatId);
+    }
     await refreshActive();
   }, [chatId, refreshActive]);
 
-  const createNewChat = async () => {
-    setCreating(true);
-    setCreateError(null);
-    const result = await createChat();
-    setCreating(false);
-    if (!result.ok) {
-      setCreateError(result.error);
-      return;
-    }
-    await fetchChats();
-    navigate(`/chats/${encodeURIComponent(result.data.chat_id)}`);
-  };
+  const handleRecall = useCallback(
+    async (message: ChatMessage) => {
+      if (chatId == null) {
+        return;
+      }
+      setRecallError(null);
+      const result = await recallChatMessage({ chatId, messageId: message.message_id });
+      if (!result.ok) {
+        setRecallError(result.error);
+        return;
+      }
+      // In place: the engine already replaced the body, and the incremental
+      // cursor would never refetch this row on its own.
+      markRecalled(chatId, message.message_id);
+      await refreshMessages();
+    },
+    [chatId, markRecalled, refreshMessages],
+  );
+
+  // Only the author or the chat owner may recall; the GUI shows the action for
+  // the user's own messages and lets the engine reject anything else.
+  const canRecall = useCallback((message: ChatMessage) => message.from === 'user', []);
+
+  const startReply = useCallback((message: ChatMessage) => {
+    setReplyTo({
+      messageId: message.message_id,
+      from: SENDER_NAMES[message.from] ?? message.from,
+      summary: message.summary,
+    });
+  }, []);
+
+  const openTask = useCallback((taskId: string) => {
+    setInspectorTaskId(taskId);
+  }, []);
 
   if (chatId == null) {
     return (
-      <section className="chat-page chat-page--welcome" aria-label="群聊">
+      <section className="chat-page chat-page--welcome">
         <div className="chat-empty">
           <span className="chat-empty__icon" aria-hidden="true">
-            <MessagesSquare size={32} strokeWidth={1.6} />
+            <MessagesSquare size={40} strokeWidth={1.4} />
           </span>
-          <h1 className="chat-empty__title">选择一个群聊</h1>
+          <h2 className="chat-empty__title">群聊</h2>
           <p className="chat-empty__desc">
-            每个群聊是一份独立的任务上下文。从左侧选择群聊，或新建一个群聊开始协作。
+            从左侧选择一个群聊，或新建一个。Muse 会读消息、拆任务并分配给 Claude 与 dsh。
           </p>
           <button
             type="button"
             className="btn btn-primary"
-            onClick={() => void createNewChat()}
             disabled={creating}
+            onClick={() => {
+              setCreating(true);
+              setCreateError(null);
+              void createChat()
+                .then(async (result) => {
+                  setCreating(false);
+                  if (!result.ok) {
+                    setCreateError(result.error);
+                    return;
+                  }
+                  await fetchChats();
+                  navigate(`/chats/${encodeURIComponent(result.data.chat_id)}`);
+                })
+                .catch(() => {
+                  setCreating(false);
+                  setCreateError('新建群聊失败。');
+                });
+            }}
           >
-            <Plus size={14} aria-hidden="true" />
-            {creating ? '正在创建…' : '新建会话'}
+            <Plus size={15} aria-hidden="true" />
+            {creating ? '正在新建…' : '新建群聊'}
           </button>
           {createError != null && (
-            <p className="chat-empty__error" role="alert">
-              <CircleAlert size={12} aria-hidden="true" />
-              创建失败：{createError}
+            <p className="chat-inline-error" role="alert">
+              <CircleAlert size={14} aria-hidden="true" />
+              {createError}
             </p>
           )}
+        </div>
+        <div className="chat-page__list">
+          {chats.map((item) => (
+            <button
+              key={item.chat_id}
+              type="button"
+              className="chat-page__list-row"
+              onClick={() => navigate(`/chats/${encodeURIComponent(item.chat_id)}`)}
+            >
+              <span className="chat-page__list-name">{item.name}</span>
+              <span className="chat-page__list-preview">{item.last_message_preview ?? '—'}</span>
+            </button>
+          ))}
         </div>
       </section>
     );
   }
 
   return (
-    <section className="chat-page" aria-label={chat?.name ?? '群聊'}>
+    <section className="chat-page chat-page--chat">
       <ChatHeader
         chatId={chatId}
         chat={chat}
@@ -170,10 +298,32 @@ export function ChatPage({ chatId }: { chatId: string | null }) {
         statusLoading={statusLoading}
         statusError={statusError}
         searchQuery={searchQuery}
-        searchMatchCount={searchMatchCount}
+        searchMatchCount={
+          searchQuery.trim().length === 0
+            ? 0
+            : mergedMessages.filter((message) =>
+                message.summary
+                  .toLowerCase()
+                  .includes(searchQuery.trim().toLowerCase()),
+              ).length
+        }
+        members={members}
+        hideSystem={hideSystem}
+        onToggleHideSystem={setHideSystem}
+        onOpenMembers={() => setMembersOpen(true)}
         onSearchChange={setSearchQuery}
-        onRenamed={() => void fetchChats()}
+        onRenamed={() => {
+          void fetchChats();
+          void loadMembers();
+        }}
       />
+      <WakeBanner chatId={chatId} />
+      {recallError != null && (
+        <p className="chat-inline-error" role="alert">
+          <CircleAlert size={14} aria-hidden="true" />
+          撤回失败：{recallError}
+        </p>
+      )}
       <MessageList
         chatId={chatId}
         messages={mergedMessages}
@@ -181,8 +331,16 @@ export function ChatPage({ chatId }: { chatId: string | null }) {
         loading={messagesLoading}
         error={messagesError}
         searchQuery={searchQuery}
+        hideSystem={hideSystem}
+        hasMore={hasMore}
+        loadingEarlier={loadingEarlier}
         onRetry={() => void refreshMessages()}
+        onLoadEarlier={() => void loadEarlier()}
         onMentionAgent={openAvatarMenu}
+        onReply={startReply}
+        onOpenTask={openTask}
+        onRecall={(message) => void handleRecall(message)}
+        canRecall={canRecall}
       />
       {avatarMenu != null && (
         <AgentMentionMenu
@@ -204,7 +362,27 @@ export function ChatPage({ chatId }: { chatId: string | null }) {
         status={status}
         onSent={onSent}
         mentionRequest={mentionRequest}
+        replyTo={replyTo}
+        onClearReply={() => setReplyTo(null)}
       />
+
+      {inspectorTaskId != null && (
+        <TaskInspector
+          key={inspectorTaskId}
+          taskId={inspectorTaskId}
+          onClose={() => setInspectorTaskId(null)}
+        />
+      )}
+      {membersOpen && (
+        <ChatMembersDrawer
+          chatId={chatId}
+          members={members ?? []}
+          loading={membersLoading}
+          error={membersError}
+          onRefresh={() => void loadMembers()}
+          onClose={() => setMembersOpen(false)}
+        />
+      )}
     </section>
   );
 }

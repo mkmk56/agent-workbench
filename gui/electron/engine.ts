@@ -2,6 +2,7 @@ import { app } from 'electron';
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { TextDecoder } from 'node:util';
 
 export type EngineLifecycleState = 'running' | 'starting' | 'stopped' | 'error';
 
@@ -63,6 +64,28 @@ interface JsonRpcResponse {
 }
 
 export type EngineCallResult<T> = { ok: true; data: T } | { ok: false; error: string };
+
+/** One wake-event envelope from `GET /events` (REA Phase 3 §9, Phase 4 §7.1). */
+export interface EngineEventEnvelope {
+  id?: string | null;
+  seq: number;
+  chat_id: string | null;
+  kind: string;
+  from: string | null;
+  agent_id: string | null;
+  message_id: string | null;
+  message_seq: number | null;
+  mentions: string[];
+  created_at: number;
+}
+
+export interface EngineEventsStatus {
+  state: 'off' | 'connecting' | 'connected';
+  degraded: boolean;
+  lastSeq: number;
+  lastEventAt: string | null;
+  error: string | null;
+}
 
 const HOST = '127.0.0.1';
 const DEFAULT_PORT = 8080;
@@ -178,6 +201,84 @@ export interface EngineManagerOptions {
 }
 
 /**
+ * Minimal shape of a `fetch` response body. The electron tsconfig deliberately
+ * has no DOM lib, so the streaming reader is typed locally instead of pulling
+ * in the whole DOM `ReadableStream` surface.
+ */
+interface EventStreamBody {
+  getReader(): {
+    read(): Promise<{ done: boolean; value?: Uint8Array }>;
+    releaseLock(): void;
+  };
+}
+
+type ParsedSseChunk =
+  | { type: 'event'; data: EngineEventEnvelope }
+  | { type: 'resync' }
+  | null;
+
+/** One SSE frame (`id:` / `event:` / `data:` lines, `:` comments ignored). */
+function parseSseChunk(chunk: string): ParsedSseChunk {
+  let eventName = 'message';
+  let id: string | null = null;
+  const dataLines: string[] = [];
+  for (const rawLine of chunk.split('\n')) {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    if (line.length === 0 || line.startsWith(':')) {
+      continue;
+    }
+    if (line.startsWith('event:')) {
+      eventName = line.slice(6).trim();
+      continue;
+    }
+    if (line.startsWith('id:')) {
+      id = line.slice(3).trim();
+      continue;
+    }
+    if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trim());
+    }
+  }
+  if (dataLines.length === 0) {
+    return null;
+  }
+  let payload: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(dataLines.join('\n'));
+    if (parsed == null || typeof parsed !== 'object') {
+      return null;
+    }
+    payload = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (eventName === 'resync' || payload.type === 'resync') {
+    return { type: 'resync' };
+  }
+  if (typeof payload.seq !== 'number') {
+    return null;
+  }
+  return {
+    type: 'event',
+    data: {
+      id: typeof payload.id === 'string' ? payload.id : id,
+      seq: Number(payload.seq) || 0,
+      chat_id: typeof payload.chat_id === 'string' ? payload.chat_id : null,
+      kind: typeof payload.kind === 'string' ? payload.kind : '',
+      from: typeof payload.from === 'string' ? payload.from : null,
+      agent_id: typeof payload.agent_id === 'string' ? payload.agent_id : null,
+      message_id: typeof payload.message_id === 'string' ? payload.message_id : null,
+      message_seq:
+        typeof payload.message_seq === 'number' ? payload.message_seq : null,
+      mentions: Array.isArray(payload.mentions)
+        ? payload.mentions.filter((item): item is string => typeof item === 'string')
+        : [],
+      created_at: Number(payload.created_at) || 0,
+    },
+  };
+}
+
+/**
  * Owns the local MCP engine lifecycle and the authenticated MCP transport.
  *
  * The renderer never sees the bearer token: all engine calls are made here in
@@ -197,6 +298,19 @@ export class EngineManager {
   private lastError: string | null = null;
   private logTail: string[] = [];
   private nextRequestId = 1;
+
+  // ---- REA Phase 4 §7.1: the one SSE connection the whole GUI shares ----
+  private eventsAbort: AbortController | null = null;
+  private eventsLoop: Promise<void> | null = null;
+  private eventsState: EngineEventsStatus = {
+    state: 'off',
+    degraded: false,
+    lastSeq: 0,
+    lastEventAt: null,
+    error: null,
+  };
+  private eventHandlers = new Set<(event: EngineEventEnvelope) => void>();
+  private statusHandlers = new Set<(status: EngineEventsStatus) => void>();
 
   constructor(
     private readonly getStoredToken: () => string | null,
@@ -461,6 +575,7 @@ export class EngineManager {
 
   /** Fire-and-forget cleanup used while the app is quitting. */
   shutdown(): void {
+    this.stopEvents();
     const child = this.child;
     if (child == null) {
       return;
@@ -490,6 +605,180 @@ export class EngineManager {
     this.child = null;
     this.childPid = null;
     this.managed = false;
+  }
+
+  // ---- REA Phase 4 §7.1: GET /events (SSE) ----
+  //
+  // Exactly one stream is opened per GUI process, here in the main process:
+  // the renderer never sees the bearer token, and the four panels that want
+  // live state share this one subscription instead of opening four.
+
+  eventsStatus(): EngineEventsStatus {
+    return { ...this.eventsState };
+  }
+
+  onEvent(handler: (event: EngineEventEnvelope) => void): () => void {
+    this.eventHandlers.add(handler);
+    return () => {
+      this.eventHandlers.delete(handler);
+    };
+  }
+
+  onEventsStatus(handler: (status: EngineEventsStatus) => void): () => void {
+    this.statusHandlers.add(handler);
+    return () => {
+      this.statusHandlers.delete(handler);
+    };
+  }
+
+  private publishEventsStatus(patch: Partial<EngineEventsStatus>): void {
+    this.eventsState = { ...this.eventsState, ...patch };
+    for (const handler of this.statusHandlers) {
+      try {
+        handler({ ...this.eventsState });
+      } catch {
+        // A renderer that is going away must not break the stream.
+      }
+    }
+  }
+
+  /** Start the single SSE stream (idempotent). */
+  startEvents(): void {
+    if (this.eventsLoop != null) {
+      return;
+    }
+    this.eventsLoop = this.runEventsLoop().finally(() => {
+      this.eventsLoop = null;
+      this.eventsAbort = null;
+      this.publishEventsStatus({ state: 'off' });
+    });
+  }
+
+  stopEvents(): void {
+    this.eventsAbort?.abort();
+    this.eventsAbort = null;
+  }
+
+  private async runEventsLoop(): Promise<void> {
+    let backoff = 3_000;
+    while (true) {
+      const resolution = this.resolveToken();
+      if (!resolution.token) {
+        this.publishEventsStatus({
+          state: 'off',
+          degraded: true,
+          error: '未配置引擎 Token，实时事件流未启动。',
+        });
+        return;
+      }
+      const controller = new AbortController();
+      this.eventsAbort = controller;
+      let received = false;
+      try {
+        const since = this.eventsState.lastSeq;
+        const url = `${this.baseUrl}/events${since > 0 ? `?since_seq=${since}` : ''}`;
+        const response = await fetch(url, {
+          headers: {
+            Authorization: `Bearer ${resolution.token}`,
+            Accept: 'text/event-stream',
+          },
+          signal: controller.signal,
+        });
+        if (response.status === 401) {
+          throw new Error('引擎拒绝了 Token（401），实时事件流已停止。');
+        }
+        if (response.status === 403) {
+          throw new Error('引擎拒绝了事件订阅（403）。');
+        }
+        if (!response.ok || response.body == null) {
+          throw new Error(`事件流返回 HTTP ${response.status}。`);
+        }
+        this.publishEventsStatus({ state: 'connected', degraded: false, error: null });
+        backoff = 3_000;
+        received = await this.readEventStream(
+          response.body as unknown as EventStreamBody,
+          controller.signal,
+        );
+      } catch (error) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        const message = errorMessage(error);
+        // The engine not being up yet is expected during startup: report a
+        // degraded state and keep retrying with a bounded backoff.
+        this.publishEventsStatus({
+          state: 'connecting',
+          degraded: true,
+          error: `实时连接已断开（${message}），已降级为轮询。`,
+        });
+      }
+      if (controller.signal.aborted) {
+        return;
+      }
+      if (!received) {
+        await sleep(backoff);
+        backoff = Math.min(backoff * 2, 30_000);
+      } else {
+        // A stream that delivered events and then ended is a normal reconnect.
+        await sleep(1_000);
+      }
+    }
+  }
+
+  /** Read one SSE response body until it ends. Returns true if events arrived. */
+  private async readEventStream(
+    body: EventStreamBody,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let received = false;
+    try {
+      while (!signal.aborted) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        let boundary = buffer.indexOf('\n\n');
+        while (boundary >= 0) {
+          const chunk = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          boundary = buffer.indexOf('\n\n');
+          const parsed = parseSseChunk(chunk);
+          if (parsed == null) {
+            continue;
+          }
+          if (parsed.type === 'resync') {
+            // The engine cannot replay from our cursor: drop it and let the
+            // panels refetch from scratch.
+            this.publishEventsStatus({ lastSeq: 0, degraded: false });
+            continue;
+          }
+          received = true;
+          this.eventsState = {
+            ...this.eventsState,
+            lastSeq: Math.max(this.eventsState.lastSeq, Number(parsed.data.seq) || 0),
+            lastEventAt: new Date().toISOString(),
+          };
+          for (const handler of this.eventHandlers) {
+            try {
+              handler(parsed.data);
+            } catch {
+              // One failing listener must not stop the others.
+            }
+          }
+        }
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {
+        // Already released.
+      }
+    }
+    return received;
   }
 
   private async callTool<T>(
@@ -830,6 +1119,128 @@ export class EngineManager {
       agent_id: input.agentId,
       chat_id: input.chatId,
     });
+  }
+
+  // ---- REA Phase 4: membership, chat settings, recall, file delete ----
+
+  /** Canonical membership rows (`chat_members`); the engine gates writes. */
+  async chatMembers(chatId: string): Promise<Record<string, unknown>> {
+    return this.callTool('chat_members', { chat_id: chatId });
+  }
+
+  async chatAddMember(input: {
+    chatId: string;
+    agentId: string;
+  }): Promise<Record<string, unknown>> {
+    await this.callTool('chat_add_member', {
+      chat_id: input.chatId,
+      agent_id: input.agentId,
+    });
+    return this.chatMembers(input.chatId);
+  }
+
+  async chatRemoveMember(input: {
+    chatId: string;
+    agentId: string;
+  }): Promise<Record<string, unknown>> {
+    await this.callTool('chat_remove_member', {
+      chat_id: input.chatId,
+      agent_id: input.agentId,
+    });
+    return this.chatMembers(input.chatId);
+  }
+
+  /**
+   * Persist the per-chat description/announcement (`chats.settings` JSON).
+   *
+   * The engine owns validation; a missing tool surfaces as a real error rather
+   * than a silent local-only save.
+   */
+  async chatUpdateSettings(input: {
+    chatId: string;
+    description?: string;
+    announcement?: string;
+  }): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = { chat_id: input.chatId };
+    if (input.description !== undefined) {
+      args.description = input.description;
+    }
+    if (input.announcement !== undefined) {
+      args.announcement = input.announcement;
+    }
+    return this.callTool('chat_update_settings', args);
+  }
+
+  async chatRecall(input: {
+    chatId: string;
+    messageId: string;
+  }): Promise<Record<string, unknown>> {
+    return this.callTool('chat_recall', {
+      chat_id: input.chatId,
+      message_id: input.messageId,
+    });
+  }
+
+  /** Delete one uploaded file body plus its chat_files / message_files rows. */
+  async chatDeleteFile(input: {
+    chatId: string;
+    fileId: string;
+  }): Promise<Record<string, unknown>> {
+    return this.callTool('chat_delete_file', {
+      chat_id: input.chatId,
+      file_id: input.fileId,
+    });
+  }
+
+  // ---- REA Phase 4 §6.3: agent pairing / revocation ----
+
+  async agentPairingCode(input: {
+    ttlHours?: number;
+    maxAgents?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = {};
+    if (input.ttlHours != null) {
+      args.ttl_hours = input.ttlHours;
+    }
+    if (input.maxAgents != null) {
+      args.max_agents = input.maxAgents;
+    }
+    return this.callTool('agent_pairing_code', args);
+  }
+
+  async agentPair(input: {
+    code: string;
+    name: string;
+    platform?: string;
+    profile?: string;
+    reclaim?: boolean;
+    chatIds?: string[];
+  }): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = {
+      code: input.code,
+      name: input.name,
+    };
+    if (input.platform != null && input.platform.length > 0) {
+      args.platform = input.platform;
+    }
+    if (input.profile != null && input.profile.length > 0) {
+      args.profile = input.profile;
+    }
+    if (input.reclaim === true) {
+      args.reclaim = true;
+    }
+    if (input.chatIds != null && input.chatIds.length > 0) {
+      args.chat_ids = input.chatIds;
+    }
+    return this.callTool('agent_pair', args);
+  }
+
+  async agentRevokeToken(input: { agentId?: string } = {}): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = {};
+    if (input.agentId != null) {
+      args.agent_id = input.agentId;
+    }
+    return this.callTool('agent_revoke_token', args);
   }
 
   // ---- Chunked upload (backend tool contract: init → chunk×N → complete) ----

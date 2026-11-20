@@ -17,6 +17,7 @@ import {
   type ChatStatus,
   type SendChatResult,
 } from './chat';
+import { engineEvents } from './engine';
 
 /**
  * Single chat data store.
@@ -44,6 +45,10 @@ interface MessagesSlice {
   seq: number;
   loading: boolean;
   error: string | null;
+  /** True when older history exists beyond the loaded window. */
+  hasMore: boolean;
+  /** True while a backwards page is in flight (the "加载更早" button). */
+  loadingEarlier: boolean;
 }
 
 export interface ChatStoreState {
@@ -70,7 +75,14 @@ const initialState: ChatStoreState = {
   participants: {},
 };
 
-const emptySlice: MessagesSlice = { messages: [], seq: 0, loading: true, error: null };
+const emptySlice: MessagesSlice = {
+  messages: [],
+  seq: 0,
+  loading: true,
+  error: null,
+  hasMore: false,
+  loadingEarlier: false,
+};
 
 function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
   if (incoming.length === 0) {
@@ -99,6 +111,8 @@ class ChatStoreImpl {
   private statusTimer: ReturnType<typeof setInterval> | null = null;
   private inflight = new Set<string>();
   private activeRef: string | null = null;
+  /** Detach handle of the shared SSE subscription (Phase 4 §7.1). */
+  private eventStop: (() => void) | null = null;
 
   getSnapshot = (): ChatStoreState => this.state;
 
@@ -137,6 +151,7 @@ class ChatStoreImpl {
     if (this.messagesTimer != null) {
       return;
     }
+    this.ensureEvents();
     this.messagesTimer = setInterval(() => {
       const chatId = this.activeRef;
       if (chatId != null && !document.hidden) {
@@ -164,6 +179,31 @@ class ChatStoreImpl {
       clearInterval(this.statusTimer);
       this.statusTimer = null;
     }
+    this.eventStop?.();
+    this.eventStop = null;
+  }
+
+  /**
+   * REA Phase 4 §7.1: react to the pushed wake events.
+   *
+   * The polling timers stay as the degraded path (the engine may be unreachable
+   * or the stream may drop); an event only *accelerates* the existing fetches,
+   * it never becomes the sole source of truth. One shared subscription for the
+   * whole store — not one per component.
+   */
+  private ensureEvents(): void {
+    if (this.eventStop != null) {
+      return;
+    }
+    this.eventStop = engineEvents.subscribeEvents((event) => {
+      const active = this.activeRef;
+      if (active != null && (event.chat_id == null || event.chat_id === active)) {
+        void this.fetchMessages(active);
+        void this.fetchStatus(active);
+      }
+      // A wake event can change another chat's unread badge too.
+      void this.fetchChats();
+    });
   }
 
   setActiveChat(chatId: string | null): void {
@@ -232,12 +272,85 @@ class ChatStoreImpl {
       const current = options.reset === true ? [] : slice.messages;
       const merged = mergeMessages(current, incoming);
       const nextSeq = merged.reduce((max, message) => Math.max(max, message.seq), 0);
-      this.patchSlice(chatId, { messages: merged, seq: nextSeq, loading: false, error: null });
+      // `has_more` answers "is there older history behind this page", so it is
+      // only meaningful for the reset (newest page) load and for paging back.
+      const hasMore =
+        options.reset === true ? result.data.hasMore : (slice.hasMore ?? false);
+      this.patchSlice(chatId, {
+        messages: merged,
+        seq: nextSeq,
+        loading: false,
+        error: null,
+        hasMore,
+      });
     } catch {
       this.patchSlice(chatId, { error: '读取群聊消息失败（主进程调用异常）。', loading: false });
     } finally {
       this.inflight.delete(key);
     }
+  }
+
+  /**
+   * Load the previous page of history ("加载更早消息").
+   *
+   * `before` is the oldest loaded message id, so paging is anchored on the real
+   * stream rather than a guessed offset. A page that returns nothing clears
+   * `hasMore` instead of leaving a button that can never deliver.
+   */
+  async loadEarlier(chatId: string): Promise<void> {
+    const key = `earlier:${chatId}`;
+    const slice = this.state.messages[chatId];
+    if (this.inflight.has(key) || slice == null || slice.messages.length === 0) {
+      return;
+    }
+    this.inflight.add(key);
+    this.patchSlice(chatId, { loadingEarlier: true });
+    try {
+      const result = await listChatMessages({
+        chatId,
+        limit: MESSAGE_LIMIT,
+        before: slice.messages[0].message_id,
+      });
+      if (!result.ok) {
+        this.patchSlice(chatId, { loadingEarlier: false, error: result.error });
+        return;
+      }
+      const merged = mergeMessages(slice.messages, result.data.messages);
+      this.patchSlice(chatId, {
+        messages: merged,
+        loadingEarlier: false,
+        hasMore: result.data.hasMore && result.data.messages.length > 0,
+      });
+    } catch {
+      this.patchSlice(chatId, {
+        loadingEarlier: false,
+        error: '加载更早消息失败（主进程调用异常）。',
+      });
+    } finally {
+      this.inflight.delete(key);
+    }
+  }
+
+  /**
+   * Reflect a successful `chat_recall` in place (Phase 4 [H]).
+   *
+   * The incremental cursor never re-fetches an already loaded row, so without
+   * this the recalled bubble would keep showing its old text until the next
+   * full page. The engine is the authority (it returned ok); the optimistic row
+   * only mirrors what it has already stored.
+   */
+  markRecalled(chatId: string, messageId: string): void {
+    const slice = this.state.messages[chatId];
+    if (slice == null) {
+      return;
+    }
+    this.patchSlice(chatId, {
+      messages: slice.messages.map((message) =>
+        message.message_id === messageId
+          ? { ...message, recalled: true, summary: '' }
+          : message,
+      ),
+    });
   }
 
   async fetchStatus(chatId: string): Promise<void> {
@@ -339,6 +452,8 @@ export interface ChatStoreApi {
   fetchChats: () => Promise<void>;
   fetchMessages: (chatId: string, options?: { reset?: boolean }) => Promise<void>;
   fetchStatus: (chatId: string) => Promise<void>;
+  loadEarlier: (chatId: string) => Promise<void>;
+  markRecalled: (chatId: string, messageId: string) => void;
   send: ChatStoreImpl['send'];
   markRead: (chatId: string, upToSeq?: number) => Promise<void>;
   refreshActive: () => Promise<void>;
@@ -352,6 +467,8 @@ const api: ChatStoreApi = {
   fetchChats: () => chatStore.fetchChats(),
   fetchMessages: (chatId, options) => chatStore.fetchMessages(chatId, options),
   fetchStatus: (chatId) => chatStore.fetchStatus(chatId),
+  loadEarlier: (chatId) => chatStore.loadEarlier(chatId),
+  markRecalled: (chatId, messageId) => chatStore.markRecalled(chatId, messageId),
   send: (chatId, input) => chatStore.send(chatId, input),
   markRead: (chatId, upToSeq) => chatStore.markRead(chatId, upToSeq),
   refreshActive: () => chatStore.refreshActive(),
@@ -382,18 +499,32 @@ export function useChatMessagesView(chatId: string | null): {
   messages: ChatMessage[];
   loading: boolean;
   error: string | null;
+  hasMore: boolean;
+  loadingEarlier: boolean;
   refresh: () => Promise<void>;
+  loadEarlier: () => Promise<void>;
 } {
-  const { state, fetchMessages } = useChatStore();
+  const { state, fetchMessages, loadEarlier } = useChatStore();
   if (chatId == null) {
-    return { messages: [], loading: false, error: null, refresh: async () => undefined };
+    return {
+      messages: [],
+      loading: false,
+      error: null,
+      hasMore: false,
+      loadingEarlier: false,
+      refresh: async () => undefined,
+      loadEarlier: async () => undefined,
+    };
   }
   const slice = state.messages[chatId];
   return {
     messages: slice?.messages ?? [],
     loading: slice?.loading ?? true,
     error: slice?.error ?? null,
+    hasMore: slice?.hasMore ?? false,
+    loadingEarlier: slice?.loadingEarlier ?? false,
     refresh: () => fetchMessages(chatId),
+    loadEarlier: () => loadEarlier(chatId),
   };
 }
 

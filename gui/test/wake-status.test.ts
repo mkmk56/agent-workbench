@@ -393,3 +393,60 @@ test('setWakeEnabled rejects a reply for a different chat', async () => {
   assert.match(result.error, /chat-1/);
   assert.match(result.error, /chat-2/);
 });
+
+/* ----- Phase 4 [B]: pending reminders come from each chat row ----- */
+
+test('per-chat unread_notices fill the banner list with their own chat id', () => {
+  const status = normalizeWakeStatus({
+    agent_id: 'agent_claude',
+    chats: [
+      {
+        chat_id: 'chat-1',
+        enabled: true,
+        unread_notices: [
+          {
+            event_id: 'evt-9',
+            message_seq: 21,
+            message_id: 'msg-9',
+            kind: 'mention',
+            status: 'pending',
+            notified_at: 1763000000000,
+          },
+        ],
+      },
+      {
+        chat_id: 'chat-2',
+        enabled: true,
+        unread_notices: [
+          { event_id: 'evt-10', message_seq: 4, kind: 'reply', notified_at: 1763000900000 },
+        ],
+      },
+    ],
+  });
+  assert.ok(status != null);
+  assert.equal(status.notices.length, 2);
+  const first = status.notices.find((notice) => notice.id === 'evt-9');
+  assert.ok(first != null);
+  assert.equal(first.chat_id, 'chat-1');
+  assert.equal(first.seq, 21);
+  assert.equal(first.message_id, 'msg-9');
+  assert.equal(first.agent_id, 'agent_claude');
+  // notified_at is the only time the reminder carries; it must not be dropped.
+  assert.equal(first.created_at, new Date(1763000000000).toISOString());
+  assert.equal(status.notices.find((notice) => notice.id === 'evt-10')?.chat_id, 'chat-2');
+});
+
+test('a notice id is required: an unread_notices row without one is dropped', () => {
+  const status = normalizeWakeStatus({
+    agent_id: 'agent_claude',
+    chats: [{ chat_id: 'chat-1', enabled: true, unread_notices: [{ kind: 'mention' }] }],
+  });
+  assert.ok(status != null);
+  assert.deepEqual(status.notices, []);
+});
+
+test('a status without notices yields an empty list, never a made-up reminder', () => {
+  const status = normalizeWakeStatus(wakePayload);
+  assert.ok(status != null);
+  assert.deepEqual(status.notices, []);
+});

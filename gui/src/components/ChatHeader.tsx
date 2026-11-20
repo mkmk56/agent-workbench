@@ -1,4 +1,4 @@
-import { MoreHorizontal, Pencil, Search, Settings as SettingsIcon, Users, X } from 'lucide-react';
+import { Eye, EyeOff, MoreHorizontal, Pencil, Search, Settings as SettingsIcon, Users, X } from 'lucide-react';
 import { useState } from 'react';
 import {
   normalizeAgentState,
@@ -6,9 +6,9 @@ import {
   type ChatStatus,
   type ChatSummary,
 } from '../lib/chat';
-import type { ChatAgentId } from '../types';
+import type { ChatAgentId, ChatMember } from '../types';
 import { navigate } from '../lib/router';
-import { AgentPresence, AgentPresenceList } from './AgentPresence';
+import { AgentPresence } from './AgentPresence';
 import { ProfileCardPanel } from './ProfileCard';
 
 const OFFLINE_STATES = new Set(['failed', 'stale', 'unknown']);
@@ -34,6 +34,10 @@ export function ChatHeader({
   statusError,
   searchQuery,
   searchMatchCount,
+  members,
+  hideSystem,
+  onToggleHideSystem,
+  onOpenMembers,
   onSearchChange,
   onRenamed,
 }: {
@@ -44,6 +48,11 @@ export function ChatHeader({
   statusError: string | null;
   searchQuery: string;
   searchMatchCount: number;
+  /** Engine membership rows; null while loading or when the read failed. */
+  members: ChatMember[] | null;
+  hideSystem: boolean;
+  onToggleHideSystem: (hide: boolean) => void;
+  onOpenMembers: () => void;
   onSearchChange: (value: string) => void;
   onRenamed: () => void;
 }) {
@@ -51,7 +60,6 @@ export function ChatHeader({
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
-  const [showMembers, setShowMembers] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [showProfiles, setShowProfiles] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -76,6 +84,15 @@ export function ChatHeader({
       (_id, index) => !OFFLINE_STATES.has(agentStates[index]),
     ).map((id) => AGENT_NAMES[id]),
   ].join('、');
+
+  // Phase 4: the member button counts the engine's canonical membership rows.
+  // Before the first read lands there is no honest number to show, so the
+  // button says "成员" instead of inventing "4 人".
+  const memberCount = members == null ? null : members.length;
+  const memberTitle =
+    members == null
+      ? '成员列表读取中'
+      : members.map((member) => member.display_name).join('、');
 
   const startEditing = () => {
     setDraft(chat?.name ?? '');
@@ -134,14 +151,13 @@ export function ChatHeader({
   };
 
   const closePopovers = () => {
-    setShowMembers(false);
     setShowMenu(false);
     setShowProfiles(false);
   };
 
   return (
     <header className="chat-header">
-      {(showMembers || showMenu || showProfiles) && (
+      {(showMenu || showProfiles) && (
         <div
           className="chat-header__scrim"
           aria-hidden="true"
@@ -157,6 +173,16 @@ export function ChatHeader({
         <button
           type="button"
           className="chat-header__topline-btn"
+          title={hideSystem ? '显示系统消息' : '隐藏系统消息'}
+          aria-label={hideSystem ? '显示系统消息' : '隐藏系统消息'}
+          aria-pressed={hideSystem}
+          onClick={() => onToggleHideSystem(!hideSystem)}
+        >
+          {hideSystem ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
+        </button>
+        <button
+          type="button"
+          className="chat-header__topline-btn"
           title="搜索消息"
           aria-label="搜索消息"
           aria-expanded={searchOpen}
@@ -167,9 +193,9 @@ export function ChatHeader({
         <button
           type="button"
           className="chat-header__topline-btn"
-          title="设置"
-          aria-label="设置"
-          onClick={() => navigate('/settings')}
+          title="群聊设置"
+          aria-label="群聊设置"
+          onClick={() => navigate(`/chats/${encodeURIComponent(chatId)}/settings`)}
         >
           <SettingsIcon size={16} aria-hidden="true" />
         </button>
@@ -231,32 +257,17 @@ export function ChatHeader({
         </div>
 
         <div className="chat-header__row-actions">
-          <div className="chat-header__popover-wrap">
-            <button
-              type="button"
-              className="chat-header__members-btn"
-              aria-label="查看成员状态"
-              aria-expanded={showMembers}
-              onClick={() => {
-                setShowMenu(false);
-                setShowProfiles(false);
-                setShowMembers(!showMembers);
-              }}
-            >
-              <Users size={14} aria-hidden="true" />
-              4 人
-            </button>
-            {showMembers && (
-              <div className="chat-header__popover">
-                <AgentPresenceList
-                  status={status}
-                  fallback={chat?.agents}
-                  needsMuse={chat?.needs_muse ?? false}
-                  loading={statusLoading}
-                />
-              </div>
-            )}
-          </div>
+          <button
+            type="button"
+            className="chat-header__members-btn"
+            aria-label="查看成员"
+            title={memberTitle}
+            disabled={chat == null}
+            onClick={onOpenMembers}
+          >
+            <Users size={14} aria-hidden="true" />
+            {memberCount == null ? '成员' : `${memberCount} 人`}
+          </button>
           <div className="chat-header__popover-wrap">
             <button
               type="button"
@@ -264,7 +275,6 @@ export function ChatHeader({
               aria-label="更多操作"
               aria-expanded={showMenu}
               onClick={() => {
-                setShowMembers(false);
                 setShowProfiles(false);
                 setShowMenu(!showMenu);
               }}
@@ -273,6 +283,17 @@ export function ChatHeader({
             </button>
             {showMenu && (
               <ul className="chat-header__menu">
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowMenu(false);
+                      navigate(`/chats/${encodeURIComponent(chatId)}/settings`);
+                    }}
+                  >
+                    群聊设置
+                  </button>
+                </li>
                 <li>
                   <button
                     type="button"
@@ -320,6 +341,7 @@ export function ChatHeader({
         fallback={chat?.agents}
         needsMuse={chat?.needs_muse ?? false}
         loading={statusLoading}
+        members={members}
       />
       {statusError != null && (
         <p className="chat-header__warn" role="status">

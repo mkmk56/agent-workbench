@@ -1,5 +1,6 @@
 import { agentStateTone, type StatusTone } from '../lib/agent-status';
 import { useChatStatusView } from '../lib/chat-store';
+import { useEngineEventsStatus } from '../lib/engine';
 import type { ChatSummary } from '../types';
 import { AppStatus } from '../ui/astryx';
 import { resolveMembers } from './AgentPresence';
@@ -35,6 +36,9 @@ export function SidebarStatusStrip({
   chat: ChatSummary | null;
 }) {
   const { status, loading, error } = useChatStatusView(chatId);
+  // Phase 4 §7.2: the pushed stream is an accelerator, polling is the floor. The
+  // strip is where the user can see WHICH of the two is currently in effect.
+  const events = useEngineEventsStatus();
   const members = resolveMembers(status, chat?.agents, chat?.needs_muse === true).filter(
     (member) => member.id !== 'user',
   );
@@ -73,6 +77,15 @@ export function SidebarStatusStrip({
       {!hasChat && <p className="status-strip__note">选中一个群聊后显示实时状态。</p>}
       {hasChat && error != null && (
         <p className="status-strip__note status-strip__note--error">状态读取失败：{error}</p>
+      )}
+      {events.degraded && (
+        <p className="status-strip__note status-strip__note--warn" role="status">
+          实时推送不可用，已降级为轮询
+          {events.error != null ? `（${events.error}）` : ''}
+        </p>
+      )}
+      {!events.degraded && events.state === 'connecting' && (
+        <p className="status-strip__note">实时推送连接中…（此前由轮询兜底）</p>
       )}
     </section>
   );

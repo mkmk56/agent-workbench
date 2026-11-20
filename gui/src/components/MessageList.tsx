@@ -1,5 +1,6 @@
-import { MessageSquare, RefreshCw } from 'lucide-react';
+import { ChevronUp, MessageSquare, RefreshCw } from 'lucide-react';
 import { useEffect, useMemo, useRef } from 'react';
+import { buildChatStream, type StreamItem } from '../lib/chat-panels';
 import type { ChatMessage, ChatStatus } from '../lib/chat';
 import { AGENT_STATE_LABELS } from '../lib/chat';
 import type { MenuPoint } from '../lib/mention-menu';
@@ -22,6 +23,10 @@ const THINKING_NAMES: Record<(typeof THINKING_AGENTS)[number], string> = {
  * interrupted by the store's polling. Messages carry their attachments as
  * full ChatFile objects (already merged with `list_chat_files` by the page), so
  * each bubble renders one "Edited files" card below it.
+ *
+ * Phase 4 adds: a day separator, same-sender grouping, the "hide system
+ * messages" filter and a top "load earlier" button that consumes the engine's
+ * `has_more`/`before` paging instead of pretending the first page is all.
  */
 export function MessageList({
   chatId,
@@ -30,8 +35,16 @@ export function MessageList({
   loading,
   error,
   searchQuery = '',
+  hideSystem = false,
+  hasMore = false,
+  loadingEarlier = false,
   onRetry,
+  onLoadEarlier,
   onMentionAgent,
+  onReply,
+  onOpenTask,
+  onRecall,
+  canRecall,
 }: {
   chatId: string;
   messages: ChatMessage[];
@@ -39,22 +52,42 @@ export function MessageList({
   loading: boolean;
   error: string | null;
   searchQuery?: string;
+  /** Phase 4 [B]: hide `kind === 'system'` rows (preference owned by the page). */
+  hideSystem?: boolean;
+  hasMore?: boolean;
+  loadingEarlier?: boolean;
   onRetry: () => void;
+  onLoadEarlier?: () => void;
   /** Right-click on an agent avatar: open the "@ this agent" menu. */
   onMentionAgent?: (agent: ChatAgentId, point: MenuPoint) => void;
+  onReply?: (message: ChatMessage) => void;
+  onOpenTask?: (taskId: string) => void;
+  onRecall?: (message: ChatMessage) => void;
+  canRecall?: (message: ChatMessage) => boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stick = useRef(true);
   const lastCount = useRef(0);
+  const pendingRestore = useRef<{ height: number; top: number } | null>(null);
 
   useEffect(() => {
     stick.current = true;
     lastCount.current = 0;
+    pendingRestore.current = null;
   }, [chatId]);
 
   useEffect(() => {
     const element = scrollRef.current;
     if (element == null) {
+      return;
+    }
+    // Loading older history prepends rows; keep the reader on the message they
+    // were looking at instead of jumping to the inserted page.
+    const restore = pendingRestore.current;
+    if (restore != null) {
+      pendingRestore.current = null;
+      element.scrollTop = element.scrollHeight - restore.height + restore.top;
+      lastCount.current = element.childElementCount;
       return;
     }
     const grew = messages.length !== lastCount.current;
@@ -63,6 +96,17 @@ export function MessageList({
       element.scrollTop = element.scrollHeight;
     }
   }, [messages]);
+
+  const loadEarlier = () => {
+    const element = scrollRef.current;
+    if (element != null) {
+      pendingRestore.current = {
+        height: element.scrollHeight,
+        top: element.scrollTop,
+      };
+    }
+    onLoadEarlier?.();
+  };
 
   const onScroll = () => {
     const element = scrollRef.current;
@@ -80,6 +124,11 @@ export function MessageList({
     needle.length === 0
       ? messages
       : messages.filter((message) => message.summary.toLowerCase().includes(needle));
+
+  const stream: StreamItem[] = useMemo(
+    () => buildChatStream(visibleMessages, { hideSystem }),
+    [visibleMessages, hideSystem],
+  );
 
   // reply_to carries the message id (MESSAGE_PROTOCOL.md §3); older engines only
   // sent the seq, so both are indexed. A miss simply means "not loaded yet".
@@ -112,25 +161,49 @@ export function MessageList({
         aria-label="群聊消息"
         aria-busy={loading && messages.length === 0}
       >
+        {hasMore && needle.length === 0 && (
+          <div className="chat-stream__earlier">
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              disabled={loadingEarlier}
+              onClick={loadEarlier}
+            >
+              <ChevronUp size={13} aria-hidden="true" />
+              {loadingEarlier ? '加载中…' : '加载更早消息'}
+            </button>
+          </div>
+        )}
         {loading && messages.length === 0 ? (
           <p className="chat-stream__status" role="status">
             正在读取消息…
           </p>
-        ) : visibleMessages.length > 0 ? (
+        ) : stream.length > 0 ? (
           <>
-            {visibleMessages.map((message) => (
-              <MessageBubble
-                key={message.message_id}
-                message={message}
-                chatId={chatId}
-                onMentionAgent={onMentionAgent}
-                quoted={
-                  message.reply_to != null
-                    ? (quotedIndex.get(message.reply_to) ?? null)
-                    : null
-                }
-              />
-            ))}
+            {stream.map((item) =>
+              item.type === 'day' ? (
+                <div className="chat-day" key={item.key} role="separator">
+                  <span>{item.label}</span>
+                </div>
+              ) : (
+                <MessageBubble
+                  key={item.key}
+                  message={item.message}
+                  chatId={chatId}
+                  grouped={item.grouped}
+                  onMentionAgent={onMentionAgent}
+                  onReply={onReply}
+                  onOpenTask={onOpenTask}
+                  onRecall={onRecall}
+                  canRecall={canRecall?.(item.message) ?? false}
+                  quoted={
+                    item.message.reply_to != null
+                      ? (quotedIndex.get(item.message.reply_to) ?? null)
+                      : null
+                  }
+                />
+              ),
+            )}
             {needle.length === 0 &&
               status != null &&
               THINKING_AGENTS.filter((id) => {

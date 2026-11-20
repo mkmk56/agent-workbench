@@ -1,0 +1,187 @@
+/* Files page (REA Phase 4 §7.2 [G]) — new styles only.
+ *
+ * The base layout (.files-page__*, .file-card) still lives in chat.css; this
+ * file adds what the upload / search / sort / delete work introduced, so no
+ * other workstream's stylesheet has to change. Every colour comes from the
+ * existing token layer (brand.css / theme/brand.generated.css) — no new values.
+ */
+
+/* Toolbar: search + sort + chat-list toggle. */
+.files-page__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.files-page__search {
+  width: 240px;
+  max-width: 100%;
+}
+
+.files-page__toggle {
+  margin-left: auto;
+}
+
+.files-page__count {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-muted);
+}
+
+/* Upload: one row per picked file with its own progress bar. */
+.files-page__upload {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+
+.files-page__upload-title {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-secondary);
+}
+
+.files-page__upload-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.files-page__upload-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px 40px;
+  align-items: center;
+  gap: 8px;
+}
+
+.files-page__upload-name {
+  min-width: 0;
+  /* File names are never cut with an ellipsis (task §5): the row wraps. */
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text);
+}
+
+.files-page__upload-bar {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-hover);
+  overflow: hidden;
+}
+
+.files-page__upload-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width var(--duration-fast) var(--ease-out);
+}
+
+.files-page__upload-percent {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.files-page__notice {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--success-text);
+}
+
+/* Chat selector: `hidden` must win over the column's display:flex. */
+.files-page__chats[hidden] {
+  display: none;
+}
+
+/* Card: uploader + date line, and the two-step delete confirm. */
+.file-card__origin {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-muted);
+}
+
+.file-card__confirm {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.file-card .file-card__action--danger {
+  border-color: var(--error);
+  color: var(--error-text);
+}
+
+.file-card .file-card__action--danger:hover {
+  border-color: var(--error);
+  background: var(--error-subtle);
+  color: var(--error-on-subtle);
+}
+
+/* ≤900px: the 240px selector column collapses into a wrapping strip above the
+ * list (§7.4 文件页 240px 选择器窄窗可折叠), so the page never scrolls
+ * sideways. One card per row keeps the action buttons inside the viewport.
+ * Descendant selectors keep these overrides ahead of chat.css regardless of
+ * bundle order. */
+@media (max-width: 900px) {
+  .files-page .page-head {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .files-page .page-actions {
+    flex-wrap: wrap;
+  }
+
+  .files-page .files-page__body {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .files-page .files-page__chats {
+    flex-direction: row;
+    flex-wrap: wrap;
+    width: 100%;
+    max-height: 132px;
+    overflow-y: auto;
+    padding-bottom: 4px;
+  }
+
+  .files-page .files-page__chat {
+    flex: 0 1 auto;
+    max-width: 100%;
+  }
+
+  .files-page .files-page__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .files-page .file-card {
+    flex-wrap: wrap;
+  }
+
+  .files-page .file-card__actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .files-page__upload-fill {
+    transition: none;
+  }
+}

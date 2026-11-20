@@ -71,6 +71,31 @@ interface IntakeResult {
   error?: string;
 }
 
+/**
+ * Wire shapes mirrored from `src/types.ts` (this tsconfig keeps its rootDir at
+ * `electron/`, so cross-importing the renderer types is not possible).
+ */
+interface EngineEvent {
+  id?: string | null;
+  seq: number;
+  chat_id: string | null;
+  kind: string;
+  from: string | null;
+  agent_id: string | null;
+  message_id: string | null;
+  message_seq: number | null;
+  mentions: string[];
+  created_at: number;
+}
+
+interface EngineEventsStatus {
+  state: 'off' | 'connecting' | 'connected';
+  degraded: boolean;
+  lastSeq: number;
+  lastEventAt: string | null;
+  error: string | null;
+}
+
 async function registerChatFiles(files: File[], source: IntakeSource): Promise<IntakeResult> {
   const list = Array.isArray(files) ? files : [];
   if (list.length === 0) {
@@ -171,6 +196,49 @@ const workbench = {
     ipcRenderer.invoke('engine:wake-enable', input),
   wakeDisable: (input: { agentId: string; chatId: string }) =>
     ipcRenderer.invoke('engine:wake-disable', input),
+  chatMembers: (chatId: string) => ipcRenderer.invoke('engine:chat-members', chatId),
+  chatAddMember: (input: { chatId: string; agentId: string }) =>
+    ipcRenderer.invoke('engine:chat-add-member', input),
+  chatRemoveMember: (input: { chatId: string; agentId: string }) =>
+    ipcRenderer.invoke('engine:chat-remove-member', input),
+  chatUpdateSettings: (input: {
+    chatId: string;
+    description?: string;
+    announcement?: string;
+  }) => ipcRenderer.invoke('engine:chat-update-settings', input),
+  chatRecall: (input: { chatId: string; messageId: string }) =>
+    ipcRenderer.invoke('engine:chat-recall', input),
+  chatDeleteFile: (input: { chatId: string; fileId: string }) =>
+    ipcRenderer.invoke('engine:chat-delete-file', input),
+  agentPairingCode: (input?: { ttlHours?: number; maxAgents?: number }) =>
+    ipcRenderer.invoke('engine:agent-pairing-code', input ?? {}),
+  agentPair: (input: {
+    code: string;
+    name: string;
+    platform?: string;
+    profile?: string;
+    reclaim?: boolean;
+    chatIds?: string[];
+  }) => ipcRenderer.invoke('engine:agent-pair', input),
+  agentRevokeToken: (input?: { agentId?: string }) =>
+    ipcRenderer.invoke('engine:agent-revoke', input ?? {}),
+  getEventsStatus: () => ipcRenderer.invoke('engine:events-status'),
+  onEngineEvent: (callback: (event: EngineEvent) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: EngineEvent) =>
+      callback(payload);
+    ipcRenderer.on('engine:event', listener);
+    return () => {
+      ipcRenderer.removeListener('engine:event', listener);
+    };
+  },
+  onEventsStatus: (callback: (status: EngineEventsStatus) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: EngineEventsStatus) =>
+      callback(payload);
+    ipcRenderer.on('engine:events-status', listener);
+    return () => {
+      ipcRenderer.removeListener('engine:events-status', listener);
+    };
+  },
   pickChatFiles: () => ipcRenderer.invoke('chat:pick-files'),
   registerChatFiles: (files: File[], source?: IntakeSource) =>
     registerChatFiles(files, source ?? 'drop'),

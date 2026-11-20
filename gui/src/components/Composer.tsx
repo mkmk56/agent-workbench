@@ -3,6 +3,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { sendChatMessage, uploadChatFiles, type ChatStatus } from '../lib/chat';
 import {
+  readDraft,
+  writeDraft,
+  type PanelStorage,
+} from '../lib/chat-panels';
+import {
   CHAT_QUEUE_LIMIT,
   chipText,
   enqueueMessage,
@@ -82,6 +87,15 @@ function queueStorage(): ChatQueueStorage | null {
   }
 }
 
+/** Same storage contract as the sidebar layout and the queue. */
+function draftStorage(): PanelStorage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Chat composer (Muse, group-chat upgrade).
  *
@@ -105,14 +119,20 @@ export function Composer({
   status,
   onSent,
   mentionRequest = null,
+  replyTo = null,
+  onClearReply,
 }: {
   chatId: string;
   status: ChatStatus | null;
   onSent: () => void | Promise<void>;
   /** "@ this agent" pick from the message stream; inserted at the caret. */
   mentionRequest?: MentionRequest | null;
+  /** Phase 4 [H]: the message this draft is replying to (chat_recall window). */
+  replyTo?: { messageId: string; from: string; summary: string } | null;
+  onClearReply?: () => void;
 }) {
-  const [text, setText] = useState('');
+  // Draft text is per chat and survives a switch / restart (Phase 4 [H]).
+  const [text, setText] = useState(() => readDraft(draftStorage(), chatId));
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<AttachmentDraft[]>([]);
@@ -136,6 +156,12 @@ export function Composer({
   useEffect(() => {
     textRef.current = text;
   }, [text]);
+
+  // Persist the draft per chat. The composer is remounted on every chat switch,
+  // so the initial state above re-reads exactly this chat's draft.
+  useEffect(() => {
+    writeDraft(draftStorage(), chatId, text);
+  }, [chatId, text]);
 
   // The queue is a view-layer preference (like the sidebar layout): it lives in
   // localStorage per chat so switching pages does not silently drop it.
@@ -327,6 +353,7 @@ export function Composer({
         summary,
         files: fileIds.length > 0 ? fileIds : undefined,
         mentions: mentions.length > 0 ? mentions : undefined,
+        replyTo: replyTo?.messageId,
         clientMsgId: nextClientMsgId(),
       });
       setSending(false);
@@ -337,13 +364,15 @@ export function Composer({
       }
       if (override == null && textRef.current.trim() === draft) {
         setText('');
+        writeDraft(draftStorage(), chatId, '');
       }
       setDrafts([]);
       setMentionQuery(null);
+      onClearReply?.();
       await onSent();
       return true;
     },
-    [chatId, onSent],
+    [chatId, onSent, replyTo, onClearReply],
   );
 
   const roundBlocked = useMemo(() => {
@@ -562,6 +591,24 @@ export function Composer({
         </p>
       )}
       <AttachmentBar items={drafts} onRemove={removeDraft} />
+      {replyTo != null && (
+        <div className="chat-composer__reply" role="note" aria-label="正在回复">
+          <CornerUpLeft size={13} aria-hidden="true" />
+          <span className="chat-composer__reply-name">{replyTo.from}</span>
+          <span className="chat-composer__reply-text">
+            {replyTo.summary.length > 80 ? `${replyTo.summary.slice(0, 80)}…` : replyTo.summary}
+          </span>
+          <button
+            type="button"
+            className="chat-composer__reply-clear"
+            aria-label="取消回复"
+            title="取消回复"
+            onClick={() => onClearReply?.()}
+          >
+            <X size={12} aria-hidden="true" />
+          </button>
+        </div>
+      )}
       <div className="chat-composer__field">
         <input
           ref={fileInputRef}

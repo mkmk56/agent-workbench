@@ -126,10 +126,7 @@ function HudPopover({
  */
 export function AgentHud({ engine }: { engine: EngineStatus | null }) {
   const { config } = useHudConfig();
-  const { slots, flights, markRead, messagesError, messagesSaturated } = useHudData(
-    engine,
-    config.paperPlanes,
-  );
+  const { slots, flights, markRead, messagesError } = useHudData(engine, config.paperPlanes);
   const [queued, setQueued] = useState<Partial<Record<HudAgentId, number>>>({});
   const [flashNonce, setFlashNonce] = useState<Record<HudAgentId, number>>({
     muse: 0,
@@ -159,19 +156,14 @@ export function AgentHud({ engine }: { engine: EngineStatus | null }) {
   const slotNote = useCallback(
     (slot: HudSlot): string | undefined => {
       const notes: string[] = [];
-      if (slot.id === 'muse') {
-        if (messagesError != null) {
-          notes.push(`消息读取失败：${messagesError}（未读与纸飞机可能不完整）`);
-        }
-        if (messagesSaturated) {
-          notes.push(
-            '消息窗口已满（list_messages 500 条上限）：未读与纸飞机将停止更新，重启 GUI 也不能恢复。',
-          );
-        }
+      if (slot.id === 'muse' && messagesError != null) {
+        // No saturation note any more: the unread/paper-plane source is the
+        // per-chat incremental cursor, so a long history cannot freeze it.
+        notes.push(`消息读取失败：${messagesError}（未读与纸飞机可能不完整）`);
       }
       return notes.length > 0 ? notes.join(' ') : undefined;
     },
-    [messagesError, messagesSaturated],
+    [messagesError],
   );
 
   const showFor = useCallback(

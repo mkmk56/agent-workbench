@@ -5,6 +5,9 @@ export function parseHash(hash: string): Route {
   const path = hash.replace(/^#/, '').replace(/\/+$/, '') || '/chats';
   const parts = path.split('/').filter(Boolean);
 
+  if (parts[0] === 'chats' && parts.length === 3 && parts[2] === 'settings') {
+    return { name: 'chat-settings', id: decodeURIComponent(parts[1]) };
+  }
   if (parts[0] === 'chats' && parts.length === 2) {
     return { name: 'chat', id: decodeURIComponent(parts[1]) };
   }

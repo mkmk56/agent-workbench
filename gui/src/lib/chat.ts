@@ -7,15 +7,19 @@ import type {
   ChatInboxEntry,
   ChatInboxIdentity,
   ChatInboxPayload,
+  ChatMember,
   ChatMessage,
+  ChatMessageKind,
   ChatMessageQuery,
   ChatMention,
   ChatParticipant,
   ChatParticipantId,
+  ChatSettings,
   ChatSummary,
   ChatUploadDraft,
   ChatUploadProgress,
   EngineResult,
+  PairingCodeResult,
   SendChatMessageInput,
 } from '../types';
 
@@ -40,11 +44,14 @@ export type {
   ChatInboxEntry,
   ChatInboxIdentity,
   ChatInboxPayload,
+  ChatMember,
   ChatMessage,
+  ChatMessageKind,
   ChatMessageQuery,
   ChatMention,
   ChatParticipant,
   ChatParticipantId,
+  ChatSettings,
   ChatStatusPayload,
   ChatSummary,
   ChatUploadDraft,
@@ -131,6 +138,15 @@ interface ChatBridge {
   }) => Promise<EngineResult<unknown>>;
   listChatMessages?: (input: ChatMessageQuery) => Promise<EngineResult<unknown>>;
   readChatFile?: (input: ChatFileQuery) => Promise<EngineResult<unknown>>;
+  chatMembers?: (chatId: string) => Promise<EngineResult<unknown>>;
+  chatAddMember?: (input: {
+    chatId: string;
+    agentId: string;
+  }) => Promise<EngineResult<unknown>>;
+  chatRemoveMember?: (input: {
+    chatId: string;
+    agentId: string;
+  }) => Promise<EngineResult<unknown>>;
 }
 
 function bridge(): ChatBridge | null {
@@ -250,6 +266,7 @@ export function normalizeChat(raw: unknown): ChatSummary | null {
     unread: readNumber(record, 'unread', 'unread_count') ?? 0,
     participants,
     agents: agentsStatuses as unknown as ChatSummary['agents'],
+    settings: normalizeChatSettings(record.settings),
   };
 }
 
@@ -367,6 +384,73 @@ export function normalizeMessage(raw: unknown): ChatMessage | null {
     status: readString(record, 'status') ?? '',
     created_at: readString(record, 'created_at', 'createdAt') ?? '',
     task_id: readString(record, 'task_id', 'taskId'),
+    kind: normalizeMessageKind(record.kind),
+    recalled: record.recalled === true,
+  };
+}
+
+/**
+ * REA Phase 4: `kind` is `user` | `system`. Pre-Phase-4 engines omit it (and
+ * some databases still hold the column default), so anything unknown is an
+ * ordinary user message — a missing field must never hide a real message.
+ */
+export function normalizeMessageKind(raw: unknown): ChatMessageKind {
+  return raw === 'system' ? 'system' : 'user';
+}
+
+/** `chats.settings` accepts an object, a JSON string, or nothing. */
+export function normalizeChatSettings(raw: unknown): ChatSettings {
+  const empty: ChatSettings = { description: '', announcement: '' };
+  if (raw == null) {
+    return empty;
+  }
+  let record: Record<string, unknown>;
+  if (typeof raw === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed == null || typeof parsed !== 'object') {
+        return empty;
+      }
+      record = parsed as Record<string, unknown>;
+    } catch {
+      // A malformed value is treated as "no settings" rather than an error.
+      return empty;
+    }
+  } else if (typeof raw === 'object') {
+    record = raw as Record<string, unknown>;
+  } else {
+    return empty;
+  }
+  return {
+    description: readString(record, 'description') ?? '',
+    announcement: readString(record, 'announcement') ?? '',
+  };
+}
+
+const MEMBER_ROLES = new Set(['owner', 'member']);
+
+/** One `chat_members` row. Unknown agents keep their raw id as display name. */
+export function normalizeMember(raw: unknown): ChatMember | null {
+  const record = asRecord(raw);
+  const agentId = readString(record, 'agent_id', 'agentId', 'id');
+  if (agentId == null) {
+    return null;
+  }
+  const role = readString(record, 'role') ?? 'member';
+  const joinedAt = record.joined_at ?? record.joinedAt ?? null;
+  return {
+    agent_id: agentId,
+    participant_id: readString(record, 'participant_id', 'participantId'),
+    role: MEMBER_ROLES.has(role) ? role : 'member',
+    owner: readString(record, 'owner'),
+    platform: readString(record, 'platform'),
+    display_name:
+      readString(record, 'display_name', 'displayName', 'name') ??
+      (agentId === 'agent_user' ? '用户' : agentId),
+    color: readString(record, 'color'),
+    status: readString(record, 'status') ?? 'active',
+    joined_at:
+      typeof joinedAt === 'number' || typeof joinedAt === 'string' ? joinedAt : null,
   };
 }
 
@@ -1349,7 +1433,233 @@ function emptyChat(chatId: string): ChatSummary {
     unread: 0,
     participants: [],
     agents: { muse: 'idle', claude: 'idle', dsh: 'idle' },
+    settings: { description: '', announcement: '' },
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * REA Phase 4 §6: membership, chat settings, recall, file deletion
+ * ------------------------------------------------------------------ */
+
+function readMemberList(raw: unknown): ChatMember[] {
+  return unwrapList(asRecord(raw), ['members'])
+    .map(normalizeMember)
+    .filter((member): member is ChatMember => member != null);
+}
+
+/** Canonical membership rows of one chat (`chat_members`). */
+export async function chatMembersOnce(
+  chatId: string,
+): Promise<EngineResult<ChatMember[]>> {
+  if (!window.workbench) {
+    return { ok: false, error: NO_MAIN };
+  }
+  if (!window.workbench.chatMembers) {
+    return { ok: false, error: NO_CHAT_BRIDGE };
+  }
+  try {
+    const result = await window.workbench.chatMembers(chatId);
+    if (!result.ok) {
+      return { ok: false, error: failureMessage(result.error, '读取成员失败。') };
+    }
+    return { ok: true, data: readMemberList(result.data) };
+  } catch {
+    return { ok: false, error: '读取成员失败（主进程调用异常）。' };
+  }
+}
+
+async function mutateMember(
+  call: (() => Promise<EngineResult<unknown>>) | null,
+  label: string,
+): Promise<EngineResult<ChatMember[]>> {
+  if (!window.workbench) {
+    return { ok: false, error: NO_MAIN };
+  }
+  if (call == null) {
+    return { ok: false, error: NO_CHAT_BRIDGE };
+  }
+  try {
+    const result = await call();
+    if (!result.ok) {
+      return { ok: false, error: failureMessage(result.error, `${label}失败。`) };
+    }
+    return { ok: true, data: readMemberList(result.data) };
+  } catch {
+    return { ok: false, error: `${label}失败（主进程调用异常）。` };
+  }
+}
+
+export function addChatMember(input: {
+  chatId: string;
+  agentId: string;
+}): Promise<EngineResult<ChatMember[]>> {
+  const call = bridge()?.chatAddMember;
+  return mutateMember(
+    call == null ? null : () => call.call(window.workbench, input),
+    '添加成员',
+  );
+}
+
+export function removeChatMember(input: {
+  chatId: string;
+  agentId: string;
+}): Promise<EngineResult<ChatMember[]>> {
+  const call = bridge()?.chatRemoveMember;
+  return mutateMember(
+    call == null ? null : () => call.call(window.workbench, input),
+    '移除成员',
+  );
+}
+
+/** Persist description / announcement and return the engine's stored value. */
+export async function updateChatSettings(input: {
+  chatId: string;
+  description?: string;
+  announcement?: string;
+}): Promise<EngineResult<ChatSettings>> {
+  if (!window.workbench) {
+    return { ok: false, error: NO_MAIN };
+  }
+  if (!window.workbench.chatUpdateSettings) {
+    return { ok: false, error: NO_CHAT_BRIDGE };
+  }
+  try {
+    const result = await window.workbench.chatUpdateSettings(input);
+    if (!result.ok) {
+      return { ok: false, error: failureMessage(result.error, '保存群设置失败。') };
+    }
+    return { ok: true, data: normalizeChatSettings(asRecord(result.data).settings) };
+  } catch {
+    return { ok: false, error: '保存群设置失败（主进程调用异常）。' };
+  }
+}
+
+/** Recall inside the engine's window; the body is replaced with a placeholder. */
+export async function recallChatMessage(input: {
+  chatId: string;
+  messageId: string;
+}): Promise<EngineResult<Record<string, unknown>>> {
+  if (!window.workbench) {
+    return { ok: false, error: NO_MAIN };
+  }
+  if (!window.workbench.chatRecall) {
+    return { ok: false, error: NO_CHAT_BRIDGE };
+  }
+  try {
+    const result = await window.workbench.chatRecall(input);
+    if (!result.ok) {
+      return { ok: false, error: failureMessage(result.error, '撤回失败。') };
+    }
+    return { ok: true, data: asRecord(result.data) };
+  } catch {
+    return { ok: false, error: '撤回失败（主进程调用异常）。' };
+  }
+}
+
+/** Delete one uploaded file (owner or uploader, enforced by the engine). */
+export async function deleteChatFile(input: {
+  chatId: string;
+  fileId: string;
+}): Promise<EngineResult<{ deleted: boolean }>> {
+  if (!window.workbench) {
+    return { ok: false, error: NO_MAIN };
+  }
+  if (!window.workbench.chatDeleteFile) {
+    return { ok: false, error: NO_CHAT_BRIDGE };
+  }
+  try {
+    const result = await window.workbench.chatDeleteFile(input);
+    if (!result.ok) {
+      return { ok: false, error: failureMessage(result.error, '删除文件失败。') };
+    }
+    return { ok: true, data: { deleted: result.data?.deleted !== false } };
+  } catch {
+    return { ok: false, error: '删除文件失败（主进程调用异常）。' };
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * REA Phase 4 §6.3: agent pairing / revocation
+ * ------------------------------------------------------------------ */
+
+export async function createPairingCode(
+  input: { ttlHours?: number; maxAgents?: number } = {},
+): Promise<EngineResult<PairingCodeResult>> {
+  if (!window.workbench) {
+    return { ok: false, error: NO_MAIN };
+  }
+  if (!window.workbench.agentPairingCode) {
+    return { ok: false, error: NO_CHAT_BRIDGE };
+  }
+  try {
+    const result = await window.workbench.agentPairingCode(input);
+    if (!result.ok) {
+      return { ok: false, error: failureMessage(result.error, '生成配对码失败。') };
+    }
+    const record = asRecord(result.data);
+    const code = readString(record, 'code');
+    if (code == null) {
+      return { ok: false, error: '引擎没有返回配对码。' };
+    }
+    return {
+      ok: true,
+      data: {
+        pairing_id: readString(record, 'pairing_id') ?? '',
+        code,
+        expires_at: readNumber(record, 'expires_at') ?? 0,
+        expires_in_ms: readNumber(record, 'expires_in_ms') ?? 0,
+        max_agents: readNumber(record, 'max_agents') ?? 0,
+        uses: readNumber(record, 'uses') ?? 0,
+      },
+    };
+  } catch {
+    return { ok: false, error: '生成配对码失败（主进程调用异常）。' };
+  }
+}
+
+export async function pairAgent(input: {
+  code: string;
+  name: string;
+  platform?: string;
+  profile?: string;
+  reclaim?: boolean;
+  chatIds?: string[];
+}): Promise<EngineResult<Record<string, unknown>>> {
+  if (!window.workbench) {
+    return { ok: false, error: NO_MAIN };
+  }
+  if (!window.workbench.agentPair) {
+    return { ok: false, error: NO_CHAT_BRIDGE };
+  }
+  try {
+    const result = await window.workbench.agentPair(input);
+    if (!result.ok) {
+      return { ok: false, error: failureMessage(result.error, '配对失败。') };
+    }
+    return { ok: true, data: asRecord(result.data) };
+  } catch {
+    return { ok: false, error: '配对失败（主进程调用异常）。' };
+  }
+}
+
+export async function revokeAgentToken(
+  input: { agentId?: string } = {},
+): Promise<EngineResult<Record<string, unknown>>> {
+  if (!window.workbench) {
+    return { ok: false, error: NO_MAIN };
+  }
+  if (!window.workbench.agentRevokeToken) {
+    return { ok: false, error: NO_CHAT_BRIDGE };
+  }
+  try {
+    const result = await window.workbench.agentRevokeToken(input);
+    if (!result.ok) {
+      return { ok: false, error: failureMessage(result.error, '注销失败。') };
+    }
+    return { ok: true, data: asRecord(result.data) };
+  } catch {
+    return { ok: false, error: '注销失败（主进程调用异常）。' };
+  }
 }
 
 export { NO_CHAT_BRIDGE, NO_MAIN };

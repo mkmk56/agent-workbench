@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   AgentInfo,
+  EngineEvent,
+  EngineEventsStatus,
   EngineLogEntry,
   EngineMessage,
   EngineResult,
@@ -470,4 +472,139 @@ export async function respondApproval(input: {
   } catch {
     return { ok: false, error: '提交审批决定失败。' };
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * REA Phase 4 §7.1: live engine events (GET /events via the main process)
+ *
+ * The connection itself is owned by the Electron main process (one stream per
+ * GUI, token never in the renderer). This hub is the single renderer-side fan
+ * out, so the HUD, presence, sidebar strip, Inbox and the chat store all share
+ * one IPC listener instead of one subscription per panel.
+ * ------------------------------------------------------------------ */
+
+const OFFLINE_EVENTS: EngineEventsStatus = {
+  state: 'off',
+  degraded: false,
+  lastSeq: 0,
+  lastEventAt: null,
+  error: null,
+};
+
+type EventListener = (event: EngineEvent) => void;
+
+class EngineEventsHub {
+  private eventListeners = new Set<EventListener>();
+  private statusListeners = new Set<(status: EngineEventsStatus) => void>();
+  private started = false;
+  private status: EngineEventsStatus = OFFLINE_EVENTS;
+  private stopEvent: (() => void) | null = null;
+  private stopStatus: (() => void) | null = null;
+
+  getStatus(): EngineEventsStatus {
+    return this.status;
+  }
+
+  /** Detach every renderer listener (used by tests and window teardown). */
+  stop(): void {
+    this.stopEvent?.();
+    this.stopStatus?.();
+    this.stopEvent = null;
+    this.stopStatus = null;
+    this.started = false;
+  }
+
+  /** Idempotent: the first subscriber opens the renderer-side IPC listeners. */
+  start(): void {
+    if (this.started) {
+      return;
+    }
+    if (!window.workbench) {
+      return;
+    }
+    this.started = true;
+    const api = window.workbench;
+    void api
+      .getEventsStatus?.()
+      .then((status) => {
+        this.publishStatus(status);
+      })
+      .catch(() => {
+        // Status stays "off"; the panels keep their polling cadence.
+      });
+    this.stopEvent = api.onEngineEvent?.((event) => {
+      this.status = {
+        ...this.status,
+        lastSeq: Math.max(this.status.lastSeq, Number(event.seq) || 0),
+        lastEventAt: new Date().toISOString(),
+      };
+      for (const listener of this.eventListeners) {
+        try {
+          listener(event);
+        } catch {
+          // One panel failing must not break the others.
+        }
+      }
+      this.publishStatus(this.status);
+    }) ?? null;
+    this.stopStatus = api.onEventsStatus?.((status) => {
+      this.publishStatus(status);
+    }) ?? null;
+  }
+
+  private publishStatus(next: EngineEventsStatus): void {
+    this.status = next;
+    for (const listener of this.statusListeners) {
+      try {
+        listener(next);
+      } catch {
+        // Ignore a listener that unmounted mid-publish.
+      }
+    }
+  }
+
+  subscribeEvents(listener: EventListener): () => void {
+    this.start();
+    this.eventListeners.add(listener);
+    return () => {
+      this.eventListeners.delete(listener);
+    };
+  }
+
+  subscribeStatus(listener: (status: EngineEventsStatus) => void): () => void {
+    this.start();
+    this.statusListeners.add(listener);
+    listener(this.status);
+    return () => {
+      this.statusListeners.delete(listener);
+    };
+  }
+}
+
+export const engineEvents = new EngineEventsHub();
+
+/** Subscribe to every live engine event (no re-render per event). */
+export function useEngineEventFeed(listener: EventListener): void {
+  const ref = useRef(listener);
+  ref.current = listener;
+  useEffect(() => {
+    return engineEvents.subscribeEvents((event) => ref.current(event));
+  }, []);
+}
+
+/**
+ * Counter that increments on every live event. Use it as an effect dependency
+ * when a panel wants to refetch on push instead of waiting for its poll.
+ */
+export function useEngineEventSignal(): number {
+  const [version, setVersion] = useState(0);
+  useEffect(() => engineEvents.subscribeEvents(() => setVersion((v) => v + 1)), []);
+  return version;
+}
+
+/** Live SSE state; `degraded` drives the visible "已降级为轮询" notice. */
+export function useEngineEventsStatus(): EngineEventsStatus {
+  const [status, setStatus] = useState<EngineEventsStatus>(() => engineEvents.getStatus());
+  useEffect(() => engineEvents.subscribeStatus(setStatus), []);
+  return status;
 }

@@ -6,6 +6,7 @@ import { useAppTheme } from './lib/theme';
 import { useAppInfo } from './lib/workbench';
 import { AboutPage } from './pages/AboutPage';
 import { ChatPage } from './pages/ChatPage';
+import { ChatSettingsPage } from './pages/ChatSettingsPage';
 import { DispatchPage } from './pages/DispatchPage';
 import { FilesPage } from './pages/FilesPage';
 import { InboxPage } from './pages/InboxPage';
@@ -23,6 +24,9 @@ export function App() {
   switch (route.name) {
     case 'chat':
       page = <ChatPage key={route.id} chatId={route.id} />;
+      break;
+    case 'chat-settings':
+      page = <ChatSettingsPage key={route.id} id={route.id} />;
       break;
     case 'chats':
       page = <ChatPage chatId={null} />;

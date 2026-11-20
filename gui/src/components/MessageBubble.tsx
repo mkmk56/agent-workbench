@@ -5,16 +5,21 @@ import {
   ChevronUp,
   CircleAlert,
   Copy,
+  CornerUpLeft,
+  FileClock,
+  ListChecks,
+  Undo2,
   UserRound,
 } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import claudeMark from '../assets/sidebar/claude-mark.png';
 import dshMark from '../assets/sidebar/dsh-mark.png';
 import museMark from '../assets/sidebar/muse-mark.png';
-import type { ChatMessage, ChatSender } from '../lib/chat';
+import { previewChatFile, type ChatMessage, type ChatSender } from '../lib/chat';
 import { formatClock } from '../lib/labels';
 import { mentionAgentFor, type MenuPoint } from '../lib/mention-menu';
-import type { ChatAgentId } from '../types';
+import { copyText } from '../lib/workbench';
+import type { ChatAgentId, ChatFile } from '../types';
 import { EditedFilesCard } from './EditedFilesCard';
 
 const IDENTITIES: Record<
@@ -354,6 +359,68 @@ function StructuredNotice() {
   );
 }
 
+/**
+ * Inline image thumbnails (Phase 4 [H]).
+ *
+ * The engine stores file bodies, not URLs; the main process exposes a single
+ * narrow `chat-attachment:` preview URL per file. Only real image attachments
+ * get a thumbnail, and a failed preview falls back to the normal file card
+ * instead of showing a broken <img>.
+ */
+function ImageThumbs({ files, chatId }: { files: ChatFile[]; chatId: string }) {
+  const [urls, setUrls] = useState<Record<string, string>>({});
+  const images = files.filter((file) => file.kind === 'image').slice(0, 4);
+
+  useEffect(() => {
+    let alive = true;
+    for (const file of images) {
+      if (urls[file.file_id] != null) {
+        continue;
+      }
+      void previewChatFile(chatId, file.file_id).then((result) => {
+        if (!alive || !result.ok) {
+          return;
+        }
+        setUrls((current) => ({ ...current, [file.file_id]: result.data.url }));
+      });
+    }
+    return () => {
+      alive = false;
+    };
+    // `images` is derived from `files`; its identity changes with the message.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId, files]);
+
+  if (images.length === 0) {
+    return null;
+  }
+  return (
+    <div className="chat-thumbs" aria-label="图片附件">
+      {images.map((file) => {
+        const url = urls[file.file_id];
+        return url == null ? (
+          <span key={file.file_id} className="chat-thumbs__pending" aria-hidden="true">
+            <FileClock size={14} />
+          </span>
+        ) : (
+          <a
+            key={file.file_id}
+            className="chat-thumbs__item"
+            href={url}
+            title={`${file.name}（点击查看原图）`}
+            onClick={(event) => {
+              event.preventDefault();
+              window.open(url, '_blank', 'noopener,noreferrer');
+            }}
+          >
+            <img src={url} alt={file.name} loading="lazy" />
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
 const FOLD_CHARS = 1200;
 const FOLD_LINES = 30;
 const QUOTE_CHARS = 140;
@@ -399,69 +466,147 @@ export function MessageBubble({
   message,
   chatId,
   quoted,
+  grouped = false,
+  canRecall = false,
   onMentionAgent,
+  onReply,
+  onOpenTask,
+  onRecall,
 }: {
   message: ChatMessage;
   chatId: string;
   /** Message referenced by `reply_to`, resolved by the stream (null: not loaded). */
   quoted?: ChatMessage | null;
+  /** Same sender within five minutes: the avatar/name are printed once. */
+  grouped?: boolean;
+  /** The engine only allows recall inside its window and only for the author. */
+  canRecall?: boolean;
   /** Right-click on an agent avatar: open the "@ this agent" menu. */
   onMentionAgent?: (agent: ChatAgentId, point: MenuPoint) => void;
+  onReply?: (message: ChatMessage) => void;
+  onOpenTask?: (taskId: string) => void;
+  onRecall?: (message: ChatMessage) => void;
 }) {
   const identity = identityFor(message.from);
   const isUser = identity.kind === 'user';
-  const structured = isStructuredPayload(message.summary);
+  const isSystem = message.kind === 'system';
+  const recalled = message.recalled === true;
+  const structured = !recalled && isStructuredPayload(message.summary);
   const statusLabel = message.status != null ? DELIVERY_STATUS[message.status] : null;
   const failed = message.status === 'failed';
   const long =
     message.summary.length > FOLD_CHARS ||
     message.summary.split('\n').length > FOLD_LINES;
   const [folded, setFolded] = useState(long);
+  const [copied, setCopied] = useState(false);
+
+  const copyMessage = async () => {
+    const ok = await copyText(message.summary);
+    if (!ok) {
+      return;
+    }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
+
+  const className = [
+    'chat-msg',
+    `chat-msg--${isUser ? 'user' : 'agent'}`,
+    grouped ? 'chat-msg--grouped' : '',
+    isSystem ? 'chat-msg--system' : '',
+    recalled ? 'chat-msg--recalled' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
 
   return (
-    <article
-      className={`chat-msg chat-msg--${isUser ? 'user' : 'agent'}`}
-      data-sender={message.from}
-    >
-      <Avatar sender={message.from} onMentionAgent={onMentionAgent} />
+    <article className={className} data-sender={message.from} data-kind={message.kind ?? 'user'}>
+      {grouped ? (
+        <span className="chat-avatar chat-avatar--md chat-avatar--spacer" aria-hidden="true" />
+      ) : (
+        <Avatar sender={message.from} onMentionAgent={onMentionAgent} />
+      )}
       <div className="chat-msg__body">
         <div className="chat-msg__meta">
-          <span className="chat-msg__sender">{identity.name}</span>
+          {!grouped && <span className="chat-msg__sender">{identity.name}</span>}
+          {isSystem && <span className="chat-msg__kind">系统消息</span>}
           {message.created_at.length > 0 && (
             <time dateTime={message.created_at}>{formatClock(message.created_at)}</time>
           )}
-          {statusLabel != null && (
+          {statusLabel != null && !recalled && (
             <span className={`chat-msg__status${failed ? ' is-error' : ''}`}>{statusLabel}</span>
           )}
         </div>
-        <div className={`chat-bubble${failed ? ' chat-bubble--failed' : ''}${folded ? ' chat-bubble--folded' : ''}`}>
-          {message.reply_to != null && message.reply_to.length > 0 && (
-            <QuoteBlock quoted={quoted ?? null} replyTo={message.reply_to} />
-          )}
-          {message.summary.length === 0 ? (
-            <span className="chat-bubble__empty">（这条消息没有文字摘要）</span>
-          ) : structured ? (
-            <StructuredNotice />
+        <div
+          className={`chat-bubble${failed ? ' chat-bubble--failed' : ''}${folded ? ' chat-bubble--folded' : ''}${recalled ? ' chat-bubble--recalled' : ''}`}
+        >
+          {recalled ? (
+            <span className="chat-bubble__empty">（此消息已撤回）</span>
           ) : (
-            <RichText text={message.summary} />
-          )}
-          {message.question != null && (
-            <div className="conv-question">
-              <strong>需要回答</strong>
-              <p>{message.question}</p>
-            </div>
+            <>
+              {message.reply_to != null && message.reply_to.length > 0 && (
+                <QuoteBlock quoted={quoted ?? null} replyTo={message.reply_to} />
+              )}
+              {message.summary.length === 0 ? (
+                <span className="chat-bubble__empty">（这条消息没有文字摘要）</span>
+              ) : structured ? (
+                <StructuredNotice />
+              ) : (
+                <RichText text={message.summary} />
+              )}
+              {message.question != null && (
+                <div className="conv-question">
+                  <strong>需要回答</strong>
+                  <p>{message.question}</p>
+                </div>
+              )}
+            </>
           )}
         </div>
-        {/*
-          The attachment/edit card sits under the bubble, not inside it: a panel
-          inside a bubble would be a card inside a card (VISUAL_SCHEME.md §5).
-        */}
-        <MessageFiles
-          files={message.files}
-          chatId={chatId}
-          from={isUser ? 'user' : 'agent'}
-        />
-        {long && (
+
+        {!recalled && (
+          <div className="chat-msg__actions" role="group" aria-label="消息操作">
+            {onReply != null && (
+              <button type="button" onClick={() => onReply(message)} title="引用这条消息回复">
+                <CornerUpLeft size={12} aria-hidden="true" />
+                回复
+              </button>
+            )}
+            <button type="button" onClick={() => void copyMessage()} title="复制纯文本">
+              {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
+              {copied ? '已复制' : '复制'}
+            </button>
+            {onOpenTask != null && message.task_id != null && message.task_id.length > 0 && (
+              <button
+                type="button"
+                onClick={() => onOpenTask(message.task_id as string)}
+                title={`在这个任务的详情面板里查看 #${message.task_id}`}
+              >
+                <ListChecks size={12} aria-hidden="true" />
+                查看任务
+              </button>
+            )}
+            {onRecall != null && canRecall && (
+              <button
+                type="button"
+                onClick={() => onRecall(message)}
+                title="撤回（仅作者或群主，且需在撤回窗口内）"
+              >
+                <Undo2 size={12} aria-hidden="true" />
+                撤回
+              </button>
+            )}
+          </div>
+        )}
+        {!recalled && (
+          <MessageFiles
+            files={message.files}
+            chatId={chatId}
+            from={isUser ? 'user' : 'agent'}
+          />
+        )}
+        {!recalled && <ImageThumbs files={message.files} chatId={chatId} />}
+        {long && !recalled && (
           <button
             type="button"
             className="chat-msg__fold"

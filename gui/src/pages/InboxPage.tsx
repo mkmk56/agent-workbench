@@ -17,6 +17,7 @@ import {
   type ChatInboxPayload,
 } from '../lib/chat';
 import { formatRelative } from '../lib/labels';
+import { useEngineEventSignal, useEngineEventsStatus } from '../lib/engine';
 import { navigate } from '../lib/router';
 import {
   canManageWake,
@@ -192,6 +193,17 @@ export function InboxPage() {
     return () => window.clearInterval(timer);
   }, [agent, load]);
 
+  // Phase 4 §7.2: a pushed wake event refreshes the inbox immediately; the
+  // 15 s poll above stays as the floor when the stream is unavailable.
+  const eventSignal = useEngineEventSignal();
+  const events = useEngineEventsStatus();
+  useEffect(() => {
+    if (eventSignal === 0) {
+      return;
+    }
+    void load(agent);
+  }, [eventSignal, agent, load]);
+
   const entries = useMemo(() => sortEntries(inbox?.chats ?? []), [inbox]);
   const totalUnread = inbox?.total_unread ?? 0;
 
@@ -352,6 +364,17 @@ export function InboxPage() {
             {checkinText}
           </span>
         </header>
+
+        {/*
+          Phase 4 §7.2: the inbox refreshes on pushed wake events, but polling
+          stays the floor. Say which one is active instead of leaving the user
+          to guess why the counters lag.
+        */}
+        {events.degraded && (
+          <p className="wake-panel__status wake-panel__status--warn" role="status">
+            实时推送不可用，已降级为轮询{events.error != null ? `（${events.error}）` : ''}
+          </p>
+        )}
 
         {wakeLoadError != null && (
           <p className="wake-panel__error" role="alert">

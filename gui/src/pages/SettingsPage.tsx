@@ -3,16 +3,35 @@ import {
   Check,
   Database,
   KeyRound,
+  Link2,
   MessagesSquare,
   RefreshCw,
   Server,
   Shield,
   ShieldCheck,
   Terminal,
+  UserCog,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Notice } from '../components/Layout';
+import {
+  AGENT_LIST_SOURCE_NOTE,
+  agentRoleLabel,
+  agentStatusLabel,
+  agentStatusTone,
+  canRevokeAgent,
+  describePairResult,
+  formatJoinedAt,
+  formatPairingExpiry,
+  isExternalAgent,
+  isOwnerAgent,
+  loadPairedAgents,
+  platformLabel,
+  validatePairForm,
+} from '../lib/agent-registry';
+import type { PairOutcome } from '../lib/agent-registry';
+import { createPairingCode, pairAgent, revokeAgentToken } from '../lib/chat';
 import { useHudConfig } from '../lib/hud';
 import { startEngine, stopEngine, useAgentInfo, useEngineStatus } from '../lib/engine';
 import {
@@ -22,7 +41,8 @@ import {
   formatUptime,
 } from '../lib/labels';
 import { testToken, useAppInfo, useUpdateState } from '../lib/workbench';
-import type { UpdateChannel } from '../types';
+import type { PairedAgent, PairingCodeResult, UpdateChannel } from '../types';
+import '../styles/settings-agent.css';
 import {
   AlertDialog,
   AppBadge,
@@ -33,22 +53,17 @@ import {
   AppTextField,
 } from '../ui/astryx';
 
-type SectionId = 'credentials' | 'engine' | 'executors' | 'hud' | 'updates' | 'data';
+type SectionId = 'credentials' | 'engine' | 'executors' | 'agents' | 'hud' | 'updates' | 'data';
 
 const SECTIONS: Array<{ id: SectionId; label: string; icon: ReactNode }> = [
   { id: 'credentials', label: '凭据', icon: <KeyRound size={15} /> },
   { id: 'engine', label: '引擎', icon: <Server size={15} /> },
   { id: 'executors', label: '执行器', icon: <Terminal size={15} /> },
+  { id: 'agents', label: 'Agent 管理', icon: <UserCog size={15} /> },
   { id: 'hud', label: 'Agent HUD', icon: <Bot size={15} /> },
   { id: 'updates', label: '更新', icon: <RefreshCw size={15} /> },
   { id: 'data', label: '数据', icon: <Database size={15} /> },
 ];
-
-const DEFAULT_STATE = {
-  autoStart: true,
-  proxy: 'system',
-  autoUpdate: true,
-};
 
 export function SettingsPage() {
   const { info, refresh } = useAppInfo();
@@ -71,11 +86,22 @@ export function SettingsPage() {
     title: string;
     text?: string;
   } | null>(null);
-  const [lastHudSave, setLastHudSave] = useState<'saved' | 'failed' | null>(null);
 
-  const [autoStart, setAutoStart] = useState(DEFAULT_STATE.autoStart);
-  const [proxy, setProxy] = useState(DEFAULT_STATE.proxy);
-  const [autoUpdate, setAutoUpdate] = useState(DEFAULT_STATE.autoUpdate);
+  // Agent 管理 (REA Phase 4 §6.3): paired agents are the union of chat_members,
+  // because the engine has no global agent-list tool. Pairing/revocation use the
+  // real engine tools, so every mutation below refreshes this list.
+  const [agents, setAgents] = useState<PairedAgent[]>([]);
+  const [agentChatCount, setAgentChatCount] = useState(0);
+  const [agentErrors, setAgentErrors] = useState<string[]>([]);
+  const [agentsLoading, setAgentsLoading] = useState(false);
+  const [agentsError, setAgentsError] = useState<string | null>(null);
+  const [pairingCode, setPairingCode] = useState<PairingCodeResult | null>(null);
+  const [generatingCode, setGeneratingCode] = useState(false);
+  const [pairForm, setPairForm] = useState({ code: '', name: '', platform: '' });
+  const [pairing, setPairing] = useState(false);
+  const [pairResult, setPairResult] = useState<PairOutcome | null>(null);
+  const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
 
   useEffect(() => {
     setContextDraft(String(hud.config.contextWindowTokens));
@@ -111,9 +137,124 @@ export function SettingsPage() {
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
+  const refreshAgents = useCallback(async () => {
+    setAgentsLoading(true);
+    try {
+      const result = await loadPairedAgents();
+      if (!result.ok) {
+        // Real engine error, shown verbatim; the previous list is kept as-is.
+        setAgentsError(result.error);
+        return;
+      }
+      setAgentsError(null);
+      setAgents(result.data.agents);
+      setAgentChatCount(result.data.chatCount);
+      setAgentErrors(result.data.errors);
+    } finally {
+      setAgentsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshAgents();
+  }, [refreshAgents]);
+
+  // The list can only be read while the engine answers. If the first attempt
+  // happened during startup, retry once it reports healthy instead of leaving a
+  // stale error on screen until the user clicks 刷新.
+  useEffect(() => {
+    if (engine.status?.healthy === true && agentsError != null) {
+      void refreshAgents();
+    }
+  }, [engine.status?.healthy, agentsError, refreshAgents]);
+
+  const generatePairingCode = async () => {
+    setGeneratingCode(true);
+    setPairResult(null);
+    try {
+      const result = await createPairingCode();
+      if (!result.ok) {
+        setNotice({ tone: 'error', title: '生成配对码失败', text: result.error });
+        return;
+      }
+      setPairingCode(result.data);
+      setPairForm((prev) => ({ ...prev, code: result.data.code }));
+      setNotice({
+        tone: 'success',
+        title: '配对码已生成',
+        text: `${formatPairingExpiry(result.data.expires_at, Date.now())}；配对码只显示这一次，请立即交给要配对的 Agent。`,
+      });
+    } finally {
+      setGeneratingCode(false);
+    }
+  };
+
+  const submitPair = async () => {
+    const problem = validatePairForm(pairForm);
+    if (problem != null) {
+      setNotice({ tone: 'warning', title: '配对信息不完整', text: problem });
+      return;
+    }
+    setPairing(true);
+    setPairResult(null);
+    try {
+      const platform = pairForm.platform.trim();
+      const result = await pairAgent({
+        code: pairForm.code.trim(),
+        name: pairForm.name.trim(),
+        platform: platform.length > 0 ? platform : undefined,
+      });
+      if (!result.ok) {
+        setNotice({ tone: 'error', title: '配对失败', text: result.error });
+        return;
+      }
+      const outcome = describePairResult(result.data);
+      setPairResult(outcome);
+      setNotice({
+        tone: 'success',
+        title: `${outcome.displayName ?? outcome.agentId ?? '新 Agent'} 已配对`,
+        text: '引擎已创建 Agent 记录，列表已刷新。',
+      });
+      setPairForm({ code: '', name: '', platform: '' });
+      await refreshAgents();
+    } finally {
+      setPairing(false);
+    }
+  };
+
+  /**
+   * 停用 = 撤销 Token. The engine has no `agent_enable` / `agent_disable` tool
+   * (`agents.status` is written by pairing and token revocation only), so a UI
+   * switch labelled "启用/停用" would be a lie. Instead the per-row action is
+   * labelled 停用（撤销 Token）, runs the real `agent_revoke_token`, and the section
+   * note tells the user that only re-pairing brings the agent back.
+   */
+  const revokeAgent = async (agent: PairedAgent) => {
+    setConfirmRevokeId(null);
+    setRevokingId(agent.agent_id);
+    try {
+      const result = await revokeAgentToken({ agentId: agent.agent_id });
+      if (!result.ok) {
+        setNotice({
+          tone: 'error',
+          title: `${agent.display_name} 停用失败`,
+          text: result.error,
+        });
+        return;
+      }
+      setNotice({
+        tone: 'success',
+        title: `${agent.display_name} 的 Token 已撤销`,
+        text: '该 Agent 无法再调用引擎；需要重新配对才能恢复。',
+      });
+      await refreshAgents();
+    } finally {
+      setRevokingId(null);
+    }
+  };
+
   const togglePaperPlanes = async (value: boolean) => {
     const saved = await hud.setPaperPlanes(value);
-    setLastHudSave(saved ? 'saved' : 'failed');
     setNotice({
       tone: saved ? 'success' : 'error',
       title: saved
@@ -138,7 +279,6 @@ export function SettingsPage() {
       return;
     }
     const saved = await hud.setContextWindowTokens(tokens);
-    setLastHudSave(saved ? 'saved' : 'failed');
     setNotice({
       tone: saved ? 'success' : 'error',
       title: saved ? '上下文参考值已保存' : '上下文参考值未保存',
@@ -148,19 +288,21 @@ export function SettingsPage() {
     });
   };
 
+  // Only settings that actually persist are restored: paper planes and the context
+  // reference value (userData/hud.json) plus the update channel (main process).
   const restoreDefaults = async () => {
-    setAutoStart(DEFAULT_STATE.autoStart);
-    setProxy(DEFAULT_STATE.proxy);
-    setAutoUpdate(DEFAULT_STATE.autoUpdate);
     void updates.setChannel('stable');
     const [planes, tokens] = await Promise.all([
       hud.setPaperPlanes(true),
       hud.setContextWindowTokens(128_000),
     ]);
     const saved = planes && tokens;
-    setLastHudSave(saved ? 'saved' : 'failed');
     if (saved) {
-      setNotice({ tone: 'info', title: '已还原界面状态与 HUD 配置' });
+      setNotice({
+        tone: 'info',
+        title: '已还原 HUD 默认值',
+        text: '纸飞机动画已开启、上下文参考值回到 128,000，更新通道回到稳定版。',
+      });
     } else {
       setNotice({
         tone: 'error',
@@ -348,7 +490,8 @@ export function SettingsPage() {
         <div>
           <h1 className="page-title">设置</h1>
           <p className="page-subtitle">
-            凭据、引擎生命周期、执行器状态、任务 IPC 与更新管道已接入；HUD 动效与上下文参考值已持久化，引擎协作参数只读。
+            凭据、引擎生命周期、执行器状态、Agent 配对与注销、更新管道已接入；HUD
+            动效与上下文参考值已持久化，引擎协作参数只读。
           </p>
         </div>
       </div>
@@ -356,7 +499,7 @@ export function SettingsPage() {
       <AppBanner
         status="info"
         title="本次接入范围"
-        description="Token 使用 safeStorage 加密保存；引擎启停、健康检查、执行器与任务数据来自主进程和本地引擎。HUD 的纸飞机动画与上下文参考值写入 userData/hud.json；引擎协作参数只读展示，修改需重启引擎。日志虚拟列表尚未接入。"
+        description="Token 使用 safeStorage 加密保存；引擎启停、健康检查、执行器数据来自主进程和本地引擎。Agent 管理直接调用引擎的 agent_pairing_code / agent_pair / agent_revoke_token，列表来自各群成员表。HUD 的纸飞机动画与上下文参考值写入 userData/hud.json；引擎协作参数只读展示，修改需重启引擎。"
       />
 
       {notice != null && (
@@ -503,14 +646,12 @@ export function SettingsPage() {
                   </div>
                 </div>
                 <div className="setting-control">
-                  <input
-                    className="input input--mono"
-                    type="text"
-                    value={engine.status?.baseUrl ?? '127.0.0.1:8080'}
-                    readOnly
-                    aria-label="引擎地址"
-                  />
-                  <p className="field__hint">实际值来自主进程；端口配置持久化未接入。</p>
+                  {/* Was a read-only input with a "持久化未接入" hint: the address is
+                      information, not a setting, so it is plain text now. */}
+                  <p className="setting-readout">{engine.status?.baseUrl ?? '127.0.0.1:8080'}</p>
+                  <p className="field__hint">
+                    只读：实际值来自主进程；端口在引擎进程的配置里改，GUI 不保存该配置。
+                  </p>
                 </div>
               </div>
 
@@ -554,20 +695,22 @@ export function SettingsPage() {
               <div className="setting-row">
                 <div>
                   <div className="setting-label">启动方式</div>
-                  <div className="setting-desc">由 GUI 拉起引擎，或连接已经运行的引擎。</div>
+                  <div className="setting-desc">
+                    由 GUI 拉起引擎，或连接已经运行的引擎；由主进程的实际生命周期决定。
+                  </div>
                 </div>
                 <div className="setting-control">
-                  <select
-                    className="select"
-                    aria-label="启动方式"
-                    value={actualLaunchMode}
-                    disabled
-                  >
-                    <option value="managed">由 GUI 启动和管理</option>
-                    <option value="attach">连接现有引擎</option>
-                    <option value="stopped">未运行</option>
-                  </select>
-                  <p className="field__hint">实际状态只读；启动方式配置持久化未接入。</p>
+                  {/* The disabled <select> looked editable but could never be saved. */}
+                  <p className="setting-readout setting-readout--plain">
+                    {actualLaunchMode === 'managed'
+                      ? '由 GUI 启动和管理'
+                      : actualLaunchMode === 'attach'
+                        ? '连接现有引擎（attach）'
+                        : '未运行'}
+                  </p>
+                  <p className="field__hint">
+                    只读：GUI 没有启动方式配置项，是否需要托管由主进程在启动时判断。
+                  </p>
                 </div>
               </div>
 
@@ -579,32 +722,30 @@ export function SettingsPage() {
                   </div>
                 </div>
                 <div className="setting-control">
-                  <div className="setting-inline">
-                    <span className="muted">仅界面状态，持久化未接入</span>
-                    <AppSwitch label="随应用启动" value={autoStart} onChange={setAutoStart} />
-                  </div>
+                  {/* The old switch only changed component state. Main process always
+                      attaches-or-starts on app ready, so this is reported, not toggled. */}
+                  <AppStatus tone="success" label="由主进程固定执行" />
+                  <p className="field__hint">
+                    只读：这是主进程启动流程的固定行为（启动时连接或拉起引擎），没有可关闭的开关。
+                  </p>
                 </div>
               </div>
 
               <div className="setting-row">
                 <div>
-                  <div className="setting-label">代理</div>
+                  <div className="setting-label">更新代理</div>
                   <div className="setting-desc">
                     用于 GitHub Releases 更新检查。系统代理可能触发 API 限流，失败时会显示具体原因。
                   </div>
                 </div>
                 <div className="setting-control">
-                  <select
-                    className="select"
-                    aria-label="代理"
-                    value={proxy}
-                    onChange={(event) => setProxy(event.target.value)}
-                  >
-                    <option value="system">跟随系统代理（127.0.0.1:7897）</option>
-                    <option value="direct">直连（不使用代理）</option>
-                    <option value="custom">自定义代理…</option>
-                  </select>
-                  <p className="field__hint">仅界面状态，尚未写入配置。</p>
+                  {/* No IPC path for a proxy setting: the policy lives in the main
+                      process env, so the fake select became read-only text. */}
+                  <p className="setting-readout setting-readout--plain">由主进程环境变量决定</p>
+                  <p className="field__hint">
+                    只读：<span className="mono">AGENT_WORKBENCH_UPDATE_PROXY</span> 指定代理，
+                    <span className="mono">AGENT_WORKBENCH_UPDATE_DIRECT=1</span> 直连，都不设置时跟随系统代理。
+                  </p>
                 </div>
               </div>
 
@@ -744,6 +885,232 @@ export function SettingsPage() {
                   </div>
                 ))
               )}
+            </div>
+          </section>
+
+          <section className="section" id="agents" aria-labelledby="agents-title">
+            <div className="section__head">
+              <h2 className="section__title" id="agents-title">
+                Agent 管理
+              </h2>
+              <div className="agent-admin__head-actions">
+                <AppStatus
+                  tone={agentsError != null ? 'warning' : agents.length > 0 ? 'success' : 'neutral'}
+                  label={
+                    agentsLoading
+                      ? '读取中…'
+                      : agentsError != null
+                        ? '读取失败'
+                        : `${agents.length} 个 Agent`
+                  }
+                />
+                <AppButton
+                  label="刷新"
+                  icon={<RefreshCw size={14} />}
+                  tone="ghost"
+                  size="sm"
+                  isLoading={agentsLoading}
+                  isDisabled={agentsLoading}
+                  onClick={() => void refreshAgents()}
+                />
+              </div>
+            </div>
+            <div className="section__body settings-section__body">
+              <p className="agent-admin__source">{AGENT_LIST_SOURCE_NOTE}</p>
+
+              {agentsError != null && (
+                <p className="agent-admin__error">读取失败：{agentsError}</p>
+              )}
+              {agentErrors.length > 0 && (
+                <p className="agent-admin__error">
+                  部分群的成员表读取失败，列表不完整：{agentErrors.join('；')}
+                </p>
+              )}
+
+              {agents.length === 0 ? (
+                <p className="agent-admin__empty">
+                  {agentsLoading
+                    ? '正在读取各群成员…'
+                    : agentsError != null
+                      ? '引擎返回错误，暂时无法推导已配对 Agent；修复后点“刷新”。'
+                      : agentChatCount === 0
+                        ? '引擎还没有群聊：已配对 Agent 只能从群成员表推导，先建群并把 Agent 加进去。'
+                        : '现有群的成员表里还没有 Agent 记录。'}
+                </p>
+              ) : (
+                <div className="agent-admin__list">
+                  {agents.map((agent) => {
+                    const external = isExternalAgent(agent);
+                    const owner = isOwnerAgent(agent);
+                    const confirming = confirmRevokeId === agent.agent_id;
+                    const revocable = canRevokeAgent(agent);
+                    return (
+                      <div className="agent-admin__row" key={agent.agent_id}>
+                        <div className="agent-admin__identity">
+                          <div className="agent-admin__name">
+                            <span>{agent.display_name}</span>
+                            <span className="agent-admin__id">{agent.agent_id}</span>
+                          </div>
+                          <div className="agent-admin__meta">
+                            <span>平台：{platformLabel(agent.platform)}</span>
+                            <span>角色：{agentRoleLabel(agent.role)}</span>
+                            {/* Raw engine status, before the Chinese label. */}
+                            <span>状态：{agent.status}</span>
+                            <span>加入：{formatJoinedAt(agent.joined_at)}</span>
+                          </div>
+                        </div>
+                        <div className="agent-admin__state">
+                          <AppStatus
+                            tone={agentStatusTone(agent.status)}
+                            label={agentStatusLabel(agent.status)}
+                          />
+                          {external && <AppBadge tone="warning" label="外部 Agent" />}
+                          {owner && <AppBadge tone="neutral" label="所有者" />}
+                        </div>
+                        <div className="agent-admin__actions">
+                          {confirming ? (
+                            <div className="agent-admin__confirm">
+                              <span className="agent-admin__confirm-text">
+                                确认停用 {agent.display_name}？Token 将立即撤销。
+                              </span>
+                              <AppButton
+                                label="确认撤销"
+                                tone="danger"
+                                size="sm"
+                                isLoading={revokingId === agent.agent_id}
+                                isDisabled={revokingId != null}
+                                onClick={() => void revokeAgent(agent)}
+                              />
+                              <AppButton
+                                label="取消"
+                                tone="ghost"
+                                size="sm"
+                                isDisabled={revokingId != null}
+                                onClick={() => setConfirmRevokeId(null)}
+                              />
+                            </div>
+                          ) : revocable ? (
+                            <AppButton
+                              label="停用（撤销 Token）"
+                              tone="ghost"
+                              size="sm"
+                              isLoading={revokingId === agent.agent_id}
+                              isDisabled={revokingId != null}
+                              title="引擎没有停用工具：停用即撤销该 Agent 的 Token"
+                              onClick={() => setConfirmRevokeId(agent.agent_id)}
+                            />
+                          ) : (
+                            /* Muse has no local executor and the owner cannot revoke
+                               itself: no button, just the honest reason. */
+                            <span className="agent-admin__readonly">
+                              {external
+                                ? '外部 Agent，只读'
+                                : owner
+                                  ? '所有者，只读'
+                                  : 'Token 已撤销，只读'}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <p className="agent-admin__note">
+                引擎没有独立的启用/停用工具：“停用”执行的就是撤销该 Agent 的 Token
+                （<span className="mono">agent_revoke_token</span>），撤销后它不能再调用引擎，
+                需要重新配对才能恢复。Muse 是外部 Agent，本机没有它的执行器，因此只读。
+              </p>
+
+              <div className="agent-admin__pair">
+                <div className="agent-admin__pair-head">
+                  <div>
+                    <div className="setting-label">配对新 Agent</div>
+                    <div className="setting-desc">
+                      向引擎申请一次性配对码（
+                      <span className="mono">agent_pairing_code</span>
+                      ），再由 Agent 用配对码换 Token。
+                    </div>
+                  </div>
+                  <AppButton
+                    label={pairingCode != null ? '重新生成配对码' : '生成配对码'}
+                    icon={<Link2 size={15} />}
+                    size="sm"
+                    isLoading={generatingCode}
+                    isDisabled={generatingCode}
+                    onClick={() => void generatePairingCode()}
+                  />
+                </div>
+
+                {pairingCode != null && (
+                  <div className="agent-admin__code">
+                    <span className="agent-admin__code-value">{pairingCode.code}</span>
+                    <div className="agent-admin__code-meta">
+                      <span>有效期至 {formatPairingExpiry(pairingCode.expires_at, Date.now())}</span>
+                      <span>最多可配对 {pairingCode.max_agents} 个 Agent</span>
+                      <span>已使用 {pairingCode.uses} 次</span>
+                    </div>
+                    {/* The engine returns the code once and has no API to read it back. */}
+                    <p className="field__hint">
+                      配对码只在这里显示一次（引擎不提供再次查询）：离开本页或重新生成前请先复制。
+                    </p>
+                  </div>
+                )}
+
+                <div className="agent-admin__form">
+                  <AppTextField
+                    label="配对码"
+                    value={pairForm.code}
+                    onChange={(value) => setPairForm((prev) => ({ ...prev, code: value }))}
+                    placeholder="粘贴配对码"
+                    containerClassName="pair-field"
+                  />
+                  <AppTextField
+                    label="Agent 名称"
+                    value={pairForm.name}
+                    onChange={(value) => setPairForm((prev) => ({ ...prev, name: value }))}
+                    placeholder="例如 Reviewer"
+                    containerClassName="pair-field"
+                  />
+                  <AppTextField
+                    label="平台（可选）"
+                    value={pairForm.platform}
+                    onChange={(value) => setPairForm((prev) => ({ ...prev, platform: value }))}
+                    placeholder="claude / dsh / muse"
+                    containerClassName="pair-field"
+                  />
+                  <div className="agent-admin__form-actions">
+                    <AppButton
+                      label="完成配对"
+                      tone="primary"
+                      size="sm"
+                      isLoading={pairing}
+                      isDisabled={pairing}
+                      onClick={() => void submitPair()}
+                    />
+                  </div>
+                </div>
+
+                {pairResult != null && (
+                  <div className="agent-admin__result">
+                    <span className="agent-admin__result-line">
+                      已配对：{pairResult.displayName ?? pairResult.agentId ?? '新 Agent'}
+                      {pairResult.agentId != null && pairResult.displayName != null
+                        ? `（${pairResult.agentId}）`
+                        : ''}
+                    </span>
+                    {pairResult.token != null && (
+                      <>
+                        <span className="agent-admin__result-line">
+                          Agent Token（引擎只返回这一次，请立即交给该 Agent 保存）：
+                        </span>
+                        <span className="agent-admin__result-token">{pairResult.token}</span>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           </section>
 
@@ -983,10 +1350,17 @@ export function SettingsPage() {
                   </div>
                 </div>
                 <div className="setting-control">
-                  <div className="setting-inline">
-                    <span className="muted">仅界面状态</span>
-                    <AppSwitch label="自动检查更新" value={autoUpdate} onChange={setAutoUpdate} />
-                  </div>
+                  {/* The old switch was pure component state; the main process owns
+                      the schedule, so the real behaviour is reported as text. */}
+                  <AppStatus
+                    tone={info.update.supported ? 'success' : 'neutral'}
+                    label={info.update.supported ? '打包版自动执行' : '仅打包版'}
+                  />
+                  <p className="field__hint">
+                    只读：由主进程调度（
+                    <span className="mono">AGENT_WORKBENCH_AUTO_UPDATE_CHECK=0</span> 可禁用）；
+                    GUI 没有开关。
+                  </p>
                 </div>
               </div>
 
@@ -1165,39 +1539,19 @@ export function SettingsPage() {
           <div className="save-bar">
             <div className="save-bar__status">
               <Check size={15} aria-hidden="true" />
-              <span>凭据由主进程保存；HUD 配置即时写入 userData；引擎协作参数只读</span>
+              <span>
+                凭据由主进程保存；HUD 配置修改即写入 userData；引擎协作参数与配对信息只读或直接调用引擎
+              </span>
             </div>
             <div className="save-bar__actions">
+              {/* No "保存更改" button: HUD settings save on change (hud.json), so the
+                  only honest action left here is restoring their defaults. */}
               <AppButton
-                label="还原"
+                label="还原 HUD 默认值"
                 tone="ghost"
+                title="纸飞机动画开启、上下文参考值 128,000、更新通道稳定版"
                 onClick={() => {
                   void restoreDefaults();
-                }}
-              />
-              <AppButton
-                label="保存更改"
-                tone="primary"
-                onClick={() => {
-                  if (lastHudSave === 'saved') {
-                    setNotice({
-                      tone: 'success',
-                      title: 'HUD 设置已即时保存',
-                      text: '最近一次写入 userData/hud.json 成功，纸飞机动画与上下文参考值已生效。',
-                    });
-                  } else if (lastHudSave === 'failed') {
-                    setNotice({
-                      tone: 'error',
-                      title: 'HUD 设置未保存',
-                      text: '最近一次写入 hud.json 失败，原配置保持不变。请检查数据目录权限。',
-                    });
-                  } else {
-                    setNotice({
-                      tone: 'info',
-                      title: '暂无待保存的 HUD 配置',
-                      text: '纸飞机动画与上下文参考值在修改时立即写入主进程；本次尚未修改 HUD 配置。',
-                    });
-                  }
                 }}
               />
             </div>

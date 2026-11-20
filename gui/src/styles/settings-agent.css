@@ -1,0 +1,295 @@
+/* ---------------------------------------------------------------
+ * Agent 管理 (REA Phase 4 §6.3 [E]) + 假控件清理留下的只读文本样式
+ * (docs/rea/PHASE4_DESIGN.md §7.4).
+ *
+ * Imported from pages/SettingsPage.tsx so the tokens stay on brand.css and no
+ * colour is invented here. BEM-ish: block__element--modifier.
+ * ------------------------------------------------------------- */
+
+/* Read-only values that used to be dead inputs/selects. They are information,
+ * not controls: no border box, no hover state, nothing that looks savable. */
+.setting-readout {
+  display: block;
+  padding: 6px 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.setting-readout--plain {
+  font-family: var(--font-ui);
+}
+
+/* ---------------------------------------------------------------
+ * Section shell
+ * ------------------------------------------------------------- */
+.agent-admin__head-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.agent-admin__source {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-muted);
+}
+
+.agent-admin__error {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--error-text);
+  overflow-wrap: anywhere;
+}
+
+.agent-admin__empty {
+  padding: 12px 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-secondary);
+}
+
+/* ---------------------------------------------------------------
+ * Paired agent rows
+ * ------------------------------------------------------------- */
+.agent-admin__list {
+  display: flex;
+  flex-direction: column;
+}
+
+.agent-admin__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 16px;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.agent-admin__row:first-child {
+  padding-top: 0;
+}
+
+.agent-admin__row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.agent-admin__identity {
+  min-width: 0;
+}
+
+.agent-admin__name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.agent-admin__id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.agent-admin__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-secondary);
+}
+
+.agent-admin__state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.agent-admin__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.agent-admin__readonly {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-muted);
+}
+
+/* Two-step confirmation stays in the row so the target agent is never ambiguous. */
+.agent-admin__confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--warning-subtle);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-sm);
+}
+
+.agent-admin__confirm-text {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--warning-text);
+}
+
+.agent-admin__note {
+  margin: 12px 0 0;
+  font-size: 11px;
+  line-height: 17px;
+  color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------
+ * Pairing block
+ * ------------------------------------------------------------- */
+.agent-admin__pair {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.agent-admin__pair-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-admin__code {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.agent-admin__code-value {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  line-height: 24px;
+  letter-spacing: 0.12em;
+  color: var(--text);
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+
+.agent-admin__code-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-secondary);
+}
+
+.agent-admin__form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.agent-admin__form .pair-field {
+  width: 100%;
+  min-width: 0;
+}
+
+/* Astryx TextInput renders the field element with this class
+ * (same pattern as .token-field / .search-field in astryx-overrides.css). */
+.agent-admin__form .astryx-text-input {
+  width: 100%;
+  min-width: 0;
+}
+
+.agent-admin__form-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-admin__result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--success-subtle);
+  border: 1px solid var(--success);
+  border-radius: var(--radius-sm);
+}
+
+.agent-admin__result-line {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--success-text);
+}
+
+.agent-admin__result-token {
+  padding: 6px 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------
+ * Narrow windows (brand.css keeps 1180 / 900 as the breakpoints)
+ * ------------------------------------------------------------- */
+@media (max-width: 1180px) {
+  .agent-admin__form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .agent-admin__row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .agent-admin__state,
+  .agent-admin__actions {
+    justify-content: flex-start;
+  }
+
+  .agent-admin__head-actions {
+    justify-content: flex-start;
+  }
+
+  .agent-admin__form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .agent-admin__form-actions {
+    justify-content: flex-start;
+  }
+}

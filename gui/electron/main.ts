@@ -65,6 +65,8 @@ const ATTACHMENTS_TEMP_DIR = path.join(DATA_DIR, 'attachments', 'pending');
 const ATTACHMENTS_CACHE_DIR = path.join(DATA_DIR, 'attachments', 'cache');
 /** REA Phase 2 Profile Card limit (docs/rea/DATABASE_DESIGN.md, D1). */
 const PROFILE_MAX_CHARS = 300;
+/** chats.settings.description / announcement cap (matches the engine schema). */
+const CHAT_SETTINGS_MAX_CHARS = 2_000;
 
 // The renderer never handles host paths: drafts are opaque ids in this service.
 const attachments = new AttachmentService({
@@ -287,6 +289,24 @@ const ALLOWED_EXTERNAL_HOSTS = new Set([
   'raw.githubusercontent.com',
 ]);
 
+/**
+ * REA Phase 4 §7.1: forward the single SSE stream to the renderer.
+ *
+ * The renderer never opens its own connection (it has no token); the four
+ * status surfaces subscribe to these two IPC channels instead.
+ */
+function wireEngineEvents(): void {
+  const send = (channel: string, payload: unknown): void => {
+    const win = mainWindow;
+    if (win == null || win.isDestroyed()) {
+      return;
+    }
+    win.webContents.send(channel, payload);
+  };
+  engine.onEvent((event) => send('engine:event', event));
+  engine.onEventsStatus((status) => send('engine:events-status', status));
+}
+
 async function openExternal(rawUrl: unknown): Promise<Result> {
   if (typeof rawUrl !== 'string' || rawUrl.length > 2048) {
     return { ok: false, error: '链接无效。' };
@@ -447,7 +467,12 @@ function registerIpc(): void {
   handle('hud:set-config', (patch) => writeHudConfig(patch));
 
   handle('engine:status', () => engineResult(() => engine.status()));
-  handle('engine:start', () => engineResult(() => engine.start()));
+  handle('engine:start', async () => {
+    const result = await engineResult(() => engine.start());
+    // A token saved after launch (Settings → 凭据) can now open the stream.
+    engine.startEvents();
+    return result;
+  });
   handle('engine:stop', () => engineResult(() => engine.stop()));
   handle('engine:agent-info', () => engineResult(() => engine.agentInfo()));
 
@@ -672,6 +697,127 @@ function registerIpc(): void {
       });
     }),
   );
+
+  // ---- REA Phase 4: membership / chat settings / recall / file delete ----
+
+  handle('engine:chat-members', (chatId) =>
+    engineResult(() => engine.chatMembers(requireChatId(chatId))),
+  );
+
+  handle('engine:chat-add-member', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      return engine.chatAddMember({
+        chatId: requireChatId(value.chatId),
+        agentId: requireAgentId(value.agentId),
+      });
+    }),
+  );
+
+  handle('engine:chat-remove-member', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      return engine.chatRemoveMember({
+        chatId: requireChatId(value.chatId),
+        agentId: requireAgentId(value.agentId),
+      });
+    }),
+  );
+
+  handle('engine:chat-update-settings', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      const description =
+        value.description === undefined
+          ? undefined
+          : requireOptionalText(value.description, '群描述', CHAT_SETTINGS_MAX_CHARS);
+      const announcement =
+        value.announcement === undefined
+          ? undefined
+          : requireOptionalText(value.announcement, '群公告', CHAT_SETTINGS_MAX_CHARS);
+      if (description === undefined && announcement === undefined) {
+        throw new Error('没有要保存的群设置。');
+      }
+      return engine.chatUpdateSettings({
+        chatId: requireChatId(value.chatId),
+        description,
+        announcement,
+      });
+    }),
+  );
+
+  handle('engine:chat-recall', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      return engine.chatRecall({
+        chatId: requireChatId(value.chatId),
+        messageId: requireMessageId(value.messageId, '消息 ID'),
+      });
+    }),
+  );
+
+  handle('engine:chat-delete-file', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      return engine.chatDeleteFile({
+        chatId: requireChatId(value.chatId),
+        fileId: requireFileId(value.fileId),
+      });
+    }),
+  );
+
+  // ---- REA Phase 4 §6.3: agent pairing / revocation (owner-only in engine) ----
+
+  handle('engine:agent-pairing-code', (input) =>
+    engineResult(() => {
+      const value = input == null ? {} : asRecord(input);
+      const ttlHours =
+        value.ttlHours == null || value.ttlHours === ''
+          ? undefined
+          : optionalInteger(value.ttlHours, 1, 24, 24);
+      const maxAgents =
+        value.maxAgents == null || value.maxAgents === ''
+          ? undefined
+          : optionalInteger(value.maxAgents, 1, 10, 10);
+      return engine.agentPairingCode({ ttlHours, maxAgents });
+    }),
+  );
+
+  handle('engine:agent-pair', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      const chatIds = optionalIdArray(value.chatIds, '群聊', 50);
+      return engine.agentPair({
+        code: requireText(value.code, '配对码', 200),
+        name: requireText(value.name, 'Agent 名称', 80),
+        platform:
+          value.platform == null || value.platform === ''
+            ? undefined
+            : requireText(value.platform, '平台标签', 40),
+        profile:
+          value.profile == null || value.profile === ''
+            ? undefined
+            : requireText(value.profile, '简介', PROFILE_MAX_CHARS),
+        reclaim: value.reclaim === true,
+        chatIds,
+      });
+    }),
+  );
+
+  handle('engine:agent-revoke', (input) =>
+    engineResult(() => {
+      const value = input == null ? {} : asRecord(input);
+      const agentId =
+        value.agentId == null || value.agentId === ''
+          ? undefined
+          : requireAgentId(value.agentId);
+      return engine.agentRevokeToken({ agentId });
+    }),
+  );
+
+  // REA Phase 4 §7.1: live events. The stream itself is owned by the main
+  // process (one connection for the whole GUI); the renderer only subscribes.
+  handle('engine:events-status', () => engine.eventsStatus());
 
   // ---- Attachment intake (main-process dialog / drop / paste) ----
 
@@ -990,6 +1136,17 @@ function requireText(value: unknown, label: string, maxLength: number): string {
     throw new Error(`${label} 超过 ${maxLength} 个字符。`);
   }
   return value;
+}
+
+/** Like requireText, but an empty string means "no value" (optional setting). */
+function requireOptionalText(value: unknown, label: string, maxLength: number): string {
+  if (typeof value !== 'string') {
+    throw new Error(`${label} 必须是字符串。`);
+  }
+  if (value.length > maxLength) {
+    throw new Error(`${label} 超过 ${maxLength} 个字符。`);
+  }
+  return value.trim();
 }
 
 function requireTaskId(value: unknown): string {
@@ -1360,6 +1517,7 @@ if (!hasSingleInstanceLock) {
       }
     });
     registerIpc();
+    wireEngineEvents();
 
     if (VERIFY_MODE) {
       void runUpdateVerification(updateManager);
@@ -1379,6 +1537,9 @@ if (!hasSingleInstanceLock) {
     void engine.start().catch(() => {
       // The manager keeps the detailed error in lastError/status.
     });
+    // The event loop retries with backoff, so starting it before the engine is
+    // healthy only costs one degraded status line.
+    engine.startEvents();
 
     updateManager.scheduleAutoCheck();
 
