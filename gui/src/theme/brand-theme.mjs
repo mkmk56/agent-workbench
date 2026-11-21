@@ -8,6 +8,81 @@
  */
 import { defineTheme } from '@astryxdesign/core/theme';
 import { neutralTheme } from '@astryxdesign/theme-neutral';
+import { createElement } from 'react';
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  Calendar,
+  Check,
+  CheckCircle,
+  CheckRead,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  CloseCircle,
+  Copy,
+  EyeOff,
+  Filter,
+  InfoCircle,
+  Menu,
+  Microphone,
+  MoreH,
+  Search,
+  SortV,
+  SquareArrowRightUp,
+  Stop,
+  Upload,
+  X,
+} from 'reicon-react';
+
+/**
+ * Astryx resolves the glyphs baked into its own components (Banner status
+ * icons, the input clear button, table and menu affordances) through the
+ * active theme's semantic icon registry. The neutral base theme fills that
+ * registry with lucide-react nodes, so those internal glyphs would still paint
+ * `class="lucide ..."` at runtime even though the app itself no longer imports
+ * Lucide. Override every semantic key with a Reicon equivalent.
+ *
+ * Four keys have no faithful Reicon counterpart and keep the base theme's
+ * glyph (none is reachable through the Astryx components this app renders):
+ * chevronsLeft, chevronsRight, viewColumns, wrench.
+ *
+ * `size: '1em'` matches the base registry: Astryx's <Icon> wrapper sets the
+ * font size per slot, and the glyph inherits it.
+ */
+const semanticIcons = (() => {
+  const icon = (Component) =>
+    createElement(Component, { size: '1em', 'aria-hidden': true });
+  return {
+    close: icon(X),
+    chevronDown: icon(ChevronDown),
+    chevronLeft: icon(ChevronLeft),
+    chevronRight: icon(ChevronRight),
+    check: icon(Check),
+    success: icon(CheckCircle),
+    error: icon(CloseCircle),
+    warning: icon(AlertTriangle),
+    info: icon(InfoCircle),
+    calendar: icon(Calendar),
+    clock: icon(Clock),
+    externalLink: icon(SquareArrowRightUp),
+    menu: icon(Menu),
+    moreHorizontal: icon(MoreH),
+    search: icon(Search),
+    upload: icon(Upload),
+    arrowUp: icon(ArrowUp),
+    arrowDown: icon(ArrowDown),
+    arrowsUpDown: icon(SortV),
+    funnel: icon(Filter),
+    eyeSlash: icon(EyeOff),
+    copy: icon(Copy),
+    checkDouble: icon(CheckRead),
+    stop: icon(Stop),
+    microphone: icon(Microphone),
+  };
+})();
 
 const UI_FONT =
   '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif';
@@ -18,6 +93,7 @@ export function createBrandTheme() {
   const theme = defineTheme({
     name: 'agent-workbench',
     extends: neutralTheme,
+    icons: semanticIcons,
     tokens: {
       /* Matte Black (VISUAL_SCHEME.md §4): cold silver-gray accent, no
        * identity colours (decision A), desaturated semantics. Pairs are

@@ -14,7 +14,7 @@ import {
   TextInput,
   proportional,
 } from '@astryxdesign/core';
-import { AlertTriangle, CircleCheck, CircleX, Info, Search } from './icons';
+import { Search } from './icons';
 import type { ReactNode } from 'react';
 
 export type ActionTone = 'primary' | 'secondary' | 'ghost' | 'danger';
@@ -293,19 +293,6 @@ export function AppSwitch({
   );
 }
 
-/**
- * Astryx's theme icon registry is built on lucide-react, so a Banner without an
- * explicit icon paints a `lucide lucide-info` (or success/warning/error) glyph
- * even though the app itself no longer imports Lucide. Supplying the Reicon
- * equivalent keeps every production glyph on the same 24px grid and icon set.
- */
-const bannerStatusIcons: Record<'info' | 'warning' | 'error' | 'success', ReactNode> = {
-  info: <Info size="1em" aria-hidden />,
-  success: <CircleCheck size="1em" aria-hidden />,
-  warning: <AlertTriangle size="1em" aria-hidden />,
-  error: <CircleX size="1em" aria-hidden />,
-};
-
 export function AppBanner({
   status,
   title,
@@ -324,7 +311,6 @@ export function AppBanner({
       status={status}
       title={title}
       description={description}
-      icon={bannerStatusIcons[status]}
       endContent={endContent}
       container="section"
       className={['brand-banner', className].filter(Boolean).join(' ')}
