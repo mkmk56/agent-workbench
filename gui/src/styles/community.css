@@ -535,6 +535,11 @@
 }
 
 .community-block__title {
+  /* Reicon glyphs render as block-level <svg>; without inline-flex the 13px
+     icon drops onto its own line above the heading text. */
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   margin: 0;
   color: var(--text);
   font-size: 13px;
