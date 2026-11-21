@@ -339,9 +339,29 @@ export function normalizeAgentDirectoryEntry(raw: unknown): AgentDirectoryEntry 
  * Pure derivations used by the UI (and unit tests)
  * ------------------------------------------------------------------ */
 
-/** Unread notices only; `read=false` is the caller's filter, this is a guard. */
+/**
+ * The notice recipient id that belongs to this GUI's viewer. The engine's
+ * `_recipient(auth)` returns `'user'` for the human/master tokens the GUI holds,
+ * and the canonical agent id for an agent token.
+ */
+export const VIEWER_NOTICE_RECIPIENT = 'user';
+
+/**
+ * Unread notices addressed to *this viewer*.
+ *
+ * A human/master token reads the engine feed with `recipientFilter = null`, so
+ * the page legitimately contains notices for other recipients too — most
+ * visibly the `approved`/`declined` rows written for the applicant with
+ * `read_at = NULL`. Those can never be marked read by us (`mark_read` only
+ * touches the caller's own rows), so counting them leaves a banner/Inbox badge
+ * that never disappears. Filter the recipient first, then the read flag.
+ */
 export function unreadNotices(notices: JoinNotice[]): JoinNotice[] {
-  return notices.filter((notice) => notice.read_at == null || notice.read_at.length === 0);
+  return notices.filter(
+    (notice) =>
+      notice.recipient_id === VIEWER_NOTICE_RECIPIENT &&
+      (notice.read_at == null || notice.read_at.length === 0),
+  );
 }
 
 /** Count unread notices per chat, newest chat first (stable by first sighting). */

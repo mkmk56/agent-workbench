@@ -651,6 +651,14 @@
   min-width: 0;
 }
 
+.join-banner__error {
+  display: block;
+  margin-top: 2px;
+  color: var(--error-text);
+  font-size: 11px;
+  line-height: 16px;
+}
+
 .join-banner__actions {
   display: inline-flex;
   align-items: center;

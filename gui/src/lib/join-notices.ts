@@ -13,7 +13,12 @@ import type { JoinNotice } from '../types';
  * touch the 20/epoch budget (D4b), so this is the only channel that shows them.
  */
 
-const DEFAULT_POLL_MS = 15_000;
+/**
+ * §4.7 fixes one cadence for every join-notice surface (Inbox summary and the
+ * per-chat banner). It matches the Inbox counter poll so both ticks line up and
+ * a notice is never counted in one place before the other.
+ */
+export const JOIN_NOTICES_POLL_MS = 5_000;
 
 export interface JoinNoticesView {
   notices: JoinNotice[];
@@ -32,7 +37,7 @@ export function useJoinNotices(options: {
   pollMs?: number;
   enabled?: boolean;
 } = {}): JoinNoticesView {
-  const { chatId, pollMs = DEFAULT_POLL_MS, enabled = true } = options;
+  const { chatId, pollMs = JOIN_NOTICES_POLL_MS, enabled = true } = options;
   const [notices, setNotices] = useState<JoinNotice[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -77,19 +82,20 @@ export function useJoinNotices(options: {
 
   const markChatRead = useCallback(
     async (targetChatId: string): Promise<boolean> => {
-      const pending = notices.filter(
-        (notice) =>
-          notice.chat_id === targetChatId && (notice.read_at == null || notice.read_at.length === 0),
+      const pending = unreadNotices(notices).filter(
+        (notice) => notice.chat_id === targetChatId,
       );
       if (pending.length === 0) {
         return true;
       }
-      for (const notice of pending) {
-        const result = await markJoinNoticesRead({ markRead: 'one', noticeId: notice.id });
-        if (!result.ok) {
-          setError(result.error);
-          return false;
-        }
+      // One round trip: the engine marks every *own* unread notice of that chat
+      // (`recipientId` is always the caller's own). Marking per notice used to
+      // walk the whole page, including rows that belong to another recipient and
+      // can never be marked read by us — the ghost unread this fixes.
+      const result = await markJoinNoticesRead({ markRead: 'all', chatId: targetChatId });
+      if (!result.ok) {
+        setError(result.error);
+        return false;
       }
       await load();
       return true;

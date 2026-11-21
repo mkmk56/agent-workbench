@@ -261,20 +261,32 @@ test('unread notice grouping counts only unread rows, per chat', () => {
       recipient_id: 'user',
       read_at: '2026-11-21T07:30:00.000Z',
     }),
-    normalizeJoinNotice({
-      id: 'n3',
-      chat_id: 'chat-b',
-      request_id: 'r3',
-      notice_type: 'declined',
-      recipient_id: 'agent_x',
-      read_at: null,
-    }),
   ].filter((item) => item != null);
-  assert.equal(unreadNotices(notices).length, 2);
-  assert.deepEqual(countUnreadByChat(notices), [
-    { chatId: 'chat-a', count: 1 },
-    { chatId: 'chat-b', count: 1 },
-  ]);
+  assert.equal(unreadNotices(notices).length, 1);
+  assert.deepEqual(countUnreadByChat(notices), [{ chatId: 'chat-a', count: 1 }]);
+});
+
+test("another recipient's notice is never counted as my unread", () => {
+  // A human/master token reads the engine feed without a recipient filter, so
+  // rows written for someone else (the applicant's approved/declined notice)
+  // are returned too. They can never be marked read by us, so counting them
+  // produced the ghost unread badge that no action could clear.
+  const theirs = normalizeJoinNotice({
+    id: 'n3',
+    chat_id: 'chat-b',
+    request_id: 'r3',
+    notice_type: 'declined',
+    recipient_id: 'agent_x',
+    read_at: null,
+  });
+  assert.ok(theirs != null);
+  assert.equal(unreadNotices([theirs]).length, 0);
+  assert.deepEqual(countUnreadByChat([theirs]), []);
+
+  // The same row addressed to this viewer (e.g. a human applicant) does count.
+  const mine = { ...theirs, recipient_id: 'user' };
+  assert.equal(unreadNotices([mine]).length, 1);
+  assert.deepEqual(countUnreadByChat([mine]), [{ chatId: 'chat-b', count: 1 }]);
 });
 
 test('viewer owner detection drives the owner-only controls', () => {

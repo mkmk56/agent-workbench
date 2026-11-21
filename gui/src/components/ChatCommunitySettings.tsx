@@ -477,9 +477,12 @@ export function ChatCommunitySettings({
                       <button
                         type="button"
                         className="btn btn-ghost btn-sm"
+                        // An expired invite is not revoked: it is dead for joins
+                        // but still listed, so allow cleanup. Only an already
+                        // revoked (or exhausted) row has nothing to revoke.
                         disabled={
-                          status.state !== 'active' ||
-                          revoking === invite.invite_id
+                          revoking === invite.invite_id ||
+                          (status.state !== 'active' && status.state !== 'expired')
                         }
                         onClick={() => void revokeInvite(invite)}
                       >

@@ -407,7 +407,13 @@ export function ChatSettingsPage({ id }: { id: string }) {
           visibility={chat?.visibility ?? 'link'}
           category={chat?.category ?? null}
           members={members}
-          onChanged={() => void loadChat()}
+          onChanged={() => {
+            // Approving a request already added the applicant to chat_members;
+            // refresh the member card too so the 成员（N） count and the drawer
+            // agree with the engine without a manual reload.
+            void loadChat();
+            void loadMembers();
+          }}
         />
       </div>
     </section>

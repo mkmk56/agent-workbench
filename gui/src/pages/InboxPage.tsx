@@ -20,7 +20,7 @@ import {
 } from '../lib/chat';
 import { formatRelative } from '../lib/labels';
 import { countUnreadByChat } from '../lib/community';
-import { useJoinNotices } from '../lib/join-notices';
+import { JOIN_NOTICES_POLL_MS, useJoinNotices } from '../lib/join-notices';
 import { useEngineEventSignal, useEngineEventsStatus } from '../lib/engine';
 import { navigate } from '../lib/router';
 import {
@@ -72,7 +72,9 @@ const AGENTS = [
 
 type AgentHandle = (typeof AGENTS)[number]['id'];
 
-const POLL_MS = 5_000;
+// §4.7: the counters and the join-notice feed share one cadence so the two
+// unread surfaces never disagree about what is still pending.
+const POLL_MS = JOIN_NOTICES_POLL_MS;
 
 interface CategoryChip {
   key: 'mentions_you' | 'replies_to_you' | 'from_owner' | 'recalled';
