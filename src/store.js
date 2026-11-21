@@ -265,6 +265,62 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS idx_chat_members_agent
         ON chat_members(agent_id, chat_id);
+      -- REA Phase 5: community foundation. All timestamps are TEXT ISO strings
+      -- (same clock as _now()); trust is still single-user and application-level
+      -- (foreign keys are deliberately not relied on).
+      CREATE TABLE IF NOT EXISTS group_invites (
+        id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        code_hash TEXT NOT NULL UNIQUE,
+        created_by TEXT NOT NULL,
+        max_uses INTEGER NOT NULL DEFAULT 10,
+        uses INTEGER NOT NULL DEFAULT 0,
+        last_used_at TEXT,
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_group_invites_chat ON group_invites(chat_id);
+      CREATE TABLE IF NOT EXISTS join_requests (
+        id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        applicant_id TEXT NOT NULL,
+        invite_id TEXT,
+        message TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        decision_reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT,
+        decided_by TEXT,
+        decided_at TEXT
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_join_requests_pending
+        ON join_requests(chat_id, applicant_id) WHERE status = 'pending';
+      CREATE INDEX IF NOT EXISTS idx_join_requests_chat_status
+        ON join_requests(chat_id, status, created_at);
+      CREATE TABLE IF NOT EXISTS join_request_notices (
+        id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        notice_type TEXT NOT NULL,
+        recipient_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        read_at TEXT
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_join_notices_unique
+        ON join_request_notices(request_id, notice_type, recipient_id);
+      CREATE INDEX IF NOT EXISTS idx_join_notices_recipient
+        ON join_request_notices(recipient_id, read_at);
+      CREATE TABLE IF NOT EXISTS invite_attempts (
+        id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        principal_id TEXT NOT NULL,
+        code_hash_prefix TEXT,
+        created_at TEXT NOT NULL,
+        success INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_invite_attempts_principal
+        ON invite_attempts(principal_id, chat_id, created_at);
       CREATE TABLE IF NOT EXISTS inbox_cursors (
         chat_id TEXT NOT NULL,
         agent_id TEXT NOT NULL,
@@ -488,8 +544,33 @@ export class Store {
     this.sessionSeq = new Map();
   }
 
+  // Re-entrant transaction. A nested call becomes a SAVEPOINT so a service
+  // method that is already inside a transaction can compose another one
+  // without issuing a second BEGIN (SQLite rejects that). The outer call still
+  // owns COMMIT/ROLLBACK, which is what makes "approve in one transaction"
+  // possible while reusing addMember / sendSystemNotice unchanged.
   _transaction(fn) {
+    const depth = this._txDepth ?? 0;
+    if (depth > 0) {
+      const savepoint = `sp_${depth}`;
+      this.db.exec(`SAVEPOINT ${savepoint}`);
+      this._txDepth = depth + 1;
+      try {
+        const result = fn();
+        this.db.exec(`RELEASE ${savepoint}`);
+        return result;
+      } catch (error) {
+        try {
+          this.db.exec(`ROLLBACK TO ${savepoint}`);
+          this.db.exec(`RELEASE ${savepoint}`);
+        } catch { /* ignore */ }
+        throw error;
+      } finally {
+        this._txDepth = depth;
+      }
+    }
     this.db.exec('BEGIN IMMEDIATE');
+    this._txDepth = 1;
     try {
       const result = fn();
       this.db.exec('COMMIT');
@@ -497,6 +578,8 @@ export class Store {
     } catch (error) {
       try { this.db.exec('ROLLBACK'); } catch { /* ignore */ }
       throw error;
+    } finally {
+      this._txDepth = 0;
     }
   }
 
@@ -781,6 +864,16 @@ export class Store {
         this._addColumnIfMissing('messages', 'kind', "TEXT NOT NULL DEFAULT 'user'");
         this._addColumnIfMissing('chats', 'settings', 'TEXT');
       });
+
+    // REA Phase 5: community foundation (invites, join requests, notices,
+    // invalid-code attempts). The four tables and their B-tree indexes are
+    // created by the constructor DDL, so this step only registers the version
+    // with an explicit inverse. No existing table or row is rewritten.
+    this._migrate(8, 'rea-phase5-community',
+      'DROP TABLE IF EXISTS invite_attempts; '
+      + 'DROP TABLE IF EXISTS join_request_notices; '
+      + 'DROP TABLE IF EXISTS join_requests; '
+      + 'DROP TABLE IF EXISTS group_invites;', () => {});
   }
 
   _migrate(version, name, inverse, fn) {
@@ -1771,6 +1864,358 @@ export class Store {
     ).all(agentId);
   }
 
+  countChatsForAgent(agentId) {
+    const row = this.db.prepare(
+      'SELECT COUNT(*) AS n FROM chat_members WHERE agent_id = ?'
+    ).get(agentId);
+    return Number(row?.n ?? 0);
+  }
+
+  updateChatMemberRole(chatId, agentId, role) {
+    const info = this.db.prepare(
+      'UPDATE chat_members SET role = ? WHERE chat_id = ? AND agent_id = ?'
+    ).run(role, chatId, agentId);
+    return Number(info.changes ?? 0) > 0 ? this.getChatMember(chatId, agentId) : null;
+  }
+
+  listChatAdminIds(chatId) {
+    return this.db.prepare(
+      "SELECT agent_id FROM chat_members WHERE chat_id = ? AND role = 'admin' ORDER BY joined_at ASC"
+    ).all(chatId).map((row) => row.agent_id);
+  }
+
+  listAgentAdminChatIds(agentId) {
+    return this.db.prepare(
+      "SELECT chat_id FROM chat_members WHERE agent_id = ? AND role IN ('owner','admin')"
+    ).all(agentId).map((row) => row.chat_id);
+  }
+
+  listAgentsPaged({ status = null, ids = null, limit = 50, offset = 0 } = {}) {
+    const clauses = [];
+    const params = [];
+    if (status) { clauses.push('status = ?'); params.push(status); }
+    if (Array.isArray(ids)) {
+      if (ids.length === 0) return [];
+      clauses.push(`id IN (${ids.map(() => '?').join(', ')})`);
+      params.push(...ids);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const n = Math.max(1, Math.min(500, Number(limit) || 50));
+    const o = Math.max(0, Number(offset) || 0);
+    return this.db.prepare(
+      `SELECT * FROM agents ${where} ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?`
+    ).all(...params, n, o);
+  }
+
+  countAgentsFiltered({ status = null, ids = null } = {}) {
+    const clauses = [];
+    const params = [];
+    if (status) { clauses.push('status = ?'); params.push(status); }
+    if (Array.isArray(ids)) {
+      if (ids.length === 0) return 0;
+      clauses.push(`id IN (${ids.map(() => '?').join(', ')})`);
+      params.push(...ids);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const row = this.db.prepare(`SELECT COUNT(*) AS n FROM agents ${where}`).get(...params);
+    return Number(row?.n ?? 0);
+  }
+
+  // -------------------------------------------------- REA Phase 5: community
+  // group_invites
+  insertGroupInvite(invite) {
+    this.db.prepare(
+      `INSERT INTO group_invites
+         (id, chat_id, code_hash, created_by, max_uses, uses, last_used_at, expires_at, revoked_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      invite.id,
+      invite.chat_id,
+      invite.code_hash,
+      invite.created_by,
+      Number(invite.max_uses) || 10,
+      Number(invite.uses) || 0,
+      invite.last_used_at ?? null,
+      invite.expires_at,
+      invite.revoked_at ?? null,
+      invite.created_at
+    );
+    return this.getGroupInvite(invite.id);
+  }
+
+  getGroupInvite(id) {
+    return this.db.prepare('SELECT * FROM group_invites WHERE id = ?').get(id) ?? null;
+  }
+
+  getGroupInviteByHash(codeHash) {
+    if (!codeHash) return null;
+    return this.db.prepare('SELECT * FROM group_invites WHERE code_hash = ?').get(codeHash) ?? null;
+  }
+
+  listGroupInvites({ chatId = null, limit = 50, offset = 0 } = {}) {
+    const clauses = [];
+    const params = [];
+    if (chatId) { clauses.push('chat_id = ?'); params.push(chatId); }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const n = Math.max(1, Math.min(500, Number(limit) || 50));
+    const o = Math.max(0, Number(offset) || 0);
+    return this.db.prepare(
+      `SELECT * FROM group_invites ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
+    ).all(...params, n, o);
+  }
+
+  countGroupInvites({ chatId = null } = {}) {
+    const row = chatId
+      ? this.db.prepare('SELECT COUNT(*) AS n FROM group_invites WHERE chat_id = ?').get(chatId)
+      : this.db.prepare('SELECT COUNT(*) AS n FROM group_invites').get();
+    return Number(row?.n ?? 0);
+  }
+
+  countGroupInvitesSince(chatId, sinceIso) {
+    const row = this.db.prepare(
+      'SELECT COUNT(*) AS n FROM group_invites WHERE chat_id = ? AND created_at >= ?'
+    ).get(chatId, sinceIso);
+    return Number(row?.n ?? 0);
+  }
+
+  // Returns the number of rows actually revoked (0 when already revoked).
+  revokeGroupInvite(id, revokedAt) {
+    const info = this.db.prepare(
+      'UPDATE group_invites SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL'
+    ).run(revokedAt, id);
+    return Number(info.changes ?? 0);
+  }
+
+  revokeActiveGroupInvites(chatId, revokedAt) {
+    const info = this.db.prepare(
+      'UPDATE group_invites SET revoked_at = ? WHERE chat_id = ? AND revoked_at IS NULL'
+    ).run(revokedAt, chatId);
+    return Number(info.changes ?? 0);
+  }
+
+  consumeGroupInvite(id, usedAt) {
+    this.db.prepare(
+      'UPDATE group_invites SET uses = uses + 1, last_used_at = ? WHERE id = ?'
+    ).run(usedAt, id);
+    return this.getGroupInvite(id);
+  }
+
+  // invite_attempts
+  insertInviteAttempt(attempt) {
+    this.db.prepare(
+      `INSERT INTO invite_attempts
+         (id, chat_id, principal_id, code_hash_prefix, created_at, success)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(
+      attempt.id,
+      attempt.chat_id,
+      attempt.principal_id,
+      attempt.code_hash_prefix ?? null,
+      attempt.created_at,
+      attempt.success ? 1 : 0
+    );
+  }
+
+  countFailedInviteAttempts({ principalId, chatId, sinceIso }) {
+    const row = this.db.prepare(
+      `SELECT COUNT(*) AS n FROM invite_attempts
+        WHERE principal_id = ? AND chat_id = ? AND success = 0 AND created_at >= ?`
+    ).get(principalId, chatId, sinceIso);
+    return Number(row?.n ?? 0);
+  }
+
+  // join_requests
+  insertJoinRequest(request) {
+    this.db.prepare(
+      `INSERT INTO join_requests
+         (id, chat_id, applicant_id, invite_id, message, status, decision_reason,
+          created_at, updated_at, decided_by, decided_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      request.id,
+      request.chat_id,
+      request.applicant_id,
+      request.invite_id ?? null,
+      request.message ?? null,
+      request.status ?? 'pending',
+      request.decision_reason ?? null,
+      request.created_at,
+      request.updated_at ?? null,
+      request.decided_by ?? null,
+      request.decided_at ?? null
+    );
+    return this.getJoinRequest(request.id);
+  }
+
+  getJoinRequest(id) {
+    return this.db.prepare('SELECT * FROM join_requests WHERE id = ?').get(id) ?? null;
+  }
+
+  getPendingJoinRequest(chatId, applicantId) {
+    return this.db.prepare(
+      "SELECT * FROM join_requests WHERE chat_id = ? AND applicant_id = ? AND status = 'pending' LIMIT 1"
+    ).get(chatId, applicantId) ?? null;
+  }
+
+  updateJoinRequest(id, patch) {
+    const allowed = [
+      'status', 'decision_reason', 'updated_at', 'decided_by', 'decided_at', 'invite_id', 'message'
+    ];
+    const keys = Object.keys(patch).filter((key) => allowed.includes(key));
+    if (keys.length === 0) return this.getJoinRequest(id);
+    const sets = keys.map((key) => `${key} = ?`).join(', ');
+    this.db.prepare(`UPDATE join_requests SET ${sets} WHERE id = ?`).run(
+      ...keys.map((key) => patch[key] ?? null),
+      id
+    );
+    return this.getJoinRequest(id);
+  }
+
+  // Conditional approve: the WHERE status='pending' guard is the concurrency
+  // control. 0 changes means another caller decided first (or the row is gone).
+  approveJoinRequest(id, { decidedBy = 'system', now }) {
+    const info = this.db.prepare(
+      `UPDATE join_requests
+          SET status = 'approved', updated_at = ?, decided_by = ?, decided_at = ?
+        WHERE id = ? AND status = 'pending'`
+    ).run(now, decidedBy, now, id);
+    return Number(info.changes ?? 0);
+  }
+
+  listJoinRequests({
+    chatId = null, status = null, applicantId = null, inviteId = null, limit = 50, offset = 0
+  } = {}) {
+    const clauses = [];
+    const params = [];
+    if (chatId) { clauses.push('chat_id = ?'); params.push(chatId); }
+    if (status) { clauses.push('status = ?'); params.push(status); }
+    if (applicantId) { clauses.push('applicant_id = ?'); params.push(applicantId); }
+    if (inviteId) { clauses.push('invite_id = ?'); params.push(inviteId); }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const n = Math.max(1, Math.min(500, Number(limit) || 50));
+    const o = Math.max(0, Number(offset) || 0);
+    return this.db.prepare(
+      `SELECT * FROM join_requests ${where} ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?`
+    ).all(...params, n, o);
+  }
+
+  countJoinRequests({ chatId = null, status = null, applicantId = null, inviteId = null } = {}) {
+    const clauses = [];
+    const params = [];
+    if (chatId) { clauses.push('chat_id = ?'); params.push(chatId); }
+    if (status) { clauses.push('status = ?'); params.push(status); }
+    if (applicantId) { clauses.push('applicant_id = ?'); params.push(applicantId); }
+    if (inviteId) { clauses.push('invite_id = ?'); params.push(inviteId); }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const row = this.db.prepare(`SELECT COUNT(*) AS n FROM join_requests ${where}`).get(...params);
+    return Number(row?.n ?? 0);
+  }
+
+  countJoinRequestsSince({ applicantId, chatId = null, sinceIso }) {
+    const row = chatId
+      ? this.db.prepare(
+        `SELECT COUNT(*) AS n FROM join_requests
+          WHERE applicant_id = ? AND chat_id = ? AND created_at >= ?`
+      ).get(applicantId, chatId, sinceIso)
+      : this.db.prepare(
+        'SELECT COUNT(*) AS n FROM join_requests WHERE applicant_id = ? AND created_at >= ?'
+      ).get(applicantId, sinceIso);
+    return Number(row?.n ?? 0);
+  }
+
+  countPendingJoinRequests(chatId) {
+    const row = this.db.prepare(
+      "SELECT COUNT(*) AS n FROM join_requests WHERE chat_id = ? AND status = 'pending'"
+    ).get(chatId);
+    return Number(row?.n ?? 0);
+  }
+
+  // join_request_notices
+  insertJoinNotice(notice) {
+    const info = this.db.prepare(
+      `INSERT OR IGNORE INTO join_request_notices
+         (id, chat_id, request_id, notice_type, recipient_id, created_at, read_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      notice.id,
+      notice.chat_id,
+      notice.request_id,
+      notice.notice_type,
+      notice.recipient_id,
+      notice.created_at,
+      notice.read_at ?? null
+    );
+    return Number(info.changes ?? 0) > 0 ? this.getJoinNotice(notice.id) : null;
+  }
+
+  getJoinNotice(id) {
+    return this.db.prepare('SELECT * FROM join_request_notices WHERE id = ?').get(id) ?? null;
+  }
+
+  listJoinNotices({
+    chatId = null, recipientId = null, read = null, limit = 50, offset = 0
+  } = {}) {
+    const clauses = [];
+    const params = [];
+    if (chatId) { clauses.push('chat_id = ?'); params.push(chatId); }
+    if (recipientId) { clauses.push('recipient_id = ?'); params.push(recipientId); }
+    if (read === true) clauses.push('read_at IS NOT NULL');
+    if (read === false) clauses.push('read_at IS NULL');
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const n = Math.max(1, Math.min(500, Number(limit) || 50));
+    const o = Math.max(0, Number(offset) || 0);
+    return this.db.prepare(
+      `SELECT * FROM join_request_notices ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
+    ).all(...params, n, o);
+  }
+
+  countJoinNotices({ chatId = null, recipientId = null, read = null } = {}) {
+    const clauses = [];
+    const params = [];
+    if (chatId) { clauses.push('chat_id = ?'); params.push(chatId); }
+    if (recipientId) { clauses.push('recipient_id = ?'); params.push(recipientId); }
+    if (read === true) clauses.push('read_at IS NOT NULL');
+    if (read === false) clauses.push('read_at IS NULL');
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const row = this.db.prepare(
+      `SELECT COUNT(*) AS n FROM join_request_notices ${where}`
+    ).get(...params);
+    return Number(row?.n ?? 0);
+  }
+
+  markJoinNoticeRead(id, readAt) {
+    const info = this.db.prepare(
+      'UPDATE join_request_notices SET read_at = ? WHERE id = ? AND read_at IS NULL'
+    ).run(readAt, id);
+    return Number(info.changes ?? 0) > 0;
+  }
+
+  markJoinNoticesRead({ chatId = null, recipientId, readAt }) {
+    const info = chatId
+      ? this.db.prepare(
+        `UPDATE join_request_notices SET read_at = ?
+          WHERE recipient_id = ? AND chat_id = ? AND read_at IS NULL`
+      ).run(readAt, recipientId, chatId)
+      : this.db.prepare(
+        'UPDATE join_request_notices SET read_at = ? WHERE recipient_id = ? AND read_at IS NULL'
+      ).run(readAt, recipientId);
+    return Number(info.changes ?? 0);
+  }
+
+  markJoinRequestNoticesRead(requestId, readAt) {
+    const info = this.db.prepare(
+      `UPDATE join_request_notices SET read_at = ?
+        WHERE request_id = ? AND notice_type = 'requested' AND read_at IS NULL`
+    ).run(readAt, requestId);
+    return Number(info.changes ?? 0);
+  }
+
+  listPublicChats() {
+    return this.db.prepare(
+      "SELECT * FROM chats WHERE visibility = 'public' AND status = 'active' ORDER BY created_at ASC, chat_id ASC"
+    ).all();
+  }
+
   // ------------------------------------------------- REA Phase 2: inbox cursor
   ensureInboxCursor({ chatId, agentId, lastReadSeq = 0, now = Date.now() }) {
     this.db.prepare(
@@ -1842,17 +2287,21 @@ export class Store {
     return Number(row?.n ?? 0);
   }
 
-  countChatMessagesSince(chatId, sinceIso) {
+  // Phase 5: system notices do not consume the 100/h send budget nor the 409
+  // unread gate. Callers that render unread state keep excludeSystem=false.
+  countChatMessagesSince(chatId, sinceIso, excludeSystem = false) {
     const row = this.db.prepare(
-      'SELECT COUNT(*) AS n FROM messages WHERE chat_id = ? AND created_at >= ?'
+      `SELECT COUNT(*) AS n FROM messages
+        WHERE chat_id = ? AND created_at >= ?${excludeSystem ? " AND kind <> 'system'" : ''}`
     ).get(chatId, sinceIso);
     return Number(row?.n ?? 0);
   }
 
-  countUnreadMessages(chatId, participantId, lastReadSeq) {
+  countUnreadMessages(chatId, participantId, lastReadSeq, excludeSystem = false) {
     const row = this.db.prepare(
       `SELECT COUNT(*) AS n FROM messages
-        WHERE chat_id = ? AND seq IS NOT NULL AND seq > ? AND from_agent <> ?`
+        WHERE chat_id = ? AND seq IS NOT NULL AND seq > ? AND from_agent <> ?
+        ${excludeSystem ? "AND kind <> 'system'" : ''}`
     ).get(chatId, Number(lastReadSeq) || 0, participantId);
     return Number(row?.n ?? 0);
   }

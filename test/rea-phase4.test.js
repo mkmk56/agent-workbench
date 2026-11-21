@@ -84,7 +84,7 @@ test('Phase 4 migration adds kind/settings with a backup, preserves data and is 
   try {
     const dbPath = join(dir, 'workbench.db');
     store = new Store(dbPath, dir);
-    assert.equal(store.schemaVersion(), 7);
+    assert.equal(store.schemaVersion(), 8);
     const chatId = seedChat(store, { id: 'chat-mig' });
     const now = new Date().toISOString();
     store.insertChatMessageBundle({
@@ -101,7 +101,7 @@ test('Phase 4 migration adds kind/settings with a backup, preserves data and is 
     try {
       raw.exec('ALTER TABLE messages DROP COLUMN kind');
       raw.exec('ALTER TABLE chats DROP COLUMN settings');
-      raw.prepare('DELETE FROM schema_version WHERE version = 7').run();
+      raw.prepare('DELETE FROM schema_version WHERE version >= 7').run();
       assert.equal(Number(raw.prepare('SELECT MAX(version) AS v FROM schema_version').get().v), 6);
     } finally {
       raw.close();
@@ -109,7 +109,7 @@ test('Phase 4 migration adds kind/settings with a backup, preserves data and is 
 
     const backupDir = join(dir, 'backups');
     const first = runMigration({ dbPath, dataDir: dir, backupDir });
-    assert.equal(first.schema_version, 7);
+    assert.equal(first.schema_version, 8);
     assert.ok(existsSync(first.backup_path), 'a pre-migration snapshot exists');
     assert.match(first.backup_path, /\.pre-rea-phase4-/);
     assert.deepEqual(first.columns, { messages: ['kind'], chats: ['settings'] });
@@ -125,7 +125,7 @@ test('Phase 4 migration adds kind/settings with a backup, preserves data and is 
 
     // Re-running must not touch data and must not add a second ledger row.
     const second = runMigration({ dbPath, dataDir: dir, backupDir, backup: false });
-    assert.equal(second.schema_version, 7);
+    assert.equal(second.schema_version, 8);
     assert.equal(second.counts.messages, 1);
     assert.equal(second.counts.chats, 1);
     store = new Store(dbPath, dir);

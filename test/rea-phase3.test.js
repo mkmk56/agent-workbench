@@ -72,13 +72,13 @@ test('Phase 3 migration creates four tables, snapshots first and is rerunnable',
     store = new Store(join(dir, 'workbench.db'), dir);
     // Phase 4 adds schema v7 on top of the Phase 3 tables; the Phase 3 script
     // reports whatever the current ledger says.
-    assert.equal(store.schemaVersion(), 7);
+    assert.equal(store.schemaVersion(), 8);
     store.close();
     store = null;
 
     const backupDir = join(dir, 'backups');
     const first = runMigration({ dbPath: join(dir, 'workbench.db'), dataDir: dir, backupDir });
-    assert.equal(first.schema_version, 7);
+    assert.equal(first.schema_version, 8);
     assert.ok(existsSync(first.backup_path), 'pre-migration snapshot exists');
     assert.deepEqual(first.tables, ['agent_wake', 'checkins', 'listener_sessions', 'wake_events']);
 
@@ -97,7 +97,7 @@ test('Phase 3 migration creates four tables, snapshots first and is rerunnable',
     const second = runMigration({
       dbPath: join(dir, 'workbench.db'), dataDir: dir, backupDir, backup: false
     });
-    assert.equal(second.schema_version, 7);
+    assert.equal(second.schema_version, 8);
     assert.equal(second.counts.wake_events, 1);
     assert.equal(second.counts.agent_wake, 1);
     assert.equal(second.counts.checkins, 1);
