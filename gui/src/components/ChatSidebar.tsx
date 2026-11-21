@@ -332,7 +332,7 @@ export function ChatSidebar({ route }: { route: Route }) {
                 </span>
               ))}
               <span className="chat-item__avatar chat-item__avatar--user">
-                <UserRound size={14} strokeWidth={2} />
+                <UserRound size={14} weight={selectedId === chat.chat_id ? 'Filled' : 'Outline'} />
               </span>
             </span>
             <span className="chat-item__name">

@@ -19,7 +19,7 @@ import {
   Save,
   Settings as SettingsIcon,
   UserRound,
-} from 'lucide-react';
+} from './previewLucideIcons';
 import { useMemo, useState, type ReactNode } from 'react';
 import {
   AlertCircle as ReAlertCircle,
@@ -52,11 +52,12 @@ import '../styles/preview-reicon.css';
  * Isolated Lucide ⇄ Reicon comparison page (Phase 4 follow-up, preview only).
  *
  * Route: #/preview/reicon — not linked from the nav rail and not reachable
- * from any production screen. The page is lazy-loaded in App.tsx, so
- * reicon-react stays in its own chunk and the production chat UI keeps using
- * lucide-react untouched. Nothing here is wired to the engine: both panes are
- * static visual mocks of the Phase 4 chat sidebar + chat settings page, built
- * from the same production class names so the comparison is like-for-like.
+ * from any production screen. The page is lazy-loaded in App.tsx, so it keeps
+ * its own chunk out of the main bundle. Nothing here is wired to the engine:
+ * both panes are static visual mocks of the Phase 4 chat sidebar + chat settings
+ * page, built from the same production class names so the comparison is
+ * like-for-like. The left pane draws frozen lucide-react 1.72.0 glyphs (see
+ * ./previewLucideIcons); production screens now use Reicon through ../ui/icons.
  */
 
 type ReiconWeight = 'Outline' | 'Filled';
@@ -92,7 +93,7 @@ type GlyphKey =
 
 type Pack = Record<GlyphKey, Glyph>;
 
-/** The icon set the app ships today (lucide-react 1.72.0). */
+/** The icon set the app shipped before the swap (frozen lucide-react 1.72.0 glyphs). */
 const LUCIDE_PACK: Pack = {
   chats: (props) => (
     <MessagesSquare size={props.size ?? 22} strokeWidth={1.8} className={props.className} aria-hidden="true" />
@@ -537,7 +538,7 @@ export function PreviewReiconPage() {
           <p className="rp-eyebrow">Preview · 独立路由 #/preview/reicon · 不进入生产导航</p>
           <h1>Lucide vs Reicon 图标对比</h1>
           <p className="rp-lede">
-            同一套页面结构：左侧是现有 lucide-react 1.72.0，右侧是试点 reicon-react 1.2.6。
+            同一套页面结构：左侧是替换前的 lucide-react 1.72.0（字形快照），右侧是 reicon-react 1.2.6。
             两边共用 Phase 4 的群会话侧栏与群设置页类名，只有图标实现不同。哑光黑配色与聊天气泡色未改动。
           </p>
         </div>
@@ -579,7 +580,7 @@ export function PreviewReiconPage() {
 
       <p className="rp-note" role="note">
         以下是静态视觉对照，不是可操作界面（按钮、输入框都是占位）。选中态、未读徽标、悬停归档钮都是 Phase 4
-        的真实样式；生产界面的图标与依赖没有改动，lucide-react 仍然保留。
+        的真实样式；本页只作对照参考，生产界面已全部改用 Reicon。
       </p>
 
       <div className="rp-compare">

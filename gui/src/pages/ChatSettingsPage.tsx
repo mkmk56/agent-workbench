@@ -316,7 +316,11 @@ export function ChatSettingsPage({ id }: { id: string }) {
                   disabled={wakeBusy === row.agent || row.status == null}
                   onClick={() => void toggleWake(row)}
                 >
-                  <Power size={12} aria-hidden="true" />
+                  <Power
+                    size={12}
+                    weight={row.status?.enabled === true ? 'Filled' : 'Outline'}
+                    aria-hidden="true"
+                  />
                   {row.status == null
                     ? '不可用'
                     : row.status.enabled

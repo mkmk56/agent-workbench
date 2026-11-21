@@ -8,6 +8,7 @@ import {
   Moon,
   Settings as SettingsIcon,
   Sun,
+  type IconWeight,
 } from '../ui/icons';
 import type { ReactNode } from 'react';
 // The real application icon (Converge「汇聚」, direction A): paper tile +
@@ -27,7 +28,12 @@ type NavEntry = {
   key: string;
   label: string;
   title: string;
-  icon: ReactNode;
+  /**
+   * The rail draws the same glyph twice: Outline at rest, Filled on the active
+   * section (Reicon's filled weight is what the #/preview/reicon comparison
+   * settled on for selected states).
+   */
+  icon: (weight: IconWeight) => ReactNode;
   path: string;
   isSelected: (route: Route) => boolean;
 };
@@ -37,7 +43,7 @@ const ENTRIES: NavEntry[] = [
     key: 'chats',
     label: '群聊',
     title: '群聊',
-    icon: <MessagesSquare size={22} strokeWidth={1.8} />,
+    icon: (weight) => <MessagesSquare size={22} weight={weight} />,
     path: '/chats',
     isSelected: (route) => route.name === 'chats' || route.name === 'chat',
   },
@@ -45,7 +51,7 @@ const ENTRIES: NavEntry[] = [
     key: 'workbench',
     label: '工作台',
     title: '工作台',
-    icon: <LayoutDashboard size={22} strokeWidth={1.8} />,
+    icon: (weight) => <LayoutDashboard size={22} weight={weight} />,
     path: '/tasks',
     isSelected: (route) =>
       (route.name === 'tasks' && route.scope !== 'history') ||
@@ -56,7 +62,7 @@ const ENTRIES: NavEntry[] = [
     key: 'history',
     label: '任务记录',
     title: '任务记录',
-    icon: <History size={22} strokeWidth={1.8} />,
+    icon: (weight) => <History size={22} weight={weight} />,
     path: '/tasks/history',
     isSelected: (route) => route.name === 'tasks' && route.scope === 'history',
   },
@@ -64,7 +70,7 @@ const ENTRIES: NavEntry[] = [
     key: 'files',
     label: '文件',
     title: '文件',
-    icon: <Files size={22} strokeWidth={1.8} />,
+    icon: (weight) => <Files size={22} weight={weight} />,
     path: '/files',
     isSelected: (route) => route.name === 'files',
   },
@@ -74,7 +80,7 @@ const ENTRIES: NavEntry[] = [
     key: 'inbox',
     label: '收件箱',
     title: '收件箱',
-    icon: <Inbox size={22} strokeWidth={1.8} />,
+    icon: (weight) => <Inbox size={22} weight={weight} />,
     path: '/inbox',
     isSelected: (route) => route.name === 'inbox',
   },
@@ -133,7 +139,7 @@ export function GlobalNav({
           title={entry.title}
           onClick={() => navigate(entry.path)}
         >
-          {entry.icon}
+          {entry.icon(entry.isSelected(route) ? 'Filled' : 'Outline')}
         </button>
       ))}
 

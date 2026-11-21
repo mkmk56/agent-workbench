@@ -178,7 +178,11 @@ export function AboutPage() {
           <h2 id="license-title">许可与第三方</h2>
           <p className="about__licenses">
             Agent Workbench 以 MIT 许可证发布。界面组件基于 Astryx（MIT）；品牌图标与字标为项目资产，
-            字标轮廓使用 Inter（SIL OFL 1.1）；界面图标风格参考 Lucide（ISC）。
+            字标轮廓使用 Inter（SIL OFL 1.1）；界面图标使用 Reicon（MIT）。
+          </p>
+          <p className="about__licenses">
+            Icons derived from Solar Icon Set by 480 Design, CC BY 4.0；
+            图标另含 Zappicon 的贡献。
           </p>
         </section>
 

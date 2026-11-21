@@ -58,3 +58,14 @@ scripts/verify-release.mjs 校验安装包、blockmap 与 latest.yml
 - 校验：`npm run verify:release`；CI 会对构建产物和 Release 下载产物各校验一次。
 - 发版：推送 `v*` tag 触发 `.github/workflows/release.yml`；预发布 tag（如 `v0.1.0-rc.2`）自动标记为 prerelease。
 - 更新验证：安装包支持 `--print-version`、`--update-verify --update-channel=prerelease`，配合 `AGENT_WORKBENCH_UPDATE_TRACE` 记录检查/下载/安装耗时。细节见 `docs/RELEASE_PIPELINE.md`。
+
+## 图标与第三方许可
+
+- 界面图标：Reicon（MIT，`reicon-react`）。图标派生自 Solar Icon Set：
+  **Icons derived from Solar Icon Set by 480 Design, CC BY 4.0**
+  （许可证：https://creativecommons.org/licenses/by/4.0/）。
+- 图标集另含 Zappicon 的贡献，一并致谢。
+- 组件库 Astryx（MIT）；品牌图标与字标为项目资产；字标轮廓使用 Inter（SIL OFL 1.1）。
+- `#/preview/reicon` 对照页左栏保留替换前的 Lucide 字形快照（`src/pages/previewLucideIcons.tsx`），
+  复制自 lucide-react 1.72.0：ISC License，Copyright (c) 2026 Lucide Icons and Contributors。
+  生产界面已不再引用它；`lucide-react` 仍会随 Astryx 主题包作为传递依赖存在。

@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   Terminal,
   UserCog,
+  type IconWeight,
 } from '../ui/icons';
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -59,14 +60,15 @@ import {
 
 type SectionId = 'credentials' | 'engine' | 'executors' | 'agents' | 'hud' | 'updates' | 'data';
 
-const SECTIONS: Array<{ id: SectionId; label: string; icon: ReactNode }> = [
-  { id: 'credentials', label: '凭据', icon: <KeyRound size={15} /> },
-  { id: 'engine', label: '引擎', icon: <Server size={15} /> },
-  { id: 'executors', label: '执行器', icon: <Terminal size={15} /> },
-  { id: 'agents', label: 'Agent 管理', icon: <UserCog size={15} /> },
-  { id: 'hud', label: 'Agent HUD', icon: <Bot size={15} /> },
-  { id: 'updates', label: '更新', icon: <RefreshCw size={15} /> },
-  { id: 'data', label: '数据', icon: <Database size={15} /> },
+/** Section tabs draw Outline at rest and Filled for the section in view. */
+const SECTIONS: Array<{ id: SectionId; label: string; icon: (weight: IconWeight) => ReactNode }> = [
+  { id: 'credentials', label: '凭据', icon: (weight) => <KeyRound size={15} weight={weight} /> },
+  { id: 'engine', label: '引擎', icon: (weight) => <Server size={15} weight={weight} /> },
+  { id: 'executors', label: '执行器', icon: (weight) => <Terminal size={15} weight={weight} /> },
+  { id: 'agents', label: 'Agent 管理', icon: (weight) => <UserCog size={15} weight={weight} /> },
+  { id: 'hud', label: 'Agent HUD', icon: (weight) => <Bot size={15} weight={weight} /> },
+  { id: 'updates', label: '更新', icon: (weight) => <RefreshCw size={15} weight={weight} /> },
+  { id: 'data', label: '数据', icon: (weight) => <Database size={15} weight={weight} /> },
 ];
 
 export function SettingsPage() {
@@ -554,7 +556,7 @@ export function SettingsPage() {
               className={activeSection === section.id ? 'is-active' : undefined}
               onClick={() => scrollTo(section.id)}
             >
-              {section.icon}
+              {section.icon(activeSection === section.id ? 'Filled' : 'Outline')}
               {section.label}
             </button>
           ))}
