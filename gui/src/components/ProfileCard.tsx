@@ -1,4 +1,10 @@
-import { CircleAlert, Loader2, Pencil, Save, X } from 'lucide-react';
+import {
+  CircleAlert,
+  Loader2,
+  Pencil,
+  Save,
+  X,
+} from '../ui/icons';
 import { useCallback, useEffect, useState } from 'react';
 import {
   agentProfileOnce,

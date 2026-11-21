@@ -1,4 +1,10 @@
-import { ArrowLeft, CircleAlert, Power, RefreshCw, Save } from 'lucide-react';
+import {
+  ArrowLeft,
+  CircleAlert,
+  Power,
+  RefreshCw,
+  Save,
+} from '../ui/icons';
 import { useCallback, useEffect, useState } from 'react';
 import {
   listChatsOnce,

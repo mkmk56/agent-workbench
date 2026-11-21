@@ -1,4 +1,10 @@
-import { ChevronRight, Plus, RefreshCw, Server, Terminal } from 'lucide-react';
+import {
+  ChevronRight,
+  Plus,
+  RefreshCw,
+  Server,
+  Terminal,
+} from '../ui/icons';
 import { useMemo, useState } from 'react';
 import { PageHead, Panel, RailCard } from '../components/Layout';
 import { startEngine, useAgentInfo, useEngineStatus, useTaskList } from '../lib/engine';

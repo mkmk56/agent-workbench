@@ -1,4 +1,13 @@
-import { Eye, EyeOff, MoreHorizontal, Pencil, Search, Settings as SettingsIcon, Users, X } from 'lucide-react';
+import {
+  Eye,
+  EyeOff,
+  MoreHorizontal,
+  Pencil,
+  Search,
+  Settings as SettingsIcon,
+  Users,
+  X,
+} from '../ui/icons';
 import { useState } from 'react';
 import {
   normalizeAgentState,

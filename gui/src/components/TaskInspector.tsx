@@ -10,7 +10,7 @@ import {
   Send,
   Timer,
   X,
-} from 'lucide-react';
+} from '../ui/icons';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   cancelTask,

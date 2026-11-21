@@ -10,7 +10,7 @@ import {
   ListChecks,
   Undo2,
   UserRound,
-} from 'lucide-react';
+} from '../ui/icons';
 import { useEffect, useState, type ReactNode } from 'react';
 import claudeMark from '../assets/sidebar/claude-mark.png';
 import dshMark from '../assets/sidebar/dsh-mark.png';

@@ -1,4 +1,7 @@
-import { ExternalLink, RefreshCw } from 'lucide-react';
+import {
+  ExternalLink,
+  RefreshCw,
+} from '../ui/icons';
 import logoInverse from '@brand/logo/logo-inverse.svg';
 import logoPrimary from '@brand/logo/logo-primary.svg';
 import { useState } from 'react';

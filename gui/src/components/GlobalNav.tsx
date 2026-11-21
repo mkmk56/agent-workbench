@@ -1,4 +1,14 @@
-import { Files, History, Inbox, Info, LayoutDashboard, MessagesSquare, Moon, Settings as SettingsIcon, Sun } from 'lucide-react';
+import {
+  Files,
+  History,
+  Inbox,
+  Info,
+  LayoutDashboard,
+  MessagesSquare,
+  Moon,
+  Settings as SettingsIcon,
+  Sun,
+} from '../ui/icons';
 import type { ReactNode } from 'react';
 // The real application icon (Converge「汇聚」, direction A): paper tile +
 // 10% ink hairline, Y arms 72/512, node r=56/512. This is the same mark as

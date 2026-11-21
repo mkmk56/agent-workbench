@@ -1,4 +1,11 @@
-import { CircleAlert, Files, PanelLeft, RefreshCw, Search, Upload } from 'lucide-react';
+import {
+  CircleAlert,
+  Files,
+  PanelLeft,
+  RefreshCw,
+  Search,
+  Upload,
+} from '../ui/icons';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { FileCard } from '../components/FileCard';
 import {

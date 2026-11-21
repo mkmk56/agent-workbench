@@ -1,4 +1,12 @@
-import { CircleAlert, CornerUpLeft, Paperclip, Send, Smile, Timer, X } from 'lucide-react';
+import {
+  CircleAlert,
+  CornerUpLeft,
+  Paperclip,
+  Send,
+  Smile,
+  Timer,
+  X,
+} from '../ui/icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { sendChatMessage, uploadChatFiles, type ChatStatus } from '../lib/chat';

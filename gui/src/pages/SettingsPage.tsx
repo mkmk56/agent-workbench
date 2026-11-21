@@ -11,7 +11,7 @@ import {
   ShieldCheck,
   Terminal,
   UserCog,
-} from 'lucide-react';
+} from '../ui/icons';
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Notice } from '../components/Layout';

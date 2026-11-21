@@ -1,4 +1,7 @@
-import { BellRing, X } from 'lucide-react';
+import {
+  BellRing,
+  X,
+} from '../ui/icons';
 import { useCallback, useEffect, useState } from 'react';
 import { useEngineEventSignal } from '../lib/engine';
 import { formatRelative } from '../lib/labels';

@@ -14,7 +14,7 @@ import {
   ShieldAlert,
   Terminal,
   Timer,
-} from 'lucide-react';
+} from '../ui/icons';
 import { useMemo } from 'react';
 import type { ReactNode } from 'react';
 import { copyText } from '../lib/workbench';

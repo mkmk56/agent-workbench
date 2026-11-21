@@ -1,4 +1,11 @@
-import { AlertTriangle, ArrowLeft, Copy, Database, RefreshCw, Send } from 'lucide-react';
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Copy,
+  Database,
+  RefreshCw,
+  Send,
+} from '../ui/icons';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { InlineCode, Notice, RailCard } from '../components/Layout';
 import { ConversationPanel } from '../components/ConversationPanel';

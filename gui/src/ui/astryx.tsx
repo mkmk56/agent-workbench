@@ -14,7 +14,7 @@ import {
   TextInput,
   proportional,
 } from '@astryxdesign/core';
-import { Search } from 'lucide-react';
+import { Search } from './icons';
 import type { ReactNode } from 'react';
 
 export type ActionTone = 'primary' | 'secondary' | 'ghost' | 'danger';

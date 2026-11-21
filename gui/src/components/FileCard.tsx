@@ -8,7 +8,7 @@ import {
   File as FileIcon,
   Image as ImageIcon,
   Trash2,
-} from 'lucide-react';
+} from '../ui/icons';
 import { useState } from 'react';
 import type { ChatFile } from '../lib/chat';
 import { deleteChatFile } from '../lib/chat';

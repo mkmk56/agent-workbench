@@ -1,4 +1,10 @@
-import { Circle, Hourglass, Mail, Play, TriangleAlert } from 'lucide-react';
+import {
+  Circle,
+  Hourglass,
+  Mail,
+  Play,
+  TriangleAlert,
+} from '../ui/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';

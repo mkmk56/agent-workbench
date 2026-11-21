@@ -1,4 +1,4 @@
-import { UserRound } from 'lucide-react';
+import { UserRound } from '../ui/icons';
 import claudeMark from '../assets/sidebar/claude-mark.png';
 import dshMark from '../assets/sidebar/dsh-mark.png';
 import museMark from '../assets/sidebar/muse-mark.png';

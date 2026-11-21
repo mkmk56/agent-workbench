@@ -1,4 +1,7 @@
-import { ArrowLeft, Send } from 'lucide-react';
+import {
+  ArrowLeft,
+  Send,
+} from '../ui/icons';
 import { useEffect, useMemo, useState } from 'react';
 import { Notice, PageHead, RailCard } from '../components/Layout';
 import { startEngine, startTask, useAgentInfo, useEngineStatus } from '../lib/engine';

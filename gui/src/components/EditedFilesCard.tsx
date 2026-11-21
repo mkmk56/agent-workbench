@@ -1,4 +1,7 @@
-import { FilePenLine, Paperclip } from 'lucide-react';
+import {
+  FilePenLine,
+  Paperclip,
+} from '../ui/icons';
 import type { ChatFile } from '../lib/chat';
 import {
   editedCardExtras,

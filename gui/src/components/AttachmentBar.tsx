@@ -1,4 +1,8 @@
-import { File as FileIcon, Image as ImageIcon, X } from 'lucide-react';
+import {
+  File as FileIcon,
+  Image as ImageIcon,
+  X,
+} from '../ui/icons';
 import { useEffect, useState } from 'react';
 
 export interface AttachmentDraft {

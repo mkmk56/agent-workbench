@@ -8,7 +8,7 @@ import {
   RefreshCw,
   RotateCcw,
   UserRound,
-} from 'lucide-react';
+} from '../ui/icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   chatInboxOnce,

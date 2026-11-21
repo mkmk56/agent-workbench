@@ -1,4 +1,11 @@
-import { CircleAlert, RefreshCw, Trash2, UserPlus, Users, X } from 'lucide-react';
+import {
+  CircleAlert,
+  RefreshCw,
+  Trash2,
+  UserPlus,
+  Users,
+  X,
+} from '../ui/icons';
 import { useEffect, useMemo, useState } from 'react';
 import { addChatMember, removeChatMember, type ChatMember } from '../lib/chat';
 import { formatRelative } from '../lib/labels';

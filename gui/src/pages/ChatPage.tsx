@@ -1,4 +1,8 @@
-import { CircleAlert, MessagesSquare, Plus } from 'lucide-react';
+import {
+  CircleAlert,
+  MessagesSquare,
+  Plus,
+} from '../ui/icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AgentMentionMenu } from '../components/AgentMentionMenu';
 import { ChatHeader } from '../components/ChatHeader';

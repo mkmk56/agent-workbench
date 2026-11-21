@@ -1,4 +1,8 @@
-import { ChevronUp, MessageSquare, RefreshCw } from 'lucide-react';
+import {
+  ChevronUp,
+  MessageSquare,
+  RefreshCw,
+} from '../ui/icons';
 import { useEffect, useMemo, useRef } from 'react';
 import { buildChatStream, type StreamItem } from '../lib/chat-panels';
 import type { ChatMessage, ChatStatus } from '../lib/chat';
