@@ -15,10 +15,15 @@
  *
  * Slots with no exact Reicon counterpart (recorded in the migration report, not
  * forced): Bot -> Cpu, Circle -> Record, FileClock -> FileText,
- * FileSpreadsheet -> DocumentText2, UserCog -> UserEdit, ExternalLink -> Export5.
+ * FileSpreadsheet -> DocumentText2, UserCog -> UserEdit, ExternalLink ->
+ * SquareArrowRightUp. `PanelLeftOpen` has no mirrored twin in Reicon either, so
+ * it reuses the `SidebarLeft` glyph flipped 180° — the same treatment the
+ * #/preview/reicon comparison used for the expanded-rail row.
  *
  * Icons derived from the Solar Icon Set by 480 Design (CC BY 4.0), see README.
  */
+import { createElement } from 'react';
+import { SidebarLeft, type IconProps } from 'reicon-react';
 
 export { WavePulse as Activity } from 'reicon-react';
 export { AlarmClock } from 'reicon-react';
@@ -43,7 +48,7 @@ export { ArrowToDownRight as CornerDownRight } from 'reicon-react';
 export { ArrowToTopLeft as CornerUpLeft } from 'reicon-react';
 export { Database } from 'reicon-react';
 export { Download } from 'reicon-react';
-export { Export5 as ExternalLink } from 'reicon-react';
+export { SquareArrowRightUp as ExternalLink } from 'reicon-react';
 export { Eye } from 'reicon-react';
 export { EyeOff } from 'reicon-react';
 export { File } from 'reicon-react';
@@ -70,7 +75,14 @@ export { Moon } from 'reicon-react';
 export { MoreH as MoreHorizontal } from 'reicon-react';
 export { Sidebar as PanelLeft } from 'reicon-react';
 export { SidebarLeft as PanelLeftClose } from 'reicon-react';
-export { SidebarLeft as PanelLeftOpen } from 'reicon-react';
+
+/** Lucide's mirrored twin (`panel-left-open`) flipped in place; see the note above. */
+export function PanelLeftOpen(props: IconProps) {
+  return createElement(SidebarLeft, {
+    ...props,
+    style: { transform: 'rotate(180deg)', ...props.style },
+  });
+}
 export { Paperclip } from 'reicon-react';
 export { Pen as Pencil } from 'reicon-react';
 export { Play } from 'reicon-react';
