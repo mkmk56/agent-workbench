@@ -624,6 +624,12 @@ export class AgentService {
     }
     const member = this.store.getChatMember(chatId, canonical);
     if (!member) throw new ProtocolError('member_not_found', 404, `agent is not in chat ${chatId}`);
+    // Phase 5: an admin must be demoted first. Removing an admin outright would
+    // silently undo an owner decision; the explicit path is chat_set_role.
+    if (member.role === 'admin') {
+      throw new ProtocolError('cannot_remove_admin', 403,
+        'demote the admin to member with chat_set_role before removing them');
+    }
     this.store.deleteChatMember(chatId, canonical);
     this.store.deleteChatParticipant(chatId, participantForAgentId(canonical));
     this.store.deleteInboxCursor(chatId, canonical);

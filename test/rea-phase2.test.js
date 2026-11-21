@@ -75,7 +75,7 @@ test('Phase 2 migration adds the tables, backfills built-ins/members/cursors and
     assert.ok(chatColumns.includes('category'));
     assert.ok(chatColumns.includes('visibility'));
     // Phase 3 adds v6 and Phase 4 adds v7; the Phase 2 tables are still applied.
-    assert.equal(store.schemaVersion(), 7);
+    assert.equal(store.schemaVersion(), 8);
     store.close();
     store = null;
 
@@ -83,7 +83,7 @@ test('Phase 2 migration adds the tables, backfills built-ins/members/cursors and
     const first = runMigration({
       dbPath: services.config.dbPath, dataDir: dir, backupDir, readToMax: true
     });
-    assert.equal(first.schema_version, 7);
+    assert.equal(first.schema_version, 8);
     assert.ok(existsSync(first.backup_path), 'a consistent pre-migration snapshot exists');
     assert.deepEqual(first.tables, ['agents', 'chat_members', 'inbox_cursors', 'pairing_code_uses', 'pairing_codes']);
     assert.equal(first.counts.agents, 3, 'muse/claude/dsh built-ins are seeded');
@@ -91,7 +91,7 @@ test('Phase 2 migration adds the tables, backfills built-ins/members/cursors and
     assert.ok(first.counts.inbox_cursors >= 3);
 
     reopened = new Store(services.config.dbPath, dir);
-    assert.equal(reopened.schemaVersion(), 7);
+    assert.equal(reopened.schemaVersion(), 8);
     for (const id of ['agent_muse', 'agent_claude', 'agent_dsh']) {
       assert.ok(reopened.getAgent(id), `${id} exists`);
     }
@@ -723,18 +723,25 @@ test('P1-1 reconciliation repairs missing membership and inbox rows', () => {
   }
 });
 
-test('create_chat stores a category and always creates a link-visible chat', async () => {
+test('create_chat stores a category and defaults to a private chat', async () => {
   const dir = tempDir();
   const services = makeServices(dir);
   const { store } = services;
   try {
     const tools = makeToolRunner(services, authMaster);
-    const created = await tools.invoke('create_chat', { name: 'Research', category: 'research' });
+    const created = await tools.invoke('create_chat', { name: 'Research', category: '研究' });
     const body = payload(created);
-    assert.equal(body.category, 'research');
-    assert.equal(body.visibility, 'link');
-    assert.equal(store.getChat(body.chat_id).visibility, 'link');
-    assert.equal(store.getChat(body.chat_id).category, 'research');
+    assert.equal(body.category, '研究');
+    // Phase 5 default is the strictest tier; explicit visibility still works.
+    assert.equal(body.visibility, 'private');
+    assert.equal(store.getChat(body.chat_id).visibility, 'private');
+    assert.equal(store.getChat(body.chat_id).category, '研究');
+
+    const linked = payload(await tools.invoke('create_chat', {
+      name: 'Linked', visibility: 'link'
+    }));
+    assert.equal(linked.visibility, 'link');
+    assert.equal(store.getChat(linked.chat_id).visibility, 'link');
   } finally {
     cleanup(dir, store);
   }

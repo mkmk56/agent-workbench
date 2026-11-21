@@ -5,10 +5,10 @@ import { fileRef } from './context.js';
 import {
   ProtocolError, agentIdForParticipant, describeAuthor, isAgentParticipant, isKnownParticipant
 } from './agents.js';
+import { isChatCategory, isChatVisibility } from './community.js';
 
 export const DEFAULT_CHAT_NAME = '新群聊';
 const NAME_MAX = 200;
-const CATEGORY_MAX = 40;
 const SETTINGS_DESCRIPTION_MAX = 2000;
 const SETTINGS_ANNOUNCEMENT_MAX = 4000;
 const CHAT_STATUSES = new Set(['active', 'archived']);
@@ -83,7 +83,7 @@ export class ChatService {
     return chat;
   }
 
-  create({ name, category = null } = {}) {
+  create({ name, category = null, visibility = 'private' } = {}) {
     if (name !== undefined && name !== null && typeof name !== 'string') {
       throw new Error('name must be a string');
     }
@@ -93,10 +93,16 @@ export class ChatService {
     if (category !== undefined && category !== null) {
       if (typeof category !== 'string') throw new Error('category must be a string');
       categoryValue = category.trim();
-      if (categoryValue.length > CATEGORY_MAX) {
-        throw new Error(`category must be at most ${CATEGORY_MAX} characters`);
+      if (categoryValue === '') {
+        categoryValue = null;
+      } else if (!isChatCategory(categoryValue)) {
+        throw new ProtocolError('invalid_category', 400,
+          'category is not one of the supported labels');
       }
-      if (categoryValue === '') categoryValue = null;
+    }
+    if (!isChatVisibility(visibility)) {
+      throw new ProtocolError('invalid_visibility', 400,
+        'visibility must be private, link or public');
     }
     const now = new Date().toISOString();
     const chat = this.store.insertChat({
@@ -107,9 +113,9 @@ export class ChatService {
       status: 'active',
       epoch: 0,
       category: categoryValue,
-      // Public visibility is a local-only setting in Phase 2; the API always
-      // creates link-visible chats.
-      visibility: 'link'
+      // Phase 5 default is the strictest tier; existing chats keep whatever
+      // visibility they already have (the 7 live chats stay 'link').
+      visibility
     });
     // The human and the Muse coordinator belong to every chat. Executors join
     // on their first mention/dispatch (see MessageService._ensureParticipants),
@@ -439,6 +445,10 @@ export class ChatService {
     request_id: requestId, auth
   } = {}) {
     const chat = this.requireChat(chatId);
+    if (from === 'system') {
+      throw new ProtocolError('invalid_sender', 400,
+        "from='system' is reserved for internal system notices");
+    }
     // The tool surface resolves the sender here first, so a forged `from` must
     // be audited on this path too (M1), through MessageService's single-write
     // denial helper.

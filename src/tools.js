@@ -5,10 +5,13 @@ import {
   requireMaster, requireOperator
 } from './auth.js';
 import {
-  AgentService, agentIdForParticipant, participantForAgentId
+  AgentService, ProtocolError, agentIdForParticipant, participantForAgentId
 } from './agents.js';
 import { auditEvent } from './audit.js';
 import { computeCheckin } from './events.js';
+import {
+  CHAT_CATEGORIES, CommunityService, looksTokenLike
+} from './community.js';
 
 const asText = (value) => ({
   content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }]
@@ -72,13 +75,21 @@ function summarizeResult(result) {
   return text ? truncate(text.replace(/\s+/g, ' '), 160) : 'ok';
 }
 
-export function registerTools(server, { scheduler, store, messages, approvals, chats, files, config, agents = null, wake = null }, auth = { master: true, participant: 'user', token_kind: 'master' }) {
+export function registerTools(server, {
+  scheduler, store, messages, approvals, chats, files, config, agents = null, wake = null,
+  community = null
+}, auth = { master: true, participant: 'user', token_kind: 'master' }) {
   const master = isMaster(auth);
   const readAll = isReadAll(auth);
   const requestId = auth?.request_id || '-';
   // Phase 2 tools need the agent service; constructing a lightweight one from
   // the store keeps older test harnesses working without new wiring.
   const agentService = agents ?? new AgentService({ store, config });
+  // Phase 5 community service. Production passes one shared instance (it holds
+  // the list_public_chats rate window); test harnesses may omit it.
+  const communityService = community ?? new CommunityService({
+    store, config, agents: agentService, messages
+  });
 
   const auditDenied = (fields) => {
     auditEvent(config?.dataDir ?? store?.dataDir, 'access_denied', {
@@ -123,6 +134,51 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
       });
       throw new Error(`${action} requires a human or master token`);
     }
+  };
+
+  // Phase 5 narrowed role helper (design D5/S2). human/master pass; an
+  // agent-task token is always 403 regardless of the chat it is bound to; a
+  // paired/static agent must hold one of the requested chat roles.
+  const requireChatRole = (chatId, roles, action) => {
+    if (master || auth?.role === 'human') return { role: 'owner' };
+    const deny = (reason) => {
+      auditDenied({
+        surface: `tool:${action}`,
+        code: 'not_admin',
+        status: 403,
+        chat_id: chatId,
+        principal_id: auth?.agent_id ?? auth?.participant ?? 'unknown',
+        detail: reason
+      });
+      const error = new ProtocolError('not_admin', 403, reason);
+      error.audited = true;
+      return error;
+    };
+    if (auth?.token_kind === 'agent-task') {
+      throw deny(`${action} is not available to agent-task tokens`);
+    }
+    if (auth?.role !== 'agent') {
+      throw deny(`${action} requires a human/master or chat admin token`);
+    }
+    const agentId = auth.agent_id ?? agentIdForParticipant(auth.participant);
+    const member = store.getChatMember(chatId, agentId);
+    if (!member || !roles.includes(member.role)) {
+      throw deny(`${action} requires role ${roles.join(' or ')} in chat ${chatId}`);
+    }
+    return member;
+  };
+
+  // Token-like content is refused on every community write surface so a
+  // credential can never land in a chat name, description or application text.
+  const rejectTokenLike = (value, { chatId = null, tool, field }) => {
+    if (!looksTokenLike(value)) return;
+    auditEvent(config?.dataDir ?? store?.dataDir, 'token_like_rejected', {
+      chat_id: chatId ?? undefined,
+      tool,
+      field,
+      principal_id: auth?.agent_id ?? auth?.participant ?? 'unknown'
+    });
+    throw new ProtocolError('invalid_content', 400, `${field} looks like a credential`);
   };
 
   const register = (name, meta, handler) => {
@@ -386,27 +442,30 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
 
   // ------------------------------------------------------------------ chats
   register('create_chat', {
-    description: 'Create a group chat. Human or master token only. Returns the new chat with epoch 0.',
+    description: 'Create a group chat. Human or master token only. Returns the new chat with epoch 0. '
+      + 'visibility defaults to private; public means "visible on the local discovery page", never published externally.',
     inputSchema: {
       name: z.string().max(200).optional().describe('Chat name; defaults to 新群聊'),
-      category: z.string().max(40).optional()
-        .describe('Optional category label. visibility is always link; public is local-only and not exposed here.')
+      category: z.enum(CHAT_CATEGORIES).nullable().optional().describe('Category label (10-value enum)'),
+      visibility: z.enum(['private', 'link', 'public']).optional()
+        .describe('private (default) | link (invite code) | public (local discovery page only)')
     }
-  }, async ({ name, category }) => {
+  }, async ({ name, category, visibility }) => {
     try {
       requireChatAdmin('create_chat');
-      const chat = chats.create({ name, category });
+      rejectTokenLike(name, { tool: 'create_chat', field: 'name' });
+      const chat = chats.create({ name, category, visibility });
       return asText({
         chat_id: chat.chat_id,
         name: chat.name,
         category: chat.category ?? null,
-        visibility: chat.visibility ?? 'link',
+        visibility: chat.visibility ?? 'private',
         settings: chat.settings ?? {},
         epoch: chat.epoch,
         created_at: chat.created_at
       });
     } catch (error) {
-      return asError(error.message);
+      return serviceError(error);
     }
   });
 
@@ -441,15 +500,24 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
   }, async ({ chat_id, name }) => {
     try {
       requireChatAdmin('rename_chat');
-      return asText(chats.rename({ chat_id, name }));
+      rejectTokenLike(name, { chatId: chat_id, tool: 'rename_chat', field: 'name' });
+      const before = store.getChat(chat_id);
+      const renamed = chats.rename({ chat_id, name });
+      auditEvent(config?.dataDir ?? store?.dataDir, 'chat_renamed', {
+        chat_id,
+        old_name: before?.name ?? null,
+        new_name: renamed.name,
+        by: auth?.agent_id ?? auth?.participant ?? 'unknown'
+      });
+      return asText(renamed);
     } catch (error) {
-      return asError(error.message);
+      return serviceError(error);
     }
   });
 
   register('chat_update_settings', {
     description: 'Update a group chat description and/or announcement. Fields are stored as one JSON object in '
-      + 'chats.settings; null clears a field. Human or master token only.',
+      + 'chats.settings; null clears a field. Human/master or a chat admin may update content.',
     inputSchema: {
       chat_id: z.string().min(1).describe('Chat id'),
       description: z.string().max(2000).nullable().optional().describe('Chat description; null clears it'),
@@ -457,10 +525,25 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     }
   }, async ({ chat_id, description, announcement }) => {
     try {
-      requireChatAdmin('chat_update_settings');
-      return asText(chats.updateSettings({ chat_id, description, announcement }));
+      requireChatRole(chat_id, ['owner', 'admin'], 'chat_update_settings');
+      rejectTokenLike(description, {
+        chatId: chat_id, tool: 'chat_update_settings', field: 'description'
+      });
+      rejectTokenLike(announcement, {
+        chatId: chat_id, tool: 'chat_update_settings', field: 'announcement'
+      });
+      const updated = chats.updateSettings({ chat_id, description, announcement });
+      const fields = [];
+      if (description !== undefined) fields.push('description');
+      if (announcement !== undefined) fields.push('announcement');
+      auditEvent(config?.dataDir ?? store?.dataDir, 'chat_settings_updated', {
+        chat_id,
+        by: auth?.agent_id ?? auth?.participant ?? 'unknown',
+        fields: fields.join(',')
+      });
+      return asText(updated);
     } catch (error) {
-      return asError(error.message);
+      return serviceError(error);
     }
   });
 
@@ -1156,6 +1239,248 @@ export function registerTools(server, { scheduler, store, messages, approvals, c
     try {
       requireChatAdmin('chat_remove_member');
       return asText(agentService.removeMember({ chatId: chat_id, agentId: agent_id }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  // -------------------------------------------------- REA Phase 5 community
+  register('chat_set_visibility', {
+    description: 'Set a chat visibility tier: private (members only), link (invite code required) or '
+      + 'public (visible on the local discovery page only; never published externally). Human/master only. '
+      + 'Switching to private auto-declines pending requests, revokes active invites and notifies applicants.',
+    inputSchema: {
+      chat_id: z.string().min(1).describe('Chat id'),
+      visibility: z.enum(['private', 'link', 'public']).describe('New visibility tier')
+    }
+  }, async ({ chat_id, visibility }) => {
+    try {
+      return asText(communityService.setVisibility({ auth, chatId: chat_id, visibility }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('chat_set_category', {
+    description: 'Set a chat category from the fixed 10-value list, or null to clear it. Human/master or a '
+      + 'chat admin may change it.',
+    inputSchema: {
+      chat_id: z.string().min(1).describe('Chat id'),
+      category: z.enum(CHAT_CATEGORIES).nullable().describe('Category label; null clears it')
+    }
+  }, async ({ chat_id, category }) => {
+    try {
+      return asText(communityService.setCategory({ auth, chatId: chat_id, category }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('group_invite_create', {
+    description: 'Create a group invite code (32-hex, at least 128-bit). The code is returned once and only '
+      + 'its SHA-256 hash is stored. Human/master owner only; link/public chats only.',
+    inputSchema: {
+      chat_id: z.string().min(1).describe('Chat id'),
+      ttl_hours: z.number().min(1).max(168).optional().describe('Validity in hours; default 24'),
+      max_uses: z.number().int().min(1).max(50).optional().describe('Maximum uses; default 10')
+    }
+  }, async ({ chat_id, ttl_hours, max_uses }) => {
+    try {
+      return asText(communityService.createInvite({
+        auth, chatId: chat_id, ttlHours: ttl_hours, maxUses: max_uses
+      }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('group_invite_revoke', {
+    description: 'Revoke a group invite. Pending requests that used it are auto-declined and their applicants '
+      + 'notified. Human/master owner only.',
+    inputSchema: {
+      invite_id: z.string().min(1).describe('Invite id')
+    }
+  }, async ({ invite_id }) => {
+    try {
+      return asText(communityService.revokeInvite({ auth, inviteId: invite_id }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('group_invite_list', {
+    description: 'List group invites (id, chat, uses, expiry, revocation). Never returns the code or its hash. '
+      + 'Human/master owner only.',
+    inputSchema: {
+      chat_id: z.string().min(1).optional().describe('Limit to one chat; omit for all chats'),
+      limit: z.number().int().min(1).max(500).optional(),
+      offset: z.number().int().min(0).optional()
+    }
+  }, async ({ chat_id, limit, offset }) => {
+    try {
+      return asText(communityService.listInvites({
+        auth, chatId: chat_id, limit, offset
+      }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('group_invite_preview', {
+    description: 'Preview a group behind an invite code: name, category, description and member count. '
+      + 'Invalid codes return the same 404 as a missing/private chat and count against the attempt limit. '
+      + 'Human/master or a paired agent token; agent-task tokens are rejected.',
+    inputSchema: {
+      chat_id: z.string().min(1).describe('Chat id'),
+      invite_code: z.string().min(1).describe('Invite code')
+    }
+  }, async ({ chat_id, invite_code }) => {
+    try {
+      return asText(communityService.previewInvite({
+        auth, chatId: chat_id, inviteCode: invite_code
+      }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('chat_join_request', {
+    description: 'Ask to join a chat. The applicant identity is derived from the bearer token; applicant_id is '
+      + 'never accepted. Link chats require invite_code. Human/master cannot apply on behalf of an agent.',
+    inputSchema: {
+      chat_id: z.string().min(1).describe('Chat id'),
+      invite_code: z.string().min(1).optional().describe('Invite code (required for link chats)'),
+      message: z.string().max(500).optional().describe('Optional note for the owner; plain text')
+    }
+  }, async ({ chat_id, invite_code, message }) => {
+    try {
+      return asText(communityService.requestJoin({
+        auth, chatId: chat_id, inviteCode: invite_code, message
+      }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('chat_join_approve', {
+    description: 'Approve one pending join request. Runs in a single transaction: conditional status update, '
+      + 'member insert, invite consumption, system notice and applicant notice. Human/master owner only.',
+    inputSchema: {
+      request_id: z.string().min(1).describe('Join request id')
+    }
+  }, async ({ request_id }) => {
+    try {
+      return asText(communityService.approveJoin({ auth, requestId: request_id }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('chat_join_decline', {
+    description: 'Decline one pending join request with an optional reason (max 200 chars, shown to the '
+      + 'applicant). Human/master owner only.',
+    inputSchema: {
+      request_id: z.string().min(1).describe('Join request id'),
+      reason: z.string().max(200).optional().describe('Short reason shown to the applicant')
+    }
+  }, async ({ request_id, reason }) => {
+    try {
+      return asText(communityService.declineJoin({ auth, requestId: request_id, reason }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('chat_join_list', {
+    description: 'List join requests. Human/master see everything; a chat admin must pass that chat_id; an '
+      + 'applicant is always filtered to its own requests. agent-task tokens must pass their bound chat.',
+    inputSchema: {
+      chat_id: z.string().min(1).optional().describe('Chat id; omit for all chats (human/master only)'),
+      status: z.enum(['pending', 'approved', 'declined']).optional(),
+      limit: z.number().int().min(1).max(500).optional(),
+      offset: z.number().int().min(0).optional()
+    }
+  }, async ({ chat_id, status, limit, offset }) => {
+    try {
+      return asText(communityService.listJoinRequests({
+        auth, chatId: chat_id, status, limit, offset
+      }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('chat_join_notices', {
+    description: 'Read join-request notifications. Owners/admins may read a chat\'s notices; an applicant sees '
+      + 'only its own. mark_read only affects the caller\'s own notices.',
+    inputSchema: {
+      chat_id: z.string().min(1).optional().describe('Chat id; omit for all chats (human/master only)'),
+      read: z.boolean().optional().describe('true: read only; false: unread only'),
+      limit: z.number().int().min(1).max(500).optional(),
+      offset: z.number().int().min(0).optional(),
+      mark_read: z.enum(['one', 'all']).optional().describe('Mark one notice or all own notices as read'),
+      notice_id: z.string().min(1).optional().describe('Required when mark_read=one')
+    }
+  }, async ({ chat_id, read, limit, offset, mark_read, notice_id }) => {
+    try {
+      return asText(communityService.listJoinNotices({
+        auth, chatId: chat_id, read, markRead: mark_read, noticeId: notice_id, limit, offset
+      }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('list_public_chats', {
+    description: 'List chats marked public on this machine (metadata only: name, category, description, member '
+      + 'count). Local discovery, never an external directory. Human/master or a paired agent token; agent-task '
+      + 'tokens are rejected.',
+    inputSchema: {
+      category: z.enum([...CHAT_CATEGORIES, 'uncategorized']).optional()
+        .describe('Filter by category; uncategorized matches NULL'),
+      q: z.string().max(40).optional().describe('Name/description prefix match'),
+      limit: z.number().int().min(1).max(500).optional(),
+      offset: z.number().int().min(0).optional()
+    }
+  }, async ({ category, q, limit, offset }) => {
+    try {
+      return asText(communityService.listPublicChats({
+        auth, category, q, limit, offset
+      }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('list_agents', {
+    description: 'List agents. Human/master see every agent; an agent token sees itself and agents sharing a '
+      + 'chat. agent-task tokens are limited to their bound chat. Includes profile and chat_count.',
+    inputSchema: {
+      limit: z.number().int().min(1).max(500).optional().describe('Default 50'),
+      offset: z.number().int().min(0).optional(),
+      status: z.enum(['active', 'revoked', 'disabled']).optional()
+    }
+  }, async ({ limit, offset, status }) => {
+    try {
+      return asText(communityService.listAgents({ auth, limit, offset, status }));
+    } catch (error) {
+      return serviceError(error);
+    }
+  });
+
+  register('chat_set_role', {
+    description: 'Promote a member to admin or demote an admin back to member. Human/master owner only. '
+      + 'Ownership cannot be transferred; remove the admin role before removing the member.',
+    inputSchema: {
+      chat_id: z.string().min(1).describe('Chat id'),
+      agent_id: z.string().min(1).describe('Agent id or participant handle'),
+      role: z.enum(['admin', 'member']).describe('New role')
+    }
+  }, async ({ chat_id, agent_id, role }) => {
+    try {
+      return asText(communityService.setRole({
+        auth, chatId: chat_id, agentId: agent_id, role
+      }));
     } catch (error) {
       return serviceError(error);
     }

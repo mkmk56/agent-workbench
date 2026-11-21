@@ -385,8 +385,93 @@ export class MessageService {
     return described;
   }
 
+  // Internal-only system message write (REA Phase 5 D4c). It deliberately
+  // bypasses chats.send: no CHAT_SENDERS gate, no `to` recipient, no 100/h
+  // budget, no deliveries, no 409 gate and no epoch bump. The message still
+  // gets a chat seq and is visible to the normal message stream so the chat
+  // list shows the event.
+  sendSystemNotice({ chatId, body, opKey = null } = {}) {
+    if (typeof body !== 'string' || body.trim() === '') {
+      throw new ProtocolError('invalid_content', 400, 'system notice body must not be empty');
+    }
+    const chat = this.store.getChat(chatId);
+    if (!chat) throw new ProtocolError('chat_not_found', 404, `chat not found: ${chatId}`);
+    const summary = truncateSummary(body, this.config.agentSummaryMaxTokens);
+    return this.store._transaction(() => {
+      if (opKey) {
+        const existing = this.store.getMessageByOpKey(chatId, opKey);
+        if (existing) return this.describeMessage(existing);
+      }
+      this.store.ensureThread(chatId);
+      const now = this.store._now();
+      const id = randomUUID();
+      const epoch = this.store.chatEpoch(chatId);
+      const contextVersion = Number(this.store.lastChatMessage(chatId)?.seq ?? 0);
+      let row;
+      try {
+        row = this.store.insertChatMessageBundle({
+          id,
+          thread_id: chatId,
+          // Production schema is TEXT NOT NULL; '*' is the broadcast sentinel
+          // and never matches a real recipient filter.
+          from_agent: 'system',
+          to_agent: '*',
+          task_id: null,
+          reply_to: null,
+          summary: summary.text,
+          files_json: null,
+          question: null,
+          summary_tokens: summary.tokens,
+          summary_truncated: summary.truncated ? 1 : 0,
+          status: 'stored',
+          delivery_task_id: null,
+          error: null,
+          is_final: 0,
+          created_at: now,
+          updated_at: now,
+          chat_id: chatId,
+          body,
+          mentions_json: '[]',
+          root_message_id: null,
+          depth: 0,
+          epoch,
+          client_msg_id: opKey,
+          op_key: opKey,
+          context_version: contextVersion,
+          auth_kind: 'system',
+          principal_id: 'system',
+          request_id: null,
+          provider: null,
+          model: null,
+          token_usage_json: null,
+          latency_ms: null,
+          kind: 'system'
+        }, { bumpEpoch: false });
+      } catch (error) {
+        if (opKey && /UNIQUE constraint failed/i.test(error?.message ?? '')) {
+          const existing = this.store.getMessageByOpKey(chatId, opKey);
+          if (existing) return this.describeMessage(existing);
+        }
+        throw error;
+      }
+      this.store.updateThread(chatId, {
+        message_count: (this.store.getThread(chatId)?.message_count ?? 0) + 1,
+        last_message_id: id
+      });
+      this.store.updateChat(chatId, {
+        last_message_at: now,
+        last_message_preview: summary.text.slice(0, 120)
+      });
+      return this.describeMessage(row);
+    });
+  }
+
   send(input = {}) {
     const auth = input.auth ?? null;
+    if (input.from === 'system') {
+      throw new ProtocolError('invalid_sender', 400,
+        "from='system' is reserved for internal system notices");
+    }
     // resolveSender rejects a token that claims another identity. That is a
     // connection-layer denial (M1), so it runs through _deny instead of
     // escaping as an unaudited plain Error.
@@ -639,7 +724,8 @@ export class MessageService {
     if (chatId) {
       const perHour = Math.max(1, Number(this.config.chatMessagesPerHour ?? 100));
       const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-      const recent = this.store.countChatMessagesSince(chatId, since);
+      // System notices do not consume the 100/h human/agent message budget.
+      const recent = this.store.countChatMessagesSince(chatId, since, true);
       if (recent >= perHour) {
         throw new ProtocolError('rate_limited', 429,
           `chat ${chatId} reached ${perHour} messages in the last hour`,
@@ -662,7 +748,9 @@ export class MessageService {
       const cursor = this.store.getInboxCursor(chatId, agentId);
       if (cursor) {
         const lastRead = Number(cursor.last_read_seq) || 0;
-        const unread = this.store.countUnreadMessages(chatId, from, lastRead);
+        // Only non-system unread blocks the next agent send. A system notice
+        // alone must not force a context pull.
+        const unread = this.store.countUnreadMessages(chatId, from, lastRead, true);
         if (unread > 0 && !(input.ignore_new === true && isOwner)) {
           throw new ProtocolError('new_messages', 409,
             `${from} has ${unread} unread message(s) in chat ${chatId}; pull them first`,

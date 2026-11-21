@@ -11,6 +11,7 @@ import { Scheduler } from './scheduler.js';
 import { MessageService } from './messages.js';
 import { ChatService } from './chats.js';
 import { AgentService } from './agents.js';
+import { CommunityService } from './community.js';
 import { ApprovalService } from './approvals.js';
 import { FileService } from './files.js';
 import { WakeService } from './wake.js';
@@ -36,6 +37,9 @@ const messages = new MessageService({
 });
 wake.messages = messages;
 const chats = new ChatService({ store, messages, config });
+// Phase 5 community service. One shared instance so the discovery rate window
+// survives across requests (createMcpServer runs per request).
+const community = new CommunityService({ store, config, agents, messages });
 const approvals = new ApprovalService({ store, config, messages, scheduler });
 scheduler.messages = messages;
 scheduler.approvals = approvals;
@@ -153,7 +157,9 @@ function createMcpServer(auth) {
     { name: 'agent-workbench', version: '0.1.0' },
     { capabilities: { logging: {} } }
   );
-  registerTools(server, { scheduler, store, messages, approvals, chats, files, config, agents, wake }, auth);
+  registerTools(server, {
+    scheduler, store, messages, approvals, chats, files, config, agents, wake, community
+  }, auth);
   return server;
 }
 
@@ -453,4 +459,4 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 // Exported for the isolated verification harness (scripts/verify-upgrade.mjs).
 // Importing this module still starts the listener; callers close `server` and
 // `store` when finished.
-export { server, store, scheduler, messages, chats, approvals, files, agents, wake, config };
+export { server, store, scheduler, messages, chats, approvals, files, agents, wake, community, config };
