@@ -716,6 +716,12 @@
 }
 
 .chat-settings-page__error {
+  /* Reicon glyphs render as block-level <svg>; without flex the 13px alert
+     icon drops onto its own line above the message (same class of bug the
+     Phase 5 headings fixed). Matches .discover-error. */
+  display: flex;
+  align-items: center;
+  gap: 7px;
   margin: 0;
   padding: 8px 10px;
   border: 1px solid var(--error);
@@ -819,6 +825,11 @@
 }
 
 .chat-settings-wake__switch {
+  /* Icon + label pill: the block-level Reicon <svg> would otherwise stack on
+     top of the label and double the pill height. */
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   flex: none;
   padding: 2px 10px;
   border: 1px solid var(--border);
