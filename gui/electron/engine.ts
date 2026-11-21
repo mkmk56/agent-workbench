@@ -913,8 +913,23 @@ export class EngineManager {
     );
   }
 
-  async createChat(name?: string): Promise<Record<string, unknown>> {
-    return this.callTool('create_chat', name == null ? {} : { name });
+  async createChat(
+    name?: string,
+    options?: { visibility?: string; category?: string | null },
+  ): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = {};
+    if (name != null) {
+      args.name = name;
+    }
+    // REA Phase 5: the form may pick a visibility/category; omitted values keep
+    // the engine defaults (visibility private, category null).
+    if (options?.visibility != null) {
+      args.visibility = options.visibility;
+    }
+    if (options?.category !== undefined) {
+      args.category = options.category;
+    }
+    return this.callTool('create_chat', args);
   }
 
   async renameChat(chatId: string, name: string): Promise<Record<string, unknown>> {
@@ -1241,6 +1256,191 @@ export class EngineManager {
       args.agent_id = input.agentId;
     }
     return this.callTool('agent_revoke_token', args);
+  }
+
+  // ---- REA Phase 5: community surface (docs/rea/PHASE5_DESIGN.md §3.2) ----
+  // The engine is the authority for every permission, rate limit and state
+  // transition; these wrappers only map camelCase renderer arguments to the
+  // frozen snake_case tool contract and never decide authorization locally.
+
+  async chatSetVisibility(input: {
+    chatId: string;
+    visibility: string;
+  }): Promise<Record<string, unknown>> {
+    return this.callTool('chat_set_visibility', {
+      chat_id: input.chatId,
+      visibility: input.visibility,
+    });
+  }
+
+  async chatSetCategory(input: {
+    chatId: string;
+    category: string | null;
+  }): Promise<Record<string, unknown>> {
+    return this.callTool('chat_set_category', {
+      chat_id: input.chatId,
+      category: input.category,
+    });
+  }
+
+  async groupInviteCreate(input: {
+    chatId: string;
+    ttlHours?: number;
+    maxUses?: number;
+  }): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = { chat_id: input.chatId };
+    if (input.ttlHours != null) {
+      args.ttl_hours = input.ttlHours;
+    }
+    if (input.maxUses != null) {
+      args.max_uses = input.maxUses;
+    }
+    return this.callTool('group_invite_create', args);
+  }
+
+  async groupInviteRevoke(input: {
+    inviteId: string;
+  }): Promise<Record<string, unknown>> {
+    return this.callTool('group_invite_revoke', { invite_id: input.inviteId });
+  }
+
+  async groupInviteList(input: {
+    chatId?: string;
+    limit?: number;
+    offset?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = {};
+    if (input.chatId != null) {
+      args.chat_id = input.chatId;
+    }
+    if (input.limit != null) {
+      args.limit = input.limit;
+    }
+    if (input.offset != null) {
+      args.offset = input.offset;
+    }
+    return this.callTool('group_invite_list', args);
+  }
+
+  async chatJoinApprove(input: {
+    requestId: string;
+  }): Promise<Record<string, unknown>> {
+    return this.callTool('chat_join_approve', { request_id: input.requestId });
+  }
+
+  async chatJoinDecline(input: {
+    requestId: string;
+    reason?: string;
+  }): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = { request_id: input.requestId };
+    if (input.reason != null && input.reason.length > 0) {
+      args.reason = input.reason;
+    }
+    return this.callTool('chat_join_decline', args);
+  }
+
+  async chatJoinList(input: {
+    chatId?: string;
+    status?: string;
+    limit?: number;
+    offset?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = {};
+    if (input.chatId != null) {
+      args.chat_id = input.chatId;
+    }
+    if (input.status != null) {
+      args.status = input.status;
+    }
+    if (input.limit != null) {
+      args.limit = input.limit;
+    }
+    if (input.offset != null) {
+      args.offset = input.offset;
+    }
+    return this.callTool('chat_join_list', args);
+  }
+
+  async chatJoinNotices(input: {
+    chatId?: string;
+    read?: boolean;
+    limit?: number;
+    offset?: number;
+    markRead?: 'one' | 'all';
+    noticeId?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = {};
+    if (input.chatId != null) {
+      args.chat_id = input.chatId;
+    }
+    if (input.read != null) {
+      args.read = input.read;
+    }
+    if (input.limit != null) {
+      args.limit = input.limit;
+    }
+    if (input.offset != null) {
+      args.offset = input.offset;
+    }
+    if (input.markRead != null) {
+      args.mark_read = input.markRead;
+    }
+    if (input.noticeId != null) {
+      args.notice_id = input.noticeId;
+    }
+    return this.callTool('chat_join_notices', args);
+  }
+
+  async listPublicChats(input: {
+    category?: string;
+    q?: string;
+    limit?: number;
+    offset?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = {};
+    if (input.category != null) {
+      args.category = input.category;
+    }
+    if (input.q != null) {
+      args.q = input.q;
+    }
+    if (input.limit != null) {
+      args.limit = input.limit;
+    }
+    if (input.offset != null) {
+      args.offset = input.offset;
+    }
+    return this.callTool('list_public_chats', args);
+  }
+
+  async listAgentsDirectory(input: {
+    limit?: number;
+    offset?: number;
+    status?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = {};
+    if (input.limit != null) {
+      args.limit = input.limit;
+    }
+    if (input.offset != null) {
+      args.offset = input.offset;
+    }
+    if (input.status != null) {
+      args.status = input.status;
+    }
+    return this.callTool('list_agents', args);
+  }
+
+  async chatSetRole(input: {
+    chatId: string;
+    agentId: string;
+    role: 'admin' | 'member';
+  }): Promise<Record<string, unknown>> {
+    return this.callTool('chat_set_role', {
+      chat_id: input.chatId,
+      agent_id: input.agentId,
+      role: input.role,
+    });
   }
 
   // ---- Chunked upload (backend tool contract: init → chunk×N → complete) ----

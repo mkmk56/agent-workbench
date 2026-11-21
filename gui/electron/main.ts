@@ -67,6 +67,25 @@ const ATTACHMENTS_CACHE_DIR = path.join(DATA_DIR, 'attachments', 'cache');
 const PROFILE_MAX_CHARS = 300;
 /** chats.settings.description / announcement cap (matches the engine schema). */
 const CHAT_SETTINGS_MAX_CHARS = 2_000;
+/**
+ * REA Phase 5 (docs/rea/PHASE5_DESIGN.md D2/D1): the renderer may only send the
+ * ten frozen categories and the three visibility tiers. The engine re-validates
+ * every value; this list only keeps obviously malformed IPC out of the tool.
+ */
+const CHAT_CATEGORIES = [
+  '开发',
+  '研究',
+  '审查',
+  '学习',
+  '生活',
+  '创作',
+  '运营',
+  '测试',
+  '社区',
+  '其他',
+] as const;
+const CHAT_VISIBILITIES = ['private', 'link', 'public'] as const;
+const JOIN_REQUEST_STATUSES = ['pending', 'approved', 'declined'] as const;
 
 // The renderer never handles host paths: drafts are opaque ids in this service.
 const attachments = new AttachmentService({
@@ -510,7 +529,21 @@ function registerIpc(): void {
         value.name == null || value.name === ''
           ? undefined
           : requireText(value.name, '群聊名称', 100);
-      return engine.createChat(name);
+      const visibility =
+        value.visibility == null || value.visibility === ''
+          ? undefined
+          : requireChatVisibility(value.visibility);
+      // REA Phase 5: `null` is the explicit "未分类" value; absent keeps the
+      // engine default (NULL) as well.
+      let category: string | null | undefined;
+      if (value.category === null) {
+        category = null;
+      } else if (value.category === undefined || value.category === '') {
+        category = undefined;
+      } else {
+        category = requireChatCategory(value.category);
+      }
+      return engine.createChat(name, { visibility, category });
     }),
   );
 
@@ -812,6 +845,220 @@ function registerIpc(): void {
           ? undefined
           : requireAgentId(value.agentId);
       return engine.agentRevokeToken({ agentId });
+    }),
+  );
+
+  // ---- REA Phase 5: community surface (docs/rea/PHASE5_DESIGN.md §3.2) ----
+  // Owner/owner-or-admin gating stays in the engine; the main process only
+  // rejects malformed shapes and enums, then forwards the frozen tool contract.
+
+  handle('engine:chat-set-visibility', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      return engine.chatSetVisibility({
+        chatId: requireChatId(value.chatId),
+        visibility: requireChatVisibility(value.visibility),
+      });
+    }),
+  );
+
+  handle('engine:chat-set-category', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      if (value.category !== null && value.category !== undefined && value.category !== '') {
+        requireChatCategory(value.category);
+      }
+      const category =
+        value.category === null || value.category === undefined || value.category === ''
+          ? null
+          : requireChatCategory(value.category);
+      return engine.chatSetCategory({ chatId: requireChatId(value.chatId), category });
+    }),
+  );
+
+  handle('engine:group-invite-create', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      const ttlHours =
+        value.ttlHours == null || value.ttlHours === ''
+          ? undefined
+          : optionalInteger(value.ttlHours, 1, 168, 24);
+      const maxUses =
+        value.maxUses == null || value.maxUses === ''
+          ? undefined
+          : optionalInteger(value.maxUses, 1, 50, 10);
+      return engine.groupInviteCreate({
+        chatId: requireChatId(value.chatId),
+        ttlHours,
+        maxUses,
+      });
+    }),
+  );
+
+  handle('engine:group-invite-revoke', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      return engine.groupInviteRevoke({ inviteId: requireInviteId(value.inviteId) });
+    }),
+  );
+
+  handle('engine:group-invite-list', (input) =>
+    engineResult(() => {
+      const value = input == null ? {} : asRecord(input);
+      return engine.groupInviteList({
+        chatId:
+          value.chatId == null || value.chatId === ''
+            ? undefined
+            : requireChatId(value.chatId),
+        limit:
+          value.limit == null || value.limit === ''
+            ? undefined
+            : optionalInteger(value.limit, 1, 200, 50),
+        offset:
+          value.offset == null || value.offset === ''
+            ? undefined
+            : optionalInteger(value.offset, 0, 1_000_000, 0),
+      });
+    }),
+  );
+
+  handle('engine:chat-join-approve', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      return engine.chatJoinApprove({ requestId: requireRequestId(value.requestId) });
+    }),
+  );
+
+  handle('engine:chat-join-decline', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      const reason =
+        value.reason == null || value.reason === ''
+          ? undefined
+          : requireOptionalText(value.reason, '拒绝理由', 200);
+      return engine.chatJoinDecline({
+        requestId: requireRequestId(value.requestId),
+        reason,
+      });
+    }),
+  );
+
+  handle('engine:chat-join-list', (input) =>
+    engineResult(() => {
+      const value = input == null ? {} : asRecord(input);
+      return engine.chatJoinList({
+        chatId:
+          value.chatId == null || value.chatId === ''
+            ? undefined
+            : requireChatId(value.chatId),
+        status:
+          value.status == null || value.status === ''
+            ? undefined
+            : requireJoinStatus(value.status),
+        limit:
+          value.limit == null || value.limit === ''
+            ? undefined
+            : optionalInteger(value.limit, 1, 200, 50),
+        offset:
+          value.offset == null || value.offset === ''
+            ? undefined
+            : optionalInteger(value.offset, 0, 1_000_000, 0),
+      });
+    }),
+  );
+
+  handle('engine:chat-join-notices', (input) =>
+    engineResult(() => {
+      const value = input == null ? {} : asRecord(input);
+      let markRead: 'one' | 'all' | undefined;
+      if (value.markRead != null && value.markRead !== '') {
+        if (value.markRead !== 'one' && value.markRead !== 'all') {
+          throw new Error('mark_read 必须是 one 或 all。');
+        }
+        markRead = value.markRead;
+      }
+      return engine.chatJoinNotices({
+        chatId:
+          value.chatId == null || value.chatId === ''
+            ? undefined
+            : requireChatId(value.chatId),
+        read: typeof value.read === 'boolean' ? value.read : undefined,
+        limit:
+          value.limit == null || value.limit === ''
+            ? undefined
+            : optionalInteger(value.limit, 1, 200, 50),
+        offset:
+          value.offset == null || value.offset === ''
+            ? undefined
+            : optionalInteger(value.offset, 0, 1_000_000, 0),
+        markRead,
+        noticeId:
+          value.noticeId == null || value.noticeId === ''
+            ? undefined
+            : requireNoticeId(value.noticeId),
+      });
+    }),
+  );
+
+  handle('engine:list-public-chats', (input) =>
+    engineResult(() => {
+      const value = input == null ? {} : asRecord(input);
+      let category: string | undefined;
+      if (value.category != null && value.category !== '') {
+        category =
+          value.category === 'uncategorized'
+            ? 'uncategorized'
+            : requireChatCategory(value.category);
+      }
+      return engine.listPublicChats({
+        category,
+        q:
+          value.q == null || value.q === ''
+            ? undefined
+            : requireOptionalText(value.q, '搜索词', 40),
+        limit:
+          value.limit == null || value.limit === ''
+            ? undefined
+            : optionalInteger(value.limit, 1, 200, 50),
+        offset:
+          value.offset == null || value.offset === ''
+            ? undefined
+            : optionalInteger(value.offset, 0, 1_000_000, 0),
+      });
+    }),
+  );
+
+  handle('engine:list-agents-directory', (input) =>
+    engineResult(() => {
+      const value = input == null ? {} : asRecord(input);
+      return engine.listAgentsDirectory({
+        limit:
+          value.limit == null || value.limit === ''
+            ? undefined
+            : optionalInteger(value.limit, 1, 200, 50),
+        offset:
+          value.offset == null || value.offset === ''
+            ? undefined
+            : optionalInteger(value.offset, 0, 1_000_000, 0),
+        status:
+          value.status == null || value.status === ''
+            ? undefined
+            : requireOptionalText(value.status, '状态', 40),
+      });
+    }),
+  );
+
+  handle('engine:chat-set-role', (input) =>
+    engineResult(() => {
+      const value = asRecord(input);
+      if (value.role !== 'admin' && value.role !== 'member') {
+        throw new Error('角色必须是 admin 或 member。');
+      }
+      return engine.chatSetRole({
+        chatId: requireChatId(value.chatId),
+        agentId: requireAgentId(value.agentId),
+        role: value.role,
+      });
     }),
   );
 
@@ -1195,6 +1442,51 @@ function requireAgentId(value: unknown): string {
     !/^(?:muse|claude|dsh|agent_[A-Za-z0-9_-]{1,64})$/.test(value)
   ) {
     throw new Error('Agent ID 无效。');
+  }
+  return value;
+}
+
+/** REA Phase 5 D1: private | link | public. */
+function requireChatVisibility(value: unknown): (typeof CHAT_VISIBILITIES)[number] {
+  if (typeof value !== 'string' || !CHAT_VISIBILITIES.includes(value as never)) {
+    throw new Error('可见性必须是 private、link 或 public。');
+  }
+  return value as (typeof CHAT_VISIBILITIES)[number];
+}
+
+/** REA Phase 5 D2: one of the ten frozen category labels. */
+function requireChatCategory(value: unknown): string {
+  if (typeof value !== 'string' || !CHAT_CATEGORIES.includes(value as never)) {
+    throw new Error('分类不在 Phase 5 的十类枚举里。');
+  }
+  return value;
+}
+
+function requireJoinStatus(value: unknown): (typeof JOIN_REQUEST_STATUSES)[number] {
+  if (typeof value !== 'string' || !JOIN_REQUEST_STATUSES.includes(value as never)) {
+    throw new Error('申请状态必须是 pending、approved 或 declined。');
+  }
+  return value as (typeof JOIN_REQUEST_STATUSES)[number];
+}
+
+/** UUID-shaped ids used by the four Phase 5 tables. */
+function requireInviteId(value: unknown): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/.test(value)) {
+    throw new Error('邀请 ID 无效。');
+  }
+  return value;
+}
+
+function requireRequestId(value: unknown): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/.test(value)) {
+    throw new Error('申请 ID 无效。');
+  }
+  return value;
+}
+
+function requireNoticeId(value: unknown): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/.test(value)) {
+    throw new Error('通知 ID 无效。');
   }
   return value;
 }

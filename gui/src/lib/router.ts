@@ -14,6 +14,10 @@ export function parseHash(hash: string): Route {
   if (parts[0] === 'chats') {
     return { name: 'chats' };
   }
+  // REA Phase 5 §4.1: local-only public chat discovery.
+  if (parts[0] === 'discover') {
+    return { name: 'discover' };
+  }
   // Hidden debug routes: the task console is no longer in the nav,
   // but the pages still work (linked from a message's "查看执行记录").
   if (parts[0] === 'tasks' && parts.length === 2 && parts[1] === 'history') {

@@ -2,6 +2,8 @@ import {
   Activity,
   AlarmClock,
   AtSign,
+  BellRing,
+  Check,
   CircleAlert,
   CornerUpLeft,
   Inbox,
@@ -17,6 +19,8 @@ import {
   type ChatInboxPayload,
 } from '../lib/chat';
 import { formatRelative } from '../lib/labels';
+import { countUnreadByChat } from '../lib/community';
+import { useJoinNotices } from '../lib/join-notices';
 import { useEngineEventSignal, useEngineEventsStatus } from '../lib/engine';
 import { navigate } from '../lib/router';
 import {
@@ -207,6 +211,22 @@ export function InboxPage() {
   const entries = useMemo(() => sortEntries(inbox?.chats ?? []), [inbox]);
   const totalUnread = inbox?.total_unread ?? 0;
 
+  // REA Phase 5 §4.7: join-request notices are a separate feed (not messages),
+  // polled on the same cadence as the counters. They are shown per chat and
+  // marked read through `chat_join_notices` mark_read.
+  const joinNotices = useJoinNotices({ pollMs: POLL_MS });
+  const joinGroups = useMemo(
+    () => countUnreadByChat(joinNotices.notices),
+    [joinNotices.notices],
+  );
+  const chatNames = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const entry of inbox?.chats ?? []) {
+      map.set(entry.chat_id, entry.name);
+    }
+    return map;
+  }, [inbox]);
+
   // The switch is only meaningful — and only allowed — for agents this
   // workstation's owner owns. Until the inbox identity is known the control is
   // hidden rather than guessed, and the engine re-checks the token role anyway.
@@ -345,6 +365,67 @@ export function InboxPage() {
             <span className="inbox-page__identity-state">{inbox.you.status}</span>
           )}
         </p>
+      )}
+
+      {/* Phase 5 §4.7: join-request notices (owner/admin view, cross-chat). */}
+      {(joinGroups.length > 0 || joinNotices.error != null) && (
+        <section className="inbox-join-panel" aria-labelledby="inbox-join-title">
+          <div className="inbox-join-panel__head">
+            <h2 className="inbox-join-panel__title" id="inbox-join-title">
+              <BellRing size={14} aria-hidden="true" />
+              加入申请通知
+              <span className="inbox-join-panel__count">{joinNotices.unread.length}</span>
+            </h2>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              disabled={joinNotices.loading || joinNotices.unread.length === 0}
+              onClick={() => void joinNotices.markAllRead()}
+            >
+              <Check size={12} aria-hidden="true" />
+              全部标为已读
+            </button>
+          </div>
+          {joinNotices.error != null && (
+            <p className="community-error" role="alert">
+              <CircleAlert size={13} aria-hidden="true" />
+              {joinNotices.error}
+            </p>
+          )}
+          {joinGroups.length > 0 && (
+            <ul className="community-list">
+              {joinGroups.map((group) => (
+                <li key={group.chatId} className="community-row">
+                  <span className="community-row__main">
+                    <span className="community-row__title">
+                      {chatNames.get(group.chatId) ?? group.chatId}
+                    </span>
+                    <span className="community-row__meta">
+                      {group.count} 条未读加入申请通知
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm community-row__action"
+                    onClick={() =>
+                      navigate(`/chats/${encodeURIComponent(group.chatId)}/settings`)
+                    }
+                  >
+                    查看申请
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm community-row__action"
+                    disabled={joinNotices.loading}
+                    onClick={() => void joinNotices.markChatRead(group.chatId)}
+                  >
+                    标为已读
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       )}
 
       {/* Phase 3 wake status. Three facts per chat (switch, last event, today's

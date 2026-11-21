@@ -335,6 +335,10 @@ export interface ChatSummary {
   chat_id: string;
   name: string;
   status: 'active' | 'archived';
+  /** REA Phase 5: private | link | public (missing from pre-v8 engines = link). */
+  visibility?: ChatVisibility;
+  /** REA Phase 5: one of the ten categories, or null for "未分类". */
+  category?: string | null;
   created_at?: string | null;
   last_message_at: string | null;
   last_message_preview: string | null;
@@ -417,7 +421,7 @@ export interface ChatMessage {
 export interface ChatMember {
   agent_id: string;
   participant_id: string | null;
-  /** owner | member */
+  /** owner | admin | member (admin added in REA Phase 5). */
   role: string;
   owner: string | null;
   /** claude | dsh | muse | null for the human owner. */
@@ -441,6 +445,129 @@ export interface ChatStatusPayload {
   needs_muse: boolean;
   agents: Record<ChatAgentId, string>;
   participants?: ChatParticipant[];
+}
+
+/* ------------------------------------------------------------------ *
+ * REA Phase 5 (docs/rea/PHASE5_DESIGN.md §3.2/§4): 社区地基
+ * ------------------------------------------------------------------ */
+
+/** Chat visibility tiers (D1). `private` is the creation default. */
+export type ChatVisibility = 'private' | 'link' | 'public';
+
+/** The ten enforced categories (D2); null/empty means "未分类". */
+export type ChatCategory =
+  | '开发'
+  | '研究'
+  | '审查'
+  | '学习'
+  | '生活'
+  | '创作'
+  | '运营'
+  | '测试'
+  | '社区'
+  | '其他';
+
+/** One public chat card (`list_public_chats`, metadata only). */
+export interface PublicChat {
+  chat_id: string;
+  name: string;
+  category: string | null;
+  description: string | null;
+  member_count: number;
+  created_at: string | null;
+}
+
+/** A group invite row (never carries the code or its hash). */
+export interface GroupInvite {
+  invite_id: string;
+  chat_id: string;
+  uses: number;
+  max_uses: number;
+  expires_at: string | null;
+  revoked_at: string | null;
+  created_by: string | null;
+}
+
+/** `group_invite_create` returns the plaintext code exactly once. */
+export interface CreatedGroupInvite extends GroupInvite {
+  code: string;
+}
+
+export type JoinRequestStatus = 'pending' | 'approved' | 'declined';
+
+/** Applicant profile joined into the join-request list (D6). */
+export interface JoinRequestApplicant {
+  id: string;
+  display_name: string;
+  platform: string | null;
+  profile: string | null;
+}
+
+/** One membership application (`join_requests`). */
+export interface JoinRequest {
+  request_id: string;
+  chat_id: string;
+  applicant: JoinRequestApplicant;
+  invite_id: string | null;
+  message: string | null;
+  status: JoinRequestStatus;
+  decision_reason: string | null;
+  created_at: string | null;
+  decided_by: string | null;
+}
+
+export type JoinNoticeType = 'requested' | 'approved' | 'declined';
+
+/** One notice row (`join_request_notices`), polled by the GUI (§4.7). */
+export interface JoinNotice {
+  id: string;
+  chat_id: string;
+  request_id: string;
+  notice_type: JoinNoticeType;
+  recipient_id: string;
+  created_at: string | null;
+  read_at: string | null;
+}
+
+/** One row of the global agent directory (`list_agents`, D6). */
+export interface AgentDirectoryEntry {
+  agent_id: string;
+  display_name: string;
+  platform: string | null;
+  status: string;
+  owner: string | null;
+  profile: string | null;
+  chat_count: number;
+}
+
+export interface AgentDirectoryPage {
+  agents: AgentDirectoryEntry[];
+  total: number;
+  has_more: boolean;
+}
+
+export interface PublicChatPage {
+  chats: PublicChat[];
+  total: number;
+  has_more: boolean;
+}
+
+export interface JoinRequestPage {
+  requests: JoinRequest[];
+  total: number;
+  has_more: boolean;
+}
+
+export interface JoinNoticePage {
+  notices: JoinNotice[];
+  total: number;
+  has_more: boolean;
+}
+
+export interface GroupInvitePage {
+  invites: GroupInvite[];
+  total: number;
+  has_more: boolean;
 }
 
 /* ------------------------------------------------------------------ *
@@ -753,7 +880,10 @@ export interface WorkbenchApi {
     taskId?: string;
   }) => Promise<EngineResult<EngineMessageList>>;
   listChats: (options?: { includeArchived?: boolean }) => Promise<EngineResult<{ chats: ChatSummary[] }>>;
-  createChat: (name?: string) => Promise<EngineResult<ChatSummary>>;
+  createChat: (
+    name?: string,
+    options?: { visibility?: ChatVisibility; category?: string | null },
+  ) => Promise<EngineResult<ChatSummary>>;
   renameChat: (chatId: string, name: string) => Promise<EngineResult<ChatSummary>>;
   archiveChat: (chatId: string) => Promise<EngineResult<ChatSummary>>;
   unarchiveChat: (chatId: string) => Promise<EngineResult<ChatSummary>>;
@@ -846,6 +976,77 @@ export interface WorkbenchApi {
   agentRevokeToken: (input?: {
     agentId?: string;
   }) => Promise<EngineResult<{ agent_id: string; status: string }>>;
+  /* -------- REA Phase 5 community surface (docs/rea/PHASE5_DESIGN.md §3.2) -------- */
+  /** Owner-only visibility switch (`chat_set_visibility`, D1). */
+  chatSetVisibility: (input: {
+    chatId: string;
+    visibility: ChatVisibility;
+  }) => Promise<EngineResult<{ chat_id: string; visibility: ChatVisibility }>>;
+  /** Owner/admin category switch (`chat_set_category`, D2). */
+  chatSetCategory: (input: {
+    chatId: string;
+    category: ChatCategory | null;
+  }) => Promise<EngineResult<{ chat_id: string; category: string | null }>>;
+  /** Owner-only invite creation; the plaintext code is shown exactly once. */
+  groupInviteCreate: (input: {
+    chatId: string;
+    ttlHours?: number;
+    maxUses?: number;
+  }) => Promise<EngineResult<CreatedGroupInvite>>;
+  /** Owner-only invite revocation. */
+  groupInviteRevoke: (input: {
+    inviteId: string;
+  }) => Promise<EngineResult<{ invite_id: string; revoked_at: string | null }>>;
+  /** Owner-only invite listing (codes and hashes are never returned). */
+  groupInviteList: (input?: {
+    chatId?: string;
+    limit?: number;
+    offset?: number;
+  }) => Promise<EngineResult<GroupInvitePage>>;
+  /** Owner-only approval (`chat_join_approve`). */
+  chatJoinApprove: (input: {
+    requestId: string;
+  }) => Promise<EngineResult<{ request_id: string; status: string; chat_id: string; agent_id: string }>>;
+  /** Owner-only decline (`chat_join_decline`). */
+  chatJoinDecline: (input: {
+    requestId: string;
+    reason?: string;
+  }) => Promise<EngineResult<{ request_id: string; status: string }>>;
+  /** Owner/admin request list (`chat_join_list`); admin must pin chat_id. */
+  chatJoinList: (input?: {
+    chatId?: string;
+    status?: JoinRequestStatus;
+    limit?: number;
+    offset?: number;
+  }) => Promise<EngineResult<JoinRequestPage>>;
+  /** Owner/admin notice feed (`chat_join_notices`) with mark_read support. */
+  chatJoinNotices: (input?: {
+    chatId?: string;
+    read?: boolean;
+    limit?: number;
+    offset?: number;
+    markRead?: 'one' | 'all';
+    noticeId?: string;
+  }) => Promise<EngineResult<JoinNoticePage>>;
+  /** Local-only public chat discovery (`list_public_chats`, D7). */
+  listPublicChats: (input?: {
+    category?: ChatCategory | 'uncategorized';
+    q?: string;
+    limit?: number;
+    offset?: number;
+  }) => Promise<EngineResult<PublicChatPage>>;
+  /** Global agent directory (`list_agents`, D6); human/master only. */
+  listAgentsDirectory: (input?: {
+    limit?: number;
+    offset?: number;
+    status?: string;
+  }) => Promise<EngineResult<AgentDirectoryPage>>;
+  /** Owner-only admin appointment/removal (`chat_set_role`). */
+  chatSetRole: (input: {
+    chatId: string;
+    agentId: string;
+    role: 'admin' | 'member';
+  }) => Promise<EngineResult<{ chat_id: string; agent_id: string; role: string }>>;
   /** REA Phase 4: live SSE status of the main-process event stream. */
   getEventsStatus: () => Promise<EngineEventsStatus>;
   onEngineEvent: (callback: (event: EngineEvent) => void) => () => void;
@@ -910,6 +1111,7 @@ export interface WorkbenchApi {
 
 export type Route =
   | { name: 'chats' }
+  | { name: 'discover' }
   | { name: 'inbox' }
   | { name: 'chat'; id: string }
   /** REA Phase 4 [D]: per-chat settings page (#/chats/:id/settings). */

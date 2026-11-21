@@ -8,6 +8,7 @@ import { AgentMentionMenu } from '../components/AgentMentionMenu';
 import { ChatHeader } from '../components/ChatHeader';
 import { ChatMembersDrawer } from '../components/ChatMembersDrawer';
 import { Composer } from '../components/Composer';
+import { JoinNoticeBanner } from '../components/JoinNoticeBanner';
 import { MessageList } from '../components/MessageList';
 import { TaskInspector } from '../components/TaskInspector';
 import { WakeBanner } from '../components/WakeBanner';
@@ -321,6 +322,7 @@ export function ChatPage({ chatId }: { chatId: string | null }) {
           void loadMembers();
         }}
       />
+      <JoinNoticeBanner chatId={chatId} />
       <WakeBanner chatId={chatId} />
       {recallError != null && (
         <p className="chat-inline-error" role="alert">

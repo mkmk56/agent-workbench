@@ -1,6 +1,7 @@
 import {
   Bot,
   Check,
+  Compass,
   Database,
   KeyRound,
   Link2,
@@ -16,6 +17,7 @@ import {
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Notice } from '../components/Layout';
+import { CommunitySection } from '../components/CommunitySection';
 import {
   AGENT_LIST_SOURCE_NOTE,
   agentReadOnlyReason,
@@ -58,7 +60,15 @@ import {
   AppTextField,
 } from '../ui/astryx';
 
-type SectionId = 'credentials' | 'engine' | 'executors' | 'agents' | 'hud' | 'updates' | 'data';
+type SectionId =
+  | 'credentials'
+  | 'engine'
+  | 'executors'
+  | 'agents'
+  | 'community'
+  | 'hud'
+  | 'updates'
+  | 'data';
 
 /** Section tabs draw Outline at rest and Filled for the section in view. */
 const SECTIONS: Array<{ id: SectionId; label: string; icon: (weight: IconWeight) => ReactNode }> = [
@@ -66,6 +76,7 @@ const SECTIONS: Array<{ id: SectionId; label: string; icon: (weight: IconWeight)
   { id: 'engine', label: '引擎', icon: (weight) => <Server size={15} weight={weight} /> },
   { id: 'executors', label: '执行器', icon: (weight) => <Terminal size={15} weight={weight} /> },
   { id: 'agents', label: 'Agent 管理', icon: (weight) => <UserCog size={15} weight={weight} /> },
+  { id: 'community', label: '社区', icon: (weight) => <Compass size={15} weight={weight} /> },
   { id: 'hud', label: 'Agent HUD', icon: (weight) => <Bot size={15} weight={weight} /> },
   { id: 'updates', label: '更新', icon: (weight) => <RefreshCw size={15} weight={weight} /> },
   { id: 'data', label: '数据', icon: (weight) => <Database size={15} weight={weight} /> },
@@ -1182,6 +1193,19 @@ export function SettingsPage() {
                   </div>
                 )}
               </div>
+            </div>
+          </section>
+
+          {/* REA Phase 5 §4.5: public chats, cross-chat requests, agent directory. */}
+          <section className="section" id="community" aria-labelledby="community-title">
+            <div className="section__head">
+              <h2 className="section__title" id="community-title">
+                社区
+              </h2>
+              <AppBadge tone="neutral" label="本地数据 · 不对外发布" />
+            </div>
+            <div className="section__body settings-section__body">
+              <CommunitySection />
             </div>
           </section>
 

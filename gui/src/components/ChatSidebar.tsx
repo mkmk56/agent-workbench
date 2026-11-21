@@ -20,6 +20,7 @@ import claudeMark from '../assets/sidebar/claude-mark.png';
 import dshMark from '../assets/sidebar/dsh-mark.png';
 import museMark from '../assets/sidebar/muse-mark.png';
 import { archiveChat, createChat, listChatsOnce, unarchiveChat } from '../lib/chat';
+import { CHAT_CATEGORIES, VISIBILITY_OPTIONS } from '../lib/community';
 import {
   CHAT_SIDEBAR_DEFAULT_WIDTH,
   CHAT_SIDEBAR_MAX_WIDTH,
@@ -37,7 +38,7 @@ import {
 import { useChatListView } from '../lib/chat-store';
 import { formatRelative } from '../lib/labels';
 import { navigate } from '../lib/router';
-import type { ChatSummary, Route } from '../types';
+import type { ChatSummary, ChatVisibility, Route } from '../types';
 import { AppButton, AppEmptyState } from '../ui/astryx';
 import { SidebarStatusStrip } from './SidebarStatusStrip';
 
@@ -87,6 +88,10 @@ export function ChatSidebar({ route }: { route: Route }) {
   const [archivedLoading, setArchivedLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
+  // REA Phase 5 §4.4: creation defaults to the strictest tier (private) and
+  // "未分类"; both are real engine arguments, not renderer-only state.
+  const [visibility, setVisibility] = useState<ChatVisibility>('private');
+  const [category, setCategory] = useState('');
   const [creating, setCreating] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [filter, setFilter] = useState<ListFilter>('all');
@@ -265,13 +270,18 @@ export function ChatSidebar({ route }: { route: Route }) {
   const submitCreate = async () => {
     setCreating(true);
     setFormError(null);
-    const result = await createChat(name.trim().length > 0 ? name.trim() : undefined);
+    const result = await createChat(name.trim().length > 0 ? name.trim() : undefined, {
+      visibility,
+      category: category === '' ? null : category,
+    });
     setCreating(false);
     if (!result.ok) {
       setFormError(result.error);
       return;
     }
     setName('');
+    setVisibility('private');
+    setCategory('');
     setShowForm(false);
     await refresh();
     navigate(`/chats/${result.data.chat_id}`);
@@ -492,10 +502,39 @@ export function ChatSidebar({ route }: { route: Route }) {
                 if (event.key === 'Escape') {
                   setShowForm(false);
                   setName('');
+                  setVisibility('private');
+                  setCategory('');
                   setFormError(null);
                 }
               }}
             />
+            <div className="chat-new-form__row">
+              <select
+                className="input chat-new-form__select"
+                value={visibility}
+                aria-label="新群可见性"
+                onChange={(event) => setVisibility(event.target.value as ChatVisibility)}
+              >
+                {VISIBILITY_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="input chat-new-form__select"
+                value={category}
+                aria-label="新群分类"
+                onChange={(event) => setCategory(event.target.value)}
+              >
+                <option value="">未分类</option>
+                {CHAT_CATEGORIES.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="chat-new-form__actions">
               <AppButton
                 label={creating ? '创建中…' : '创建'}
@@ -512,6 +551,8 @@ export function ChatSidebar({ route }: { route: Route }) {
                 onClick={() => {
                   setShowForm(false);
                   setName('');
+                  setVisibility('private');
+                  setCategory('');
                   setFormError(null);
                 }}
               />

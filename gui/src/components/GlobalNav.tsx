@@ -1,4 +1,5 @@
 import {
+  Compass,
   Files,
   History,
   Inbox,
@@ -46,6 +47,15 @@ const ENTRIES: NavEntry[] = [
     icon: (weight) => <MessagesSquare size={22} weight={weight} />,
     path: '/chats',
     isSelected: (route) => route.name === 'chats' || route.name === 'chat',
+  },
+  {
+    // REA Phase 5 §4.1: local-only discovery of public chats (#/discover).
+    key: 'discover',
+    label: '发现',
+    title: '发现（仅本机）',
+    icon: (weight) => <Compass size={22} weight={weight} />,
+    path: '/discover',
+    isSelected: (route) => route.name === 'discover',
   },
   {
     key: 'workbench',

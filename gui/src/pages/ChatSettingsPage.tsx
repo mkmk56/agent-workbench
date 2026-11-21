@@ -6,6 +6,7 @@ import {
   Save,
 } from '../ui/icons';
 import { useCallback, useEffect, useState } from 'react';
+import { ChatCommunitySettings } from '../components/ChatCommunitySettings';
 import {
   listChatsOnce,
   normalizeChatSettings,
@@ -28,6 +29,7 @@ import {
 } from '../lib/wake';
 import type { ChatMember, ListenerStatusPayload, WakeChatStatus } from '../types';
 import { chatMembersOnce } from '../lib/chat';
+import { memberRoleLabel } from '../lib/community';
 import '../styles/chat.css';
 import '../styles/chat-phase4.css';
 
@@ -384,7 +386,7 @@ export function ChatSettingsPage({ id }: { id: string }) {
               <li key={member.agent_id}>
                 <span className="chat-settings-members__name">{member.display_name}</span>
                 <span className="chat-settings-members__meta">
-                  {member.role === 'owner' ? '群主' : (member.platform ?? member.agent_id)} ·{' '}
+                  {memberRoleLabel(member.role)} · {member.platform ?? member.agent_id} ·{' '}
                   {member.status}
                 </span>
               </li>
@@ -398,6 +400,15 @@ export function ChatSettingsPage({ id }: { id: string }) {
             在群聊里增删成员
           </button>
         </section>
+
+        {/* REA Phase 5 §4.2: visibility/category, invites and join requests. */}
+        <ChatCommunitySettings
+          chatId={id}
+          visibility={chat?.visibility ?? 'link'}
+          category={chat?.category ?? null}
+          members={members}
+          onChanged={() => void loadChat()}
+        />
       </div>
     </section>
   );

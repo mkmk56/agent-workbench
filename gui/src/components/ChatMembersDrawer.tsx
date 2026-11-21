@@ -8,6 +8,7 @@ import {
 } from '../ui/icons';
 import { useEffect, useMemo, useState } from 'react';
 import { addChatMember, removeChatMember, type ChatMember } from '../lib/chat';
+import { memberRoleLabel, setChatRole } from '../lib/community';
 import { formatRelative } from '../lib/labels';
 
 const BUILTIN_HANDLES = ['muse', 'claude', 'dsh'] as const;
@@ -70,6 +71,11 @@ export function ChatMembersDrawer({
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [roleBusy, setRoleBusy] = useState<string | null>(null);
+
+  // The GUI holds the human token; a group with an owner row is owner-managed.
+  // This only decides what is drawn — the engine re-checks every mutation.
+  const isOwner = useMemo(() => members.some((member) => member.role === 'owner'), [members]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -124,6 +130,30 @@ export function ChatMembersDrawer({
       onRefresh();
     } finally {
       setBusy(null);
+    }
+  };
+
+  /**
+   * REA Phase 5 §4.3 / D5: owner-only admin appointment. Only member↔admin is
+   * allowed (the engine refuses owner targets); the row refreshes from the
+   * engine's canonical chat_members after every attempt.
+   */
+  const runSetRole = async (member: ChatMember, role: 'admin' | 'member') => {
+    setRoleBusy(member.agent_id);
+    setActionError(null);
+    try {
+      const result = await setChatRole({
+        chatId,
+        agentId: member.agent_id,
+        role,
+      });
+      if (!result.ok) {
+        setActionError(result.error);
+        return;
+      }
+      onRefresh();
+    } finally {
+      setRoleBusy(null);
     }
   };
 
@@ -185,91 +215,129 @@ export function ChatMembersDrawer({
                   {platformLabel(member)} · {member.status} · {joinedText(member)}
                 </span>
               </span>
-              {member.role === 'owner' ? (
-                <span className="members-drawer__badge">群主</span>
-              ) : confirmRemove === member.agent_id ? (
-                <span className="members-drawer__confirm">
-                  <button
-                    type="button"
-                    className="btn btn-danger btn-sm"
-                    disabled={busy != null}
-                    onClick={() => void runRemove(member.agent_id)}
-                  >
-                    确认移除
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => setConfirmRemove(null)}
-                  >
-                    取消
-                  </button>
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  className="members-drawer__remove"
-                  aria-label={`移除 ${member.display_name}`}
-                  title="移除成员"
-                  disabled={busy != null}
-                  onClick={() => setConfirmRemove(member.agent_id)}
+              <span className="members-drawer__badges">
+                <span
+                  className={`role-badge${member.role === 'owner' ? ' role-badge--owner' : member.role === 'admin' ? ' role-badge--admin' : ''}`}
                 >
-                  <Trash2 size={13} aria-hidden="true" />
-                </button>
+                  {memberRoleLabel(member.role)}
+                </span>
+                {isOwner && member.role !== 'owner' && (
+                  <button
+                    type="button"
+                    className="members-drawer__role-btn"
+                    disabled={roleBusy != null || busy != null}
+                    title={
+                      member.role === 'admin'
+                        ? '撤销管理员（群主可以随时降级）'
+                        : '任命为管理员（仅内容与查看权限）'
+                    }
+                    onClick={() =>
+                      void runSetRole(member, member.role === 'admin' ? 'member' : 'admin')
+                    }
+                  >
+                    {roleBusy === member.agent_id
+                      ? '处理中…'
+                      : member.role === 'admin'
+                        ? '撤销管理员'
+                        : '设为管理员'}
+                  </button>
+                )}
+              </span>
+              {isOwner && member.role !== 'owner' && (
+                confirmRemove === member.agent_id ? (
+                  <span className="members-drawer__confirm">
+                    <button
+                      type="button"
+                      className="btn btn-danger btn-sm"
+                      disabled={busy != null}
+                      onClick={() => void runRemove(member.agent_id)}
+                    >
+                      确认移除
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => setConfirmRemove(null)}
+                    >
+                      取消
+                    </button>
+                  </span>
+                ) : member.role === 'admin' ? (
+                  // D5: an admin must be demoted before removal; the engine
+                  // refuses `cannot_remove_admin` anyway, so no dead button.
+                  null
+                ) : (
+                  <button
+                    type="button"
+                    className="members-drawer__remove"
+                    aria-label={`移除 ${member.display_name}`}
+                    title="移除成员"
+                    disabled={busy != null || roleBusy != null}
+                    onClick={() => setConfirmRemove(member.agent_id)}
+                  >
+                    <Trash2 size={13} aria-hidden="true" />
+                  </button>
+                )
               )}
             </li>
           ))}
         </ul>
 
-        <section className="members-drawer__add" aria-label="添加成员">
-          <h3>
-            <UserPlus size={13} aria-hidden="true" />
-            添加成员
-          </h3>
-          {candidates.length > 0 ? (
-            <div className="members-drawer__candidates">
-              {candidates.map((handle) => (
-                <button
-                  key={handle}
-                  type="button"
-                  className={`members-drawer__candidate${adding === handle ? ' is-active' : ''}`}
-                  aria-pressed={adding === handle}
-                  onClick={() => setAdding(adding === handle ? '' : handle)}
-                >
-                  {BUILTIN_LABELS[handle]}
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="members-drawer__hint">内置 Agent 都已在群里。</p>
-          )}
-          <label className="members-drawer__field">
-            <span>已配对 Agent ID（可选）</span>
-            <input
-              type="text"
-              value={customId}
-              placeholder="agent_xxxxxxxx"
-              onChange={(event) => setCustomId(event.target.value)}
-            />
-          </label>
-          <button
-            type="button"
-            className="btn btn-primary btn-sm"
-            disabled={busy != null}
-            onClick={() => void runAdd()}
-          >
-            {busy === 'add' ? '添加中…' : '添加'}
-          </button>
-          {actionError != null && (
-            <p className="members-drawer__error" role="alert">
-              <CircleAlert size={13} aria-hidden="true" />
-              {actionError}
+        {isOwner ? (
+          <section className="members-drawer__add" aria-label="添加成员">
+            <h3>
+              <UserPlus size={13} aria-hidden="true" />
+              添加成员
+            </h3>
+            {candidates.length > 0 ? (
+              <div className="members-drawer__candidates">
+                {candidates.map((handle) => (
+                  <button
+                    key={handle}
+                    type="button"
+                    className={`members-drawer__candidate${adding === handle ? ' is-active' : ''}`}
+                    aria-pressed={adding === handle}
+                    onClick={() => setAdding(adding === handle ? '' : handle)}
+                  >
+                    {BUILTIN_LABELS[handle]}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="members-drawer__hint">内置 Agent 都已在群里。</p>
+            )}
+            <label className="members-drawer__field">
+              <span>已配对 Agent ID（可选）</span>
+              <input
+                type="text"
+                value={customId}
+                placeholder="agent_xxxxxxxx"
+                onChange={(event) => setCustomId(event.target.value)}
+              />
+            </label>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              disabled={busy != null}
+              onClick={() => void runAdd()}
+            >
+              {busy === 'add' ? '添加中…' : '添加'}
+            </button>
+            {actionError != null && (
+              <p className="members-drawer__error" role="alert">
+                <CircleAlert size={13} aria-hidden="true" />
+                {actionError}
+              </p>
+            )}
+            <p className="members-drawer__hint">
+              上限 50 人（引擎强制）；加入时不会把历史消息算成未读。
             </p>
-          )}
+          </section>
+        ) : (
           <p className="members-drawer__hint">
-            上限 50 人（引擎强制）；加入时不会把历史消息算成未读。
+            只有群主可以增删成员与任命管理员；管理员不获得成员管理权限。
           </p>
-        </section>
+        )}
       </aside>
     </>
   );

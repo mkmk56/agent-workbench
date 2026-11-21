@@ -18,6 +18,7 @@ import type {
   ChatSummary,
   ChatUploadDraft,
   ChatUploadProgress,
+  ChatVisibility,
   EngineResult,
   PairingCodeResult,
   SendChatMessageInput,
@@ -113,7 +114,10 @@ interface ChatBridge {
   listChats?: (options?: {
     includeArchived?: boolean;
   }) => Promise<EngineResult<unknown>>;
-  createChat?: (name?: string) => Promise<EngineResult<unknown>>;
+  createChat?: (
+    name?: string,
+    options?: { visibility?: ChatVisibility; category?: string | null },
+  ) => Promise<EngineResult<unknown>>;
   renameChat?: (chatId: string, name: string) => Promise<EngineResult<unknown>>;
   archiveChat?: (chatId: string) => Promise<EngineResult<unknown>>;
   unarchiveChat?: (chatId: string) => Promise<EngineResult<unknown>>;
@@ -255,10 +259,18 @@ export function normalizeChat(raw: unknown): ChatSummary | null {
         .filter((item): item is ChatParticipant => item != null)
     : [];
   const status = readString(record, 'status');
+  const visibility = readString(record, 'visibility');
   return {
     chat_id: chatId,
     name: readString(record, 'name') ?? '未命名群聊',
     status: status === 'archived' ? 'archived' : 'active',
+    // REA Phase 5: pre-v8 engines omit visibility; `link` is the historical
+    // value the API always forced, so an older engine still renders honestly.
+    visibility:
+      visibility === 'private' || visibility === 'public' || visibility === 'link'
+        ? (visibility as ChatVisibility)
+        : 'link',
+    category: readString(record, 'category'),
     created_at: readString(record, 'created_at', 'createdAt'),
     last_message_at: readString(record, 'last_message_at', 'lastMessageAt'),
     last_message_preview: readString(record, 'last_message_preview', 'lastMessagePreview'),
@@ -427,7 +439,7 @@ export function normalizeChatSettings(raw: unknown): ChatSettings {
   };
 }
 
-const MEMBER_ROLES = new Set(['owner', 'member']);
+const MEMBER_ROLES = new Set(['owner', 'admin', 'member']);
 
 /** One `chat_members` row. Unknown agents keep their raw id as display name. */
 export function normalizeMember(raw: unknown): ChatMember | null {
@@ -749,7 +761,10 @@ export async function listChatsOnce(
   }
 }
 
-export async function createChat(name?: string): Promise<EngineResult<ChatSummary>> {
+export async function createChat(
+  name?: string,
+  options?: { visibility?: ChatVisibility; category?: string | null },
+): Promise<EngineResult<ChatSummary>> {
   if (!window.workbench) {
     return { ok: false, error: NO_MAIN };
   }
@@ -759,7 +774,12 @@ export async function createChat(name?: string): Promise<EngineResult<ChatSummar
   }
   try {
     const trimmed = name?.trim();
-    const result = await api.createChat(trimmed != null && trimmed.length > 0 ? trimmed : undefined);
+    const result = await api.createChat(
+      trimmed != null && trimmed.length > 0 ? trimmed : undefined,
+      // REA Phase 5 §4.4: the create form may pick visibility/category; the
+      // engine applies its own defaults (private / uncategorized) when absent.
+      options?.visibility == null && options?.category === undefined ? undefined : options,
+    );
     if (!result.ok) {
       return { ok: false, error: failureMessage(result.error, '创建群聊失败。') };
     }

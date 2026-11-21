@@ -8,6 +8,7 @@ import { AboutPage } from './pages/AboutPage';
 import { ChatPage } from './pages/ChatPage';
 import { ChatSettingsPage } from './pages/ChatSettingsPage';
 import { DispatchPage } from './pages/DispatchPage';
+import { DiscoverPage } from './pages/DiscoverPage';
 import { FilesPage } from './pages/FilesPage';
 import { InboxPage } from './pages/InboxPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -36,6 +37,9 @@ export function App() {
       break;
     case 'chats':
       page = <ChatPage chatId={null} />;
+      break;
+    case 'discover':
+      page = <DiscoverPage />;
       break;
     case 'task':
       page = <TaskDetailPage key={route.id} id={route.id} />;

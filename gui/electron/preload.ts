@@ -167,8 +167,15 @@ const workbench = {
     ipcRenderer.invoke('engine:message-list', input),
   listChats: (options?: { includeArchived?: boolean }) =>
     ipcRenderer.invoke('engine:chat-list', options ?? {}),
-  createChat: (name?: string) =>
-    ipcRenderer.invoke('engine:chat-create', name == null ? {} : { name }),
+  createChat: (
+    name?: string,
+    options?: { visibility?: string; category?: string | null },
+  ) =>
+    ipcRenderer.invoke('engine:chat-create', {
+      ...(name == null ? {} : { name }),
+      ...(options?.visibility == null ? {} : { visibility: options.visibility }),
+      ...(options?.category === undefined ? {} : { category: options.category }),
+    }),
   renameChat: (chatId: string, name: string) =>
     ipcRenderer.invoke('engine:chat-rename', { chatId, name }),
   listChatMessages: (input: ChatMessageQuery) =>
@@ -222,6 +229,45 @@ const workbench = {
   }) => ipcRenderer.invoke('engine:agent-pair', input),
   agentRevokeToken: (input?: { agentId?: string }) =>
     ipcRenderer.invoke('engine:agent-revoke', input ?? {}),
+  // ---- REA Phase 5 community surface (docs/rea/PHASE5_DESIGN.md §3.2) ----
+  chatSetVisibility: (input: { chatId: string; visibility: string }) =>
+    ipcRenderer.invoke('engine:chat-set-visibility', input),
+  chatSetCategory: (input: { chatId: string; category: string | null }) =>
+    ipcRenderer.invoke('engine:chat-set-category', input),
+  groupInviteCreate: (input: { chatId: string; ttlHours?: number; maxUses?: number }) =>
+    ipcRenderer.invoke('engine:group-invite-create', input),
+  groupInviteRevoke: (input: { inviteId: string }) =>
+    ipcRenderer.invoke('engine:group-invite-revoke', input),
+  groupInviteList: (input?: { chatId?: string; limit?: number; offset?: number }) =>
+    ipcRenderer.invoke('engine:group-invite-list', input ?? {}),
+  chatJoinApprove: (input: { requestId: string }) =>
+    ipcRenderer.invoke('engine:chat-join-approve', input),
+  chatJoinDecline: (input: { requestId: string; reason?: string }) =>
+    ipcRenderer.invoke('engine:chat-join-decline', input),
+  chatJoinList: (input?: {
+    chatId?: string;
+    status?: string;
+    limit?: number;
+    offset?: number;
+  }) => ipcRenderer.invoke('engine:chat-join-list', input ?? {}),
+  chatJoinNotices: (input?: {
+    chatId?: string;
+    read?: boolean;
+    limit?: number;
+    offset?: number;
+    markRead?: 'one' | 'all';
+    noticeId?: string;
+  }) => ipcRenderer.invoke('engine:chat-join-notices', input ?? {}),
+  listPublicChats: (input?: {
+    category?: string;
+    q?: string;
+    limit?: number;
+    offset?: number;
+  }) => ipcRenderer.invoke('engine:list-public-chats', input ?? {}),
+  listAgentsDirectory: (input?: { limit?: number; offset?: number; status?: string }) =>
+    ipcRenderer.invoke('engine:list-agents-directory', input ?? {}),
+  chatSetRole: (input: { chatId: string; agentId: string; role: 'admin' | 'member' }) =>
+    ipcRenderer.invoke('engine:chat-set-role', input),
   getEventsStatus: () => ipcRenderer.invoke('engine:events-status'),
   onEngineEvent: (callback: (event: EngineEvent) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: EngineEvent) =>

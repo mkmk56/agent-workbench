@@ -1,0 +1,720 @@
+/* REA Phase 5 §4 — community surfaces (discover page, chat settings cards,
+   members roles, settings community section, join-request banner).
+
+   Same matte-black design system as Phase 4: tokens come from brand.css, no
+   new accent colours, 13–15px icons only. */
+
+/* ---------- [4.1] discovery page ---------- */
+
+.discover-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+  padding: 20px 24px 32px;
+  overflow-y: auto;
+}
+
+.discover-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.discover-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1 1 280px;
+  max-width: 460px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-muted);
+}
+
+.discover-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.discover-search input:focus-visible {
+  outline: none;
+}
+
+.discover-search:focus-within {
+  border-color: var(--accent);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.discover-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.discover-filter__label {
+  color: var(--text-secondary);
+}
+
+.discover-filter select {
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.discover-filter select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.discover-toolbar__count {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.discover-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--info);
+  border-radius: var(--radius-md);
+  background: var(--info-subtle);
+  color: var(--info-text);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.discover-banner svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.discover-error {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--error);
+  border-radius: var(--radius-md);
+  background: var(--error-subtle);
+  color: var(--error-on-subtle);
+  font-size: 12px;
+}
+
+.discover-status {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.discover-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 40px 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.discover-empty p {
+  margin: 0;
+  max-width: 460px;
+  font-size: 12px;
+  line-height: 19px;
+}
+
+.discover-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.discover-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+
+.discover-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.discover-card__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.discover-card__category {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 17px;
+}
+
+.discover-card__desc {
+  margin: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.discover-card__meta {
+  display: flex;
+  gap: 16px;
+  margin: 0;
+}
+
+.discover-card__meta div {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.discover-card__meta dt {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.discover-card__meta dd {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.discover-footnote {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* ---------- [4.2] chat settings: visibility / category / invites / joins ---------- */
+
+.chat-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.visibility-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.visibility-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.visibility-option:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.visibility-option.is-active {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.visibility-option:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.visibility-option__icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-secondary);
+}
+
+.visibility-option__text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.visibility-option__label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.visibility-option__hint {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.chat-settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-settings-select {
+  min-width: 120px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.chat-settings-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.invite-create-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.invite-create-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.invite-create-form input,
+.invite-create-form select {
+  width: 92px;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.invite-created {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid var(--success);
+  border-radius: var(--radius-md);
+  background: var(--success-subtle);
+}
+
+.invite-created__label {
+  color: var(--success-text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.invite-created__code {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.invite-created__code code {
+  flex: 1 1 220px;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.invite-list,
+.join-request-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.invite-row,
+.join-request-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+
+.invite-row__main,
+.join-request-row__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.invite-row__title,
+.join-request-row__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.invite-row__meta,
+.join-request-row__meta {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.join-request-row__message {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.invite-status,
+.role-badge,
+.join-status {
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.invite-status--success,
+.join-status--approved {
+  border-color: var(--success);
+  background: var(--success-subtle);
+  color: var(--success-text);
+}
+
+.invite-status--warning,
+.join-status--pending {
+  border-color: var(--warning);
+  background: var(--warning-subtle);
+  color: var(--warning-text);
+}
+
+.invite-status--error,
+.join-status--declined {
+  border-color: var(--error);
+  background: var(--error-subtle);
+  color: var(--error-on-subtle);
+}
+
+.role-badge--owner {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--accent-text);
+}
+
+.role-badge--admin {
+  border-color: var(--info);
+  background: var(--info-subtle);
+  color: var(--info-text);
+}
+
+/* ---------- [4.3] members drawer role controls ---------- */
+
+.members-drawer__badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.members-drawer__role-btn {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.members-drawer__role-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.members-drawer__role-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* ---------- [4.5] settings → community section ---------- */
+
+.community-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.community-block__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.community-block__title {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.community-block__hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 17px;
+}
+
+.community-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.community-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+
+.community-row__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.community-row__title {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.community-row__meta {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.community-row__action {
+  flex: none;
+}
+
+.community-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.community-empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.community-error {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--error);
+  border-radius: var(--radius-md);
+  background: var(--error-subtle);
+  color: var(--error-on-subtle);
+  font-size: 11px;
+}
+
+.community-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ---------- [4.7] join-request banner (chat page + inbox) ---------- */
+
+.join-banner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 14px;
+  padding: 7px 10px;
+  border: 1px solid var(--info);
+  border-radius: var(--radius-md);
+  background: var(--info-subtle);
+  color: var(--info-text);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.join-banner__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.join-banner__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.inbox-join-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.inbox-join-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.inbox-join-panel__title {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.inbox-join-panel__count {
+  padding: 0 7px;
+  border-radius: 9999px;
+  background: var(--accent-subtle);
+  color: var(--accent-text);
+  font-size: 11px;
+  line-height: 17px;
+}
+
+@media (max-width: 720px) {
+  .discover-page {
+    padding: 14px 14px 24px;
+  }
+
+  .discover-toolbar__count {
+    margin-left: 0;
+  }
+}
+
+/* ---------- [4.4] create-chat form: visibility + category ---------- */
+
+.chat-new-form__row {
+  display: flex;
+  gap: 6px;
+}
+
+.chat-new-form__row .chat-new-form__select {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  padding: 5px 7px;
+}
+
+.community-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
